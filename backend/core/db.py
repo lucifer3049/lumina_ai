@@ -45,19 +45,27 @@ def _call_with_cleanup[R](fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
         close_old_connections()
 
 
+# **在 import 期建立一次，不要搬進 run_orm。**
+# 每次呼叫重建一個包裝器不貴，但它落在 B 組壓測正在量的那條路徑上——量出來的
+# 數字會含一筆不屬於受測對象的成本，而且偏多少無從得知（locustfile.py 開頭的
+# 教訓：環境雜訊已經會吃掉真實差異，受測物本身不該再自己加料）。
+# 由 tests/test_bridge.py::TestBridgeOverhead 釘住。
+_run_with_cleanup = sync_to_async(
+    _call_with_cleanup,
+    thread_sensitive=False,
+    executor=_orm_executor,
+)
+
+
 async def run_orm[**P, R](fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
     """把同步的 ORM 函式送進受控 threadpool 執行。
 
     ``thread_sensitive=False``：不綁 asgiref 的主執行緒，才能真正並行。
     TenantContext 走 contextvars，``sync_to_async`` 會把當前 context 複製進
     threadpool 執行緒——租戶隔離因此得以跨執行緒保持（見 core/tenant.py）。
+    複製發生在**每次呼叫**時，與包裝器本身建立幾次無關。
     """
-    wrapped = sync_to_async(
-        _call_with_cleanup,
-        thread_sensitive=False,
-        executor=_orm_executor,
-    )
-    return cast("R", await wrapped(fn, *args, **kwargs))
+    return cast("R", await _run_with_cleanup(fn, *args, **kwargs))
 
 
 def orm_threadpool_size() -> int:

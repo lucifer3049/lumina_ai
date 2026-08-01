@@ -70,6 +70,24 @@ def _problem_type(code: str) -> str:
     return f"/errors/{code.lower().replace('_', '-')}"
 
 
+def _status_phrase(status: int) -> str:
+    """狀態碼的人類可讀敘述，供無 ``code`` 時當 ``title``。
+
+    ``HTTPStatus(499)`` 會丟 ``ValueError``——而這個查詢跑在 **exception handler
+    內部**。處理器自己爆掉就沒有人接得住了：ServerErrorMiddleware 會把回應降級成
+    純文字 ``Internal Server Error``，連狀態碼都從 499 變成 500，本檔開頭「四個
+    入口全部接管」的保證在這條路徑上失效。
+
+    Starlette 的 ``HTTPException`` 不限制狀態碼數字，499（nginx 慣例的 client
+    closed request）、598 這類值第三方套件或自家中介層都可能用到，所以這不是
+    理論上的邊界。後備值刻意只回 ``HTTP {status}``——沒有標準敘述時就不要編一個。
+    """
+    try:
+        return HTTPStatus(status).phrase
+    except ValueError:
+        return f"HTTP {status}"
+
+
 def problem_response(
     *,
     status: int,
@@ -91,7 +109,7 @@ def problem_response(
     """
     body: dict[str, Any] = {
         "type": _problem_type(code) if code else "about:blank",
-        "title": code.replace("_", " ").capitalize() if code else HTTPStatus(status).phrase,
+        "title": code.replace("_", " ").capitalize() if code else _status_phrase(status),
         "status": status,
         "detail": detail,
         "request_id": request_id,

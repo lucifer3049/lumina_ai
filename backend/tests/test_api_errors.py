@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 from fastapi import FastAPI
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.main import REQUEST_ID_HEADER, create_app
 from api.schemas.problem import PROBLEM_JSON
@@ -168,6 +169,38 @@ class TestEveryErrorEntryPointIsProblemJson:
         assert body["title"] == "Method Not Allowed"
         assert "code" not in body, "不得為字典外的 status 憑空產生 code"
         assert response.headers["allow"], "405 的 Allow 標頭被吞掉了"
+
+    async def test_non_standard_status_is_problem_json(self) -> None:
+        """非標準狀態碼（499）也必須是 Problem Details，且不得讓 handler 自己爆掉。
+
+        ``problem_response`` 在無 code 時取 ``HTTPStatus(status).phrase``，而
+        ``HTTPStatus(499)`` 直接丟 ``ValueError``。那行跑在 **exception handler
+        內部**——處理器自己爆掉就沒有人接得住了，ServerErrorMiddleware 會回純文字
+        ``Internal Server Error``，本檔開頭「四個入口全部接管」的保證在這條路徑
+        上失效，而且失效時回的還是 500（狀態碼也錯）。
+
+        Starlette 的 ``HTTPException`` 不限制狀態碼數字，499（nginx 慣例的
+        client closed request）、598 這類值第三方套件或自家中介層都可能用到。
+        """
+        app = create_app()
+
+        @app.get("/api/v1/_nonstandard_status")
+        async def _nonstandard() -> None:
+            raise StarletteHTTPException(status_code=499, detail="client closed request")
+
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get("/api/v1/_nonstandard_status")
+
+        assert response.status_code == 499, "handler 內部爆掉會被降級成 500"
+        assert response.headers["content-type"].startswith(PROBLEM_JSON)
+
+        body = response.json()
+        assert body["type"] == "about:blank"
+        assert body["status"] == 499
+        assert body["title"], "title 是 RFC 9457 必填成員，不得為空"
+        assert "code" not in body, "不得為字典外的 status 憑空產生 code"
+        assert body["request_id"] == response.headers[REQUEST_ID_HEADER]
 
     async def test_unhandled_exception_is_problem_json(self) -> None:
         """兜底 handler：未預期例外 → 500 Problem Details，不洩內部細節。
