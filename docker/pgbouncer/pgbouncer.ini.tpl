@@ -1,16 +1,18 @@
-; PgBouncer 設定 —— spike 手動維護，不用 edoburu image 的自動生成。
+; PgBouncer 設定樣板 —— 由 compose 的 pgbouncer-config 服務渲染成實檔。
 ;
-; 為什麼不用自動生成：image 的 entrypoint 會產出
+; 佔位符 __DB_USER__ / __DB_PASSWORD__ / __DB_NAME__ 於容器啟動時以 .env 的值取代。
+; 為什麼要這層樣板：PgBouncer 不支援設定檔內的環境變數插值，而 [databases] 這行
+; 必須帶密碼（原因見下），直接寫進版控就是把密碼提交上去。
+;
+; 為什麼不用 edoburu image 的自動生成：它的 entrypoint 會產出
 ;     lumina = host=postgres port=5432 auth_user=lumina
-; 也就是走 auth_query 模式——PgBouncer 去查 PG 的 pg_shadow 取密碼。但 PG16
-; 的 pg_shadow 存的是 **SCRAM verifier**，而 PgBouncer 拿 verifier 只能驗證
-; client，無法反過來用它登入 PostgreSQL（PgBouncer 已知限制）。結果就是
-; server 端 login failed，錯誤訊息卻顯示成 client 密碼錯誤，很難查。
-;
-; 因此 [databases] 直接帶 user/password，走一般密碼認證。
+; 也就是走 auth_query 模式——PgBouncer 去查 PG 的 pg_shadow 取密碼。但 PG16 的
+; pg_shadow 存的是 SCRAM verifier，PgBouncer 拿 verifier 只能驗證 client，
+; 無法反過來用它登入 PostgreSQL（已知限制）。結果是 server 端 login failed，
+; 錯誤訊息卻顯示成 client 密碼錯誤，很難查。
 
 [databases]
-lumina = host=postgres port=5432 dbname=lumina user=lumina password=lumina_spike_pw
+__DB_NAME__ = host=postgres port=5432 dbname=__DB_NAME__ user=__DB_USER__ password=__DB_PASSWORD__
 
 [pgbouncer]
 listen_addr = 0.0.0.0
@@ -19,7 +21,7 @@ unix_socket_dir =
 
 auth_type = scram-sha-256
 auth_file = /etc/pgbouncer/userlist.txt
-admin_users = lumina
+admin_users = __DB_USER__
 
 ; 05 §5.5：transaction pooling
 pool_mode = transaction
@@ -28,7 +30,7 @@ default_pool_size = 20
 
 ; psycopg3 會送這些 startup 參數，transaction mode 下必須忽略否則連線被拒。
 ; ⚠️ options 被忽略 = 任何想靠 startup 參數帶進來的設定（例如 statement_timeout）
-; 都會被靜默丟棄。statement_timeout 因此設在 role 上，見 docker/postgres/initdb/。
+; 都會被靜默丟棄。statement_timeout 因此設在 role 上，由 `make db-timeouts` 套用。
 ignore_startup_parameters = extra_float_digits,options
 
 ; CLAUDE.md：所有對外呼叫必有 timeout。

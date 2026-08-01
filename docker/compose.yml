@@ -1,0 +1,169 @@
+# Phase 0 開發環境 —— 基礎設施全套（13 §2：PG+pgvector+pgroonga、Redis、MinIO）
+#
+# 這一份取代了 spike 期的 compose.spike.yml：兩份 compose 會漂（改了一邊忘了另一邊），
+# 而 B 組壓測與日常開發本來就該跑在同一組基礎設施上，否則量測結論不能套用。
+# 埠位、pgbouncer 設定沿用 spike 值，壓測數據仍可比較。
+#
+# 應用服務（api / worker / beat）不在本檔——backend image 與 CI 屬下一個工作包。
+#
+# 埠位（全部走 .env，預設值見 .env.example）：
+#   postgres  ${DB_DIRECT_PORT}=15432 → 5432   僅 pytest 直連（建 test database 用）
+#   pgbouncer ${DB_PORT}=16432        → 5432   應用一律經此（05 §5.5 transaction pooling）
+#   redis     ${REDIS_PORT}=16379     → 6379
+#   minio     ${S3_PORT}=19000        → 9000（API）、${S3_CONSOLE_PORT}=19001 → 9001（console）
+# 非預設埠是刻意的：本機已跑原生 PostgreSQL/Redis 時，撞埠會連上錯的服務，
+# 症狀是「連得上但資料不對」，比連不上難查得多。
+
+name: lumina
+
+services:
+  postgres:
+    build:
+      context: ./postgres
+    image: lumina/postgres:16-pgvector-pgroonga
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+      # C collation：05 §5.5。只在 initdb 生效，改了要重建資料卷。
+      POSTGRES_INITDB_ARGS: "--lc-collate=C --lc-ctype=C.UTF-8"
+    command:
+      - postgres
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS}
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS}
+    ports:
+      - "${DB_DIRECT_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 註：role 層級的 statement_timeout 與 extension 都不在這裡建。
+    # 前者由 `make db-timeouts` 套用（冪等，新舊資料卷皆適用），
+    # 後者由 Django migration 建立（initdb.d 不會套用到 pytest 另建的 test database）。
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # PgBouncer 的設定檔含密碼，而 PgBouncer 本身不支援環境變數插值。
+  # 因此設定檔不進版控：由本服務在啟動前把 *.tpl 的佔位符換成 .env 的值，
+  # 產物寫進具名 volume 給 pgbouncer 掛載（CLAUDE.md 鐵則 9：secrets 不進碼）。
+  pgbouncer-config:
+    image: busybox:1.36
+    environment:
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+    volumes:
+      - ./pgbouncer:/tpl:ro
+      - pgbouncer-config:/out
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        for f in pgbouncer.ini userlist.txt; do
+          sed -e "s|__DB_USER__|$$DB_USER|g" \
+              -e "s|__DB_PASSWORD__|$$DB_PASSWORD|g" \
+              -e "s|__DB_NAME__|$$DB_NAME|g" \
+              "/tpl/$$f.tpl" > "/out/$$f"
+        done
+        chmod 644 /out/pgbouncer.ini /out/userlist.txt
+
+  pgbouncer:
+    # 釘版：latest 會漂，壓測結果就不可複現。
+    image: edoburu/pgbouncer:v1.23.1-p3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgbouncer-config:
+        condition: service_completed_successfully
+    environment:
+      # healthcheck 的 psql 用；PgBouncer 本身讀的是 volume 內的設定檔。
+      PGPASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgbouncer-config:/etc/pgbouncer:ro
+    ports:
+      - "${DB_PORT}:5432"
+    healthcheck:
+      # 刻意跑一條真查詢而不是 pg_isready：pg_isready 只確認「有人在聽」，
+      # 認證壞掉時它照樣回報 healthy，於是 compose 說就緒、應用卻連不上。
+      test:
+        - CMD-SHELL
+        - psql -h 127.0.0.1 -p 5432 -U ${DB_USER} -d ${DB_NAME} -tAc 'select 1' > /dev/null
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    # 12 §4.1：AOF everysec。Redis 的資料定位是「可重建快取」，但設定不可隨便——
+    # 關掉 AOF 之後重啟會丟 SSE resume buffer 與 rate limit 計數，
+    # 症狀是零星且難重現的使用者端錯誤。
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --requirepass
+      - ${REDIS_PASSWORD}
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    ports:
+      - "${S3_PORT}:9000"
+      - "${S3_CONSOLE_PORT}:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  # bucket 初始化：冪等，由 `make up` 觸發（profile 保護，避免 compose up 時
+  # 一次性容器的 exited 狀態干擾 `--wait`）。
+  minio-init:
+    image: minio/mc:RELEASE.2024-11-05T11-29-45Z
+    profiles: ["init"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        mc alias set lumina http://minio:9000 "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"
+        mc mb --ignore-existing "lumina/$$S3_BUCKET"
+        # 12 §4.1 備份策略要求版本化 bucket。事後才開等於前面所有物件沒保護，
+        # 屬「不可後補」項，所以放在建立流程裡而不是上線前檢查表。
+        mc version enable "lumina/$$S3_BUCKET"
+        # 租戶文件不得公開讀取（鐵則 4）。預設就是 none，這裡顯式設定
+        # 是為了讓「有人手動開過 public」在下次 make up 時被改回來。
+        mc anonymous set none "lumina/$$S3_BUCKET"
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  pgbouncer-config:

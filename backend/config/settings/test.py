@@ -14,6 +14,6 @@ import os
 from .base import *  # noqa: F403
 from .base import DATABASES
 
-DATABASES["default"]["HOST"] = os.environ.get("TEST_DB_HOST", "127.0.0.1")
-DATABASES["default"]["PORT"] = os.environ.get("TEST_DB_PORT", "15432")
+DATABASES["default"]["HOST"] = os.environ.get("DB_DIRECT_HOST", "127.0.0.1")
+DATABASES["default"]["PORT"] = os.environ.get("DB_DIRECT_PORT", "15432")
 DATABASES["default"]["CONN_MAX_AGE"] = 0

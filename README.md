@@ -4,9 +4,9 @@ Multi-tenant SaaS 的 Enterprise AI Knowledge Platform。核心能力：LLM Chat
 
 架構風格：**Modular Monolith + Clean Architecture + DDD**，保留未來拆分 Microservices 的能力。
 
-> **目前狀態：Phase 0 — ADR-001 橋接驗證 spike。**
-> 現有程式碼只涵蓋「Django ORM 在 FastAPI async context 下的共存方式」這一項技術驗證，
-> 尚非可用產品。完整設計見 [`docs/plan/`](docs/plan/)（00–15），開發順序見
+> **目前狀態：Phase 0 進行中。**
+> 已完成：ADR-001 橋接驗證 spike（Django ORM 在 FastAPI async context 下的共存方式）、
+> 開發環境基礎設施全套。尚未有業務功能，非可用產品。完整設計見 [`docs/plan/`](docs/plan/)（00–15），開發順序見
 > [`13_開發Roadmap.md`](docs/plan/13_開發Roadmap.md)。
 
 ---
@@ -26,8 +26,8 @@ Multi-tenant SaaS 的 Enterprise AI Knowledge Platform。核心能力：LLM Chat
 | 前端 | Vue 3 + TypeScript(strict) + Pinia + pnpm |
 | 部署 | Docker Compose |
 
-> pgvector / pgroonga / Redis / MinIO / Celery / 前端於 Phase 0 全量時接入，目前 spike 的
-> compose 只起 PostgreSQL + PgBouncer。
+> compose 已含 PostgreSQL(pgvector + pgroonga，自建 image) / PgBouncer / Redis / MinIO；
+> Celery、應用容器（api / worker）與前端於後續工作包接入。
 
 ## 架構鐵則
 
@@ -57,7 +57,7 @@ backend/
   config/         Django settings（base / dev / test）+ ASGI 掛載
   tests/          unit / integration / api 測試
   loadtest/       Locust 壓測腳本
-docker/           Compose 與 PgBouncer 設定
+docker/           Compose、PostgreSQL 自建 image、PgBouncer 設定樣板
 docs/plan/        架構設計文件 00–15（SAD）
 ```
 
@@ -73,16 +73,22 @@ docs/plan/        架構設計文件 00–15（SAD）
 ```bash
 git clone https://github.com/lucifer3049/lumina_ai.git
 cd lumina_ai
-make up        # 啟動 postgres + pgbouncer，並套用 statement_timeout
-make migrate   # Django migration
-make seed      # 產生壓測資料（50 租戶 × 2000 筆）
-make api       # 另開視窗：啟動 FastAPI（http://localhost:8000）
+cp .env.example .env   # 填入本機用的密碼；compose 與 backend 共用這一份
+make up                # 起 PG + PgBouncer + Redis + MinIO，套用 timeout、建立 bucket
+make migrate           # Django migration（含 pgvector / pgroonga extension）
+make verify-infra      # 基礎設施驗收測試（extension / collation / Redis / MinIO / secrets）
+make seed              # 產生壓測資料（50 租戶 × 2000 筆）
+make api               # 另開視窗：啟動 FastAPI（http://localhost:8000）
 ```
 
 `make` 不帶參數會列出所有可用指令。
 
-**埠位**：PostgreSQL `15432`（避開本機既有 PG）、PgBouncer `16432`（應用端一律連這個）、
-API `8000`、Locust web UI `8089`。
+**埠位**（全部走 `.env`，刻意避開預設值以免撞上本機既有服務）：PostgreSQL `15432`（僅
+pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `16379`、MinIO `19000`
+（API）/ `19001`（console）、API `8000`、Locust web UI `8089`。
+
+**secrets**：`.env` 已 gitignore，值不進版控；缺 `DJANGO_SECRET_KEY` / `DB_PASSWORD`
+等變數時 Django 會拒絕啟動（Fail Fast），不套用開發預設值。
 
 ### 常用指令
 
@@ -91,6 +97,9 @@ API `8000`、Locust web UI `8089`。
 | `make up` / `make down` | 啟動 / 停止基礎設施（`down` 保留資料卷） |
 | `make migrate` | 執行 Django migration |
 | `make test` | pytest（需先 `make up`） |
+| `make verify-infra` | 只跑基礎設施驗收（`tests/integration`） |
+| `make minio-init` | 重建 bucket / 版本化 / 關閉匿名存取（冪等） |
+| `make db-timeouts` | 重新套用 role 層級 `statement_timeout`（冪等） |
 | `make lint` | ruff check + ruff format --check + mypy strict |
 | `make loadtest` | Locust 壓測（web UI） |
 | `make loadtest-headless` | 無頭跑 60 秒直接吐數字 |

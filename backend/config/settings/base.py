@@ -32,17 +32,33 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# spike 專用：Django 在此不簽 session/cookie，SECRET_KEY 無實質作用。
-# Phase 0 起改為必填環境變數（缺值即拒絕啟動）。
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "spike-only-not-a-secret")
+
+def _required_env(name: str) -> str:
+    """缺值即拒絕啟動（鐵則 9 / Fail Fast）。
+
+    有預設值的憑證比沒有更危險：設定漏帶時程式照常起來，只是連到別的地方，
+    或用一把「大家都知道」的金鑰簽東西。所以這裡不給 fallback。
+    """
+    value = os.environ.get(name)
+    if not value:
+        raise ImproperlyConfigured(f"缺少環境變數 {name}——複製 .env.example 為 .env 後填值")
+    return value
+
+
+SECRET_KEY = _required_env("DJANGO_SECRET_KEY")
 DEBUG = False
 ALLOWED_HOSTS: list[str] = ["*"]
 
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.auth",
+    # extension 的 migration 落腳處（apps/platform/migrations/0001_extensions.py）；
+    # 表定義隨 Phase 2 的 2A 工作包進來。
+    "apps.platform",
     "apps.spike",
 ]
 
@@ -51,7 +67,7 @@ DATABASES = {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": os.environ.get("DB_NAME", "lumina"),
         "USER": os.environ.get("DB_USER", "lumina"),
-        "PASSWORD": os.environ.get("DB_PASSWORD", "lumina_spike_pw"),
+        "PASSWORD": _required_env("DB_PASSWORD"),
         "HOST": os.environ.get("DB_HOST", "127.0.0.1"),
         # 預設連 PgBouncer(16432)，不直連 PG(15432)——見 docker/compose.spike.yml
         "PORT": os.environ.get("DB_PORT", "16432"),

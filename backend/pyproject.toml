@@ -13,6 +13,10 @@ dependencies = [
     "pydantic-settings>=2.6",
     "psycopg[binary]>=3.2",
     "asgiref>=3.8",
+    "redis>=5.2",
+    # 物件儲存走 S3 API 而非 minio SDK：11 §4.2 的演進路徑是
+    # 「MinIO → 雲物件儲存（S3 相容，零程式改動）」，用 S3 client 才真的走得通。
+    "boto3>=1.35",
 ]
 
 [dependency-groups]
@@ -89,6 +93,12 @@ ignore_errors = true
 # 壓測腳本不是產品程式碼，這裡放寬到「能跑就好」，不讓它拖著 strict 不放。
 [[tool.mypy.overrides]]
 module = ["locust.*"]
+ignore_missing_imports = true
+
+# boto3 / botocore 不附型別（官方 stub 為獨立套件 boto3-stubs，體積大且需釘 service）。
+# 用量僅限 integration 測試中的物件儲存驗收，尚不值得引入。
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
