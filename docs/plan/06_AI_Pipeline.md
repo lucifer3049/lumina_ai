@@ -1,0 +1,197 @@
+# 06 AI Pipeline（Ingestion / RAG / Generation / Memory）
+
+| 項目 | 內容 |
+|------|------|
+| 文件編號 | 06 |
+| 版本 | v1.1 |
+| 日期 | 2026-07-30 |
+| 狀態 | Draft — 待審閱 |
+| 相依文件 | 01（ADR-003/004）、04（RAG / Embedding / Memory / Gateway 模組）、05（chunks / embeddings 表） |
+| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08） |
+
+---
+
+## 1. 設計理念
+
+1. **兩條 Pipeline 分離**：Ingestion（寫路徑，非同步、批次、可重跑）與 Query（讀路徑，同步、低延遲、可降級）。兩者只透過資料（chunks/embeddings）耦合。
+2. **每一階段皆可組態、可替換**：pipeline step 以 Protocol 定義，KB 級設定選擇實作與參數（Plugin Hook Point 對齊）。
+3. **版本化貫穿**：chunk_version / embedding_version / prompt_version / model 在每筆產出上留快照，任何回答可完整回溯「當時用了什麼」。
+4. **降級優先於失敗**：Query 路徑每個增強步驟（rerank、compression）失敗時跳過而非中斷，保底為純向量檢索＋原始 context。
+
+## 2. Ingestion Pipeline（寫路徑）
+
+```mermaid
+flowchart LR
+    UP[Document Upload / Source Sync] --> V{驗證<br/>MIME·大小·hash 去重}
+    V -->|重複| SKIP[回報既有文件]
+    V --> S3[(MinIO)]
+    S3 --> Q1[Celery queue: etl]
+    Q1 --> EX[Extract<br/>loader by type]
+    EX --> CL[Clean<br/>去噪·正規化·PII 偵測標記]
+    CL --> CH[Chunk<br/>策略依 KB config]
+    CH --> DB1[(chunks 寫入<br/>chunk_version)]
+    DB1 --> Q2[Celery queue: embedding]
+    Q2 --> EMB[Embed<br/>batch 經 AI Gateway<br/>cache: content_hash→vector]
+    EMB --> DB2[(embeddings 寫入<br/>model + embedding_version)]
+    DB2 --> RDY[document.status = ready]
+    RDY -.event.-> NOTI[Notification / Analytics]
+    EX & CL & CH & EMB -.失敗.-> RT{Retry ≤3<br/>指數退避}
+    RT -->|耗盡| FAIL[status=failed + error 結構化<br/>→ 通知 + DLQ]
+```
+
+### 2.1 階段規格
+
+| 階段 | 要點 |
+|------|------|
+| Extract | loader 依 MIME 分派（詳見 08_ETL）；產出統一中間格式 `ExtractedDoc`（blocks：paragraph / table / heading / image-caption，含頁碼與座標 meta） |
+| Clean | 頁首頁尾去除、亂碼修復、空白正規化、語言偵測（寫入 meta，供檢索與 embedding 模型選擇）；PII 偵測僅標記不改寫（masking 政策見 10_安全設計） |
+| Chunk | 預設 `recursive`（結構感知：標題邊界優先，target 512 tokens、overlap 64）；表格走 `table-aware`（表格不切散、附表頭上下文）；KB 可選 `semantic`（embedding 相似度斷點，成本高、選配） |
+| Embed | batch=64 併發受控；embedding cache（`sha256(content)+model` → vector，Redis + DB 雙層）重複內容零成本；單 chunk 失敗不阻斷整批（記錄後重試） |
+
+### 2.2 重嵌入（Embedding 版本升級）
+
+```
+1. KB 設定新 model/version（舊版持續服務查詢）
+2. 背景批次：對全部 active chunks 產生新版 embeddings（限速，避免擠壓即時流量）
+3. 完成度 100% → KB.embedding_version 原子切換 → 查詢改用新版
+4. 觀察期（可回退）→ 清理 Job 刪舊版 embeddings
+```
+
+## 3. Query Pipeline（讀路徑：RAG + Generation）
+
+```mermaid
+flowchart TB
+    Q[User Query] --> PRE[Query 前處理<br/>正規化 · 語言偵測 ·<br/>condense（多輪改寫獨立問句）]
+    PRE --> QE[Query Embedding<br/>經 Gateway，帶 cache]
+    QE --> PAR{並行檢索}
+    PAR --> VS[Vector Search<br/>pgvector HNSW · top 40<br/>filter: tenant + kb + !superseded]
+    PAR --> FT[Full-text Search<br/>pgroonga · top 40]
+    VS & FT --> RRF[Hybrid 融合<br/>RRF k=60 → top 24]
+    RRF --> RR[Rerank<br/>cross-encoder 經 Gateway<br/>→ top 6~8 · score threshold]
+    RR --> CC[Context Compression<br/>去重疊 · 依 token budget 裁切<br/>（extractive 優先，LLM 摘要選配）]
+    CC --> PB[Prompt Builder<br/>system(prompt_version) + memory +<br/>context(帶 chunk 標記) + query]
+    PB --> LLM[LLM stream 經 Gateway<br/>Routing · Fallback · Metering]
+    LLM --> TC{Tool Call?}
+    TC -->|是| TE[Tool Executor<br/>結果回填 → 續跑 LLM<br/>迴圈上限 5]
+    TC -->|否| CIT[Citation 組裝<br/>回應中的 chunk 標記 → 引用驗證]
+    TE --> LLM
+    CIT --> RESP[SSE Response + persist]
+    RESP --> MEMU[Memory 更新<br/>視窗推進 · 背景摘要]
+    RR -.失敗.-> CC
+    CC -.失敗.-> PB
+```
+
+### 3.1 階段規格與參數（預設值，KB 可覆寫）
+
+| 階段 | 預設 | 說明 |
+|------|------|------|
+| Query condense | 多輪時啟用 | 以近 N 輪對話將指代性問句改寫為獨立問句（小模型，低成本）；單輪跳過 |
+| Vector search | top_k=40, cosine | `ef_search` 調校見 11_NFR |
+| FTS | top_k=40 | pgroonga 中文斷詞 |
+| Hybrid | RRF k=60 → 24 | 免調權重、對分數尺度不敏感，勝過線性加權 |
+| Rerank | top_n=6~8, threshold=0.3 | 全數低於門檻 → 回「知識庫無相關內容」而非硬答（hallucination 防線一） |
+| Compression | budget 內 extractive | 相鄰 chunk 合併、重疊去除；LLM 摘要壓縮為選配（延遲+成本，預設關） |
+| Generation | 依 model_config | system prompt 強制：僅依據 context 回答、引用標記 `[c:chunk_id]`、無據回答需聲明 |
+
+### 3.2 Token Budget（context window 分配）
+
+以 8k 可用預算為例（依模型 context window 動態計算，保留 completion 空間）：
+
+| 區塊 | 配額 | 溢出處理 |
+|------|------|----------|
+| System + Prompt template | ~800 | 固定 |
+| Memory（視窗+摘要） | ~1,500 | 觸發更激進摘要 |
+| RAG context | ~4,500 | Compression 硬上限 |
+| User query + 當輪 | ~700 | 超長輸入前端先擋 |
+| 安全餘裕 | ~500 | |
+
+### 3.3 Citation 與 Hallucination 防線
+
+1. **檢索門檻**：rerank 分數全數低於 threshold → 誠實回覆無相關資料（可組態為仍回答但標示「非知識庫依據」）。
+2. **標記式引用**：LLM 在句尾輸出 `[c:id]`；後處理驗證 id 存在於本次 context（幻覺引用直接剔除並記 metric）。
+3. **Groundedness 抽測**：線上抽樣 N%（預設 5%）由 Evaluation 模組以 LLM-as-judge 背景評分，趨勢進 Dashboard。
+4. **SSE citation event**：串流結尾送 `event: citations`（結構化清單），前端 CitationPanel 呈現來源片段與頁碼。
+
+### 3.4 跨語言檢索指引（F-08：中文問句 vs 英文文件）
+
+| 決策點 | 定案 |
+|--------|------|
+| Embedding 模型硬性條件 | **必須是多語模型**（中英共享向量空間），跨語言召回主要靠這一層。候選：OpenAI `text-embedding-3-large`（API）／`bge-m3`（Ollama 自建，中文表現佳）；模型選型於 Phase 2 golden set 上實測定案，golden set **必含跨語言題組**（中問英答、英問中答各 ≥15 題） |
+| Rerank 模型硬性條件 | 同樣必須多語（如 `bge-reranker-v2-m3`）；單語 reranker 會把跨語言的正確候選打低分，比沒有 rerank 更糟 |
+| FTS 側的跨語言縮限 | pgroonga 是詞面比對，跨語言天然失效——**hybrid 融合在跨語言配對時自動退化為以 vector 為主**（RRF 天然容忍單路弱訊號，無需特判） |
+| Query 翻譯增強（選配） | KB 設定 `cross_lingual_boost: true` 時，condense 階段順帶產生文件主要語言的翻譯問句、FTS 用翻譯句查（多一次小模型呼叫）；**預設關**，僅在評測證明該 KB 跨語言召回不足時開 |
+| 語言偵測資料流 | 文件語言：ETL 寫入 `doc_meta.language`（08）；查詢語言：condense 階段偵測；兩者不一致即為跨語言配對，記入 rag_trace（觀測跨語言查詢佔比與品質） |
+| 回答語言 | 與文件語言無關，**一律跟隨使用者問句語言**（system prompt 固定規則） |
+
+## 4. Generation：AI Gateway 細節
+
+```mermaid
+flowchart LR
+    REQ[ChatRequest] --> QC[Quota check_and_reserve]
+    QC --> RT[Model Routing<br/>tenant 設定 → 指定模型<br/>失敗鏈: primary → fallback]
+    RT --> PC{Prompt Cache<br/>provider 支援?}
+    PC --> AD[Provider Adapter<br/>統一 ChatRequest/Delta 格式]
+    AD --> P1[OpenAI] & P2[Azure] & P3[Ollama] & P4[OpenRouter] & P5[Gemini]
+    AD --> MET[Metering<br/>usage event → usage_logs<br/>quota commit]
+```
+
+- **統一介面**：`stream_chat(ChatRequest) -> AsyncIterator[Delta]`；Delta 型別統一（text / tool_call / usage / done / error），上層不知道 provider 差異（含 tool calling 格式轉換）。
+- **Timeout**：連線 10s、首 token（TTFT）30s、整體 120s；逾時觸發 fallback 鏈下一個模型（僅在尚未輸出任何 token 時才切換，避免拼接不一致）。
+- **Retry**：只 retry 可安全重試的錯誤（429/5xx 且未開始輸出），退避 1s/2s/4s，最多 3 次。
+- **Prompt Caching**：system + RAG context 放前綴、對話輪次放後綴，最大化 provider 端 cache 命中；Ollama 等無 cache 的 provider 自動忽略。
+- **中斷處理（G-06）**：client 斷線 → server 繼續收完該回應（成本已發生）→ 完整持久化 → resume buffer（Redis, TTL 5min）供 `Last-Event-ID` 續傳。
+
+## 5. Memory Pipeline
+
+```
+每輪結束（async）：
+  message_count 視窗內（近 10 輪）→ 不動作
+  超出視窗 → Celery: 將最舊溢出輪次併入 summary（增量摘要，非全量重算）
+             → memory_snapshots 新增 version
+查詢時（sync）：
+  build_context = summary(最新 snapshot) + 視窗內原文輪次
+  超出 memory budget → 縮視窗（10→6→4）→ 仍超 → 觸發即時摘要（罕見路徑）
+```
+
+取捨：增量摘要有語意漂移風險（摘要的摘要），以「摘要永遠附帶原始輪次範圍標記＋定期全量重算（每 50 輪）」緩解；不採 vector-based memory（對話內檢索），YAGNI——長對話場景出現後再加（介面已預留 `MemoryStrategy` Protocol）。
+
+## 6. 快取策略總表
+
+| 快取 | Key | 存放 | TTL | 失效 |
+|------|-----|------|-----|------|
+| Embedding cache | sha256(text)+model | Redis + DB | 永久 | 模型下架清理 |
+| Query embedding | sha256(query)+model | Redis | 1h | — |
+| 檢索結果 cache | hash(query+kb_ver+params) | Redis | 5min | KB 內容變更 bump knowledge_version 自然失效 |
+| Rerank cache | hash(query+chunk_ids) | Redis | 5min | 同上 |
+| Prompt 渲染 cache | prompt_key+version+vars_hash | Redis | 10min | 版本切換自然失效 |
+| Provider prompt cache | provider 端 | — | provider 定 | 前綴穩定性設計保命中 |
+| Tool cache | tool+params_hash | Redis | tool policy | 各工具宣告 |
+
+設計原則：所有 cache key 帶版本成分（knowledge_version / prompt_version），**用版本遞增取代主動清除**，避免快取一致性地獄。
+
+## 7. 可觀測性（Pipeline 專屬）
+
+每次查詢產生 `rag_trace`（request_id 關聯）：各階段耗時、候選數、rerank 分數分布、壓縮率、最終 token 分配、citation 驗證結果。除錯與評測共用同一 trace，Dashboard 指標見 12_NFR。
+
+## 8. 優點 / 缺點 / 適用情境
+
+**優點**：讀寫路徑分離，各自可獨立調校與擴容；全鏈路版本快照使回答可回溯可重現；降級鏈讓增強步驟故障不影響基本可用性；快取以版本失效，一致性簡單。
+**缺點**：完整鏈路（condense+檢索+rerank+生成）延遲組成多，需要 TTFT 預算管理（11_NFR 有 latency budget 表）；rerank 依賴外部模型，是讀路徑最脆弱環節（已有跳過降級）。
+**適用情境**：知識密集、要求引用可信的企業問答。純閒聊路徑（無 KB）自動跳過檢索段，不付 RAG 成本。
+
+## 9. Architecture Review
+
+1. **SOLID**：符合——每階段單一職責、以 Protocol 替換。
+2. **DDD**：RAG/Embedding/Memory 職責歸屬與 04 模組一致。
+3. **Clean Architecture**：pipeline 不依賴 FastAPI/Celery，兩者皆可驅動。
+4. **DRY**：embedding 與 query embedding 共用 Gateway 與 cache。
+5. **KISS**：Hybrid 用 RRF 而非可調權重融合（少一個要調的參數）。
+6. **YAGNI**：GraphRAG、multi-hop、semantic cache、vector memory 皆列為未來項不先建。
+7. **可測試性**：每階段可用固定輸入單測；評測資料集對整條 Query pipeline 做迴歸（Evaluation 模組）。
+8. **Technical Debt**：condense 與摘要用小模型，其品質影響全鏈路——列入評測固定監控項。
+9. **Over Engineering 檢查**：compression 預設 extractive 而非 LLM 摘要，是刻意的簡化。
+10. **更好方案**：無結構性更優；參數層（top_k、threshold）需以評測資料集實測調校，文件值為起始點。
+
+---
+
+*下一步：確認本文件後，進行 Stage 6（07_Tool架構.md、08_ETL_Pipeline.md）。*
