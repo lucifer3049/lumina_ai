@@ -1,0 +1,3 @@
+; client → PgBouncer 的認證清單。
+; spike 專用固定憑證，非機密；Phase 0 改由 secret 管理注入（CLAUDE.md 鐵則 9）。
+"lumina" "lumina_spike_pw"

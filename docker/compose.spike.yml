@@ -1,0 +1,70 @@
+# ADR-001 橋接驗證 spike —— 基礎設施
+#
+# 只含驗證 ADR-001 所需的元件：PostgreSQL + PgBouncer（transaction mode）。
+# pgvector / pgroonga / Redis / MinIO 於 Phase 0 全量時補——本 spike 不碰向量、
+# 快取與物件儲存，加進來只會拖慢起動並汙染量測。
+#
+# 埠位：PG 對外映 **15432**（本機 5432 已被 Windows 原生 PostgreSQL 佔用，不動它）。
+# 應用端一律連 PgBouncer(**16432**)，不直連 PG——`CONN_MAX_AGE` 的驗證前提就是
+# 「前面有連線池」，直連等於測錯東西。
+# 例外：pytest 直連 15432，因為建立/刪除 test database 無法經過 PgBouncer
+# （transaction mode 綁定固定 dbname）。見 config/settings/test.py。
+
+name: lumina-spike
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lumina
+      POSTGRES_PASSWORD: lumina_spike_pw   # spike 專用固定值，非機密；Phase 0 走 .env
+      POSTGRES_DB: lumina
+      # C collation：與 05 §5.5 的決策一致
+      POSTGRES_INITDB_ARGS: "--lc-collate=C --lc-ctype=C.UTF-8"
+    command:
+      - postgres
+      - -c
+      - max_connections=200          # 05 §5.5：PgBouncer max_client_conn 對應值
+      - -c
+      - shared_buffers=512MB         # spike 用；正式值見 05 §5.5（2GB）
+    ports:
+      - "15432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 註：role 層級的 statement_timeout 不在這裡設。原本掛了
+    # /docker-entrypoint-initdb.d 的 SQL，但那只在資料卷首次初始化時執行，
+    # 等於讓同一個值在 SQL、Makefile、settings 三處各存一份卻只有一處會生效。
+    # 現在統一由 `make db-timeouts` 套用（冪等，`make up` 會自動帶，新舊卷皆適用）。
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lumina -d lumina"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  pgbouncer:
+    # 釘版：上一輪用 latest，image 會漂，量測就不可複現。
+    image: edoburu/pgbouncer:v1.23.1-p3
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # 不用 image 的自動生成設定（會走 auth_query，PG16 下必失敗）——
+    # 原因寫在 docker/pgbouncer/pgbouncer.ini 開頭。
+    volumes:
+      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    ports:
+      - "16432:5432"
+    healthcheck:
+      # 刻意用 psql 真的跑一條查詢，而不是 pg_isready。
+      # pg_isready 只確認「有人在聽」——認證壞掉時它照樣回報 healthy，
+      # 於是 compose 說服務就緒、應用端卻連不上，錯誤指向完全錯的地方。
+      # 這裡的 healthy 定義是「經過 PgBouncer 能查得到資料」。
+      test:
+        - CMD-SHELL
+        - PGPASSWORD=lumina_spike_pw psql -h 127.0.0.1 -p 5432 -U lumina -d lumina -tAc 'select 1' > /dev/null
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  pgdata:

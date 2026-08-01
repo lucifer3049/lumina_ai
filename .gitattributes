@@ -1,0 +1,16 @@
+# 全 repo 統一 LF：開發在 WSL/Linux、執行在容器，CRLF 會弄壞 shell script 與 entrypoint
+* text=auto eol=lf
+
+*.sh      text eol=lf
+Makefile  text eol=lf
+*.py      text eol=lf
+*.toml    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.ini     text eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary

@@ -1,0 +1,114 @@
+[project]
+name = "lumina-backend"
+version = "0.1.0"
+description = "AI Knowledge Platform — backend (FastAPI + Django ORM)"
+requires-python = ">=3.12,<3.13"
+
+# ADR-007：Django 5.x LTS 線、Pydantic v2、psycopg3
+dependencies = [
+    "django>=5.2,<5.3",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "psycopg[binary]>=3.2",
+    "asgiref>=3.8",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-django>=4.9",
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "django-stubs[compatible-mypy]>=5.1",
+]
+loadtest = [
+    "locust>=2.32",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+# ──────────────────────────────────────────────────────────────
+# Lint / Format（CLAUDE.md：ruff lint+format）
+# ──────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["."]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "ASYNC",     # flake8-async：async 路徑上的阻塞呼叫
+    "S",         # bandit
+    "C4", "SIM", # comprehension / simplify
+    "TID",       # tidy-imports
+    "RUF",
+]
+ignore = [
+    "S101",     # assert：測試需要
+    # 中文註解與 docstring 必然使用全形標點（，。「」），RUF00{1,2,3} 會把它們
+    # 全部報成「易混淆字元」。專案語言是中文，這三條規則對本 repo 沒有意義。
+    "RUF001",   # 字串中的易混淆字元
+    "RUF002",   # docstring 中的易混淆字元
+    "RUF003",   # 註解中的易混淆字元
+    # Django 的 Meta.indexes / constraints 等宣告本來就是 class 層級 mutable，
+    # 加 ClassVar 會與 Django 的 metaclass 慣例打架。
+    "RUF012",   # class 層級 mutable 屬性需標 ClassVar
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106"]        # 測試用假憑證
+# Django 產生的 migration 不手改，行長交給 Django（mypy 亦已 exclude）
+"**/migrations/*.py" = ["E501"]
+
+# ──────────────────────────────────────────────────────────────
+# Type check（CLAUDE.md：mypy strict）
+# ──────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["mypy_django_plugin.main"]
+exclude = ["migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["apps.*.migrations.*"]
+ignore_errors = true
+
+# locust 沒有型別 stub，且其 decorator/base class 全是 Any。
+# 壓測腳本不是產品程式碼，這裡放寬到「能跑就好」，不讓它拖著 strict 不放。
+[[tool.mypy.overrides]]
+module = ["locust.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["loadtest.*"]
+disallow_untyped_decorators = false
+disallow_subclassing_any = false
+
+[tool.django-stubs]
+django_settings_module = "config.settings.test"
+
+# ──────────────────────────────────────────────────────────────
+# Test
+# ──────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: 需要較長時間（連線洩漏等重複性測試）",
+]

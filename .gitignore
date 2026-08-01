@@ -1,0 +1,43 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── 環境與 secrets（.env.example 才進版控）──
+.env
+.env.*
+!.env.example
+
+# ── Node / 前端（Phase 0 後段）──
+node_modules/
+dist/
+.vite/
+
+# ── 壓測與 spike 產出 ──
+loadtest/results/
+# 由 make seed 產生，可重現，不進版控
+# （註：以下這行原本把說明寫在同一行。.gitignore 的 # 只有在**行首**才是註解，
+#   寫在後面會變成 pattern 的一部分，於是這條規則從來沒有生效過。）
+backend/loadtest/tenants.json
+*.log
+
+# ── 不進版控：個人設定與專案設計文件 ──
+# ⚠️ 以下內容**沒有任何版本保護**，誤刪即永久遺失，請自行備份。
+#    程式碼註解大量引用 docs/plan（如「09 §1.3」「11 §4.1」），clone 下來的人
+#    （包含換機器的自己）看不到被引用的來源——這是刻意的取捨，不是遺漏。
+CLAUDE.md
+docs/
+新文字文件.txt
+
+# ── 編輯器 / OS ──
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
