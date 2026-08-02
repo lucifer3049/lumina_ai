@@ -1,0 +1,114 @@
+# PR pipeline（12 §6.1）。前端 lint/vitest、OpenAPI diff、query-count 斷言
+# 於對應工作包建立後接入；nightly（E2E / 評測 / Locust / pip-audit / SBOM）另立 workflow。
+#
+# **每個階段都呼叫 make target，不在此重寫指令**：指令一旦有兩份（Makefile 一份、
+# workflow 一份）就會漂，而漂掉的症狀是「本機過、CI 不過」或反過來——兩邊都失去可信度。
+# tests/unit/test_ci_pipeline.py 會沿著 workflow → Makefile 這條鏈檢查各階段確實存在。
+#
+# 基礎設施同理只有一份：`make up` 起的是 docker/compose.yml，不用 GitHub Actions 的
+# `services:` 另建一套（那份的 image tag、Redis AOF 參數、MinIO bucket 初始化都得再寫一次）。
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  # 同一分支的新 push 取消舊的跑；PR 連續推進時不佔滿 runner
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 與 backend/Dockerfile 的 ARG UV_VERSION 對齊
+  UV_VERSION: "0.11.32"
+  TRIVY_IMAGE: "aquasec/trivy:0.65.0"
+  BACKEND_IMAGE: "lumina/backend:ci"
+
+jobs:
+  quality:
+    name: lint / type / 分層 / unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # 第三方 action 一律釘 commit SHA：tag 可被移動，等於把 CI 的執行內容
+      # 交給外部帳號決定（供應鏈風險）。此為 actions/checkout v5。
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: 安裝 uv
+        run: pip install --no-cache-dir "uv==${UV_VERSION}"
+
+      # 用樣板建 .env：順帶證明 .env.example 是完整的——少一個變數，
+      # 下面的 make 目標就會失敗（tests/integration/test_infra_config.py 是靜態版，
+      # 這裡是實際執行版）。值是佔位字串，CI 環境用完即棄。
+      - name: 準備環境變數
+        run: cp .env.example .env
+
+      - name: ruff + mypy + import-linter
+        run: make lint
+
+      - name: unit 測試（無外部依賴）
+        run: make test-unit
+
+  tests:
+    name: integration / api（真實 PG + Redis + MinIO）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: 安裝 uv
+        run: pip install --no-cache-dir "uv==${UV_VERSION}"
+
+      - name: 準備環境變數
+        run: cp .env.example .env
+
+      # 與本機完全相同的一鍵流程：起服務 → statement_timeout → bucket 初始化
+      - name: 起基礎設施
+        run: make up
+
+      - name: Django migration（含 pgvector / pgroonga extension）
+        run: make migrate
+
+      - name: integration 測試
+        run: make test-integration
+
+      - name: api 測試
+        run: make test-api
+
+      # 服務層的失敗（healthcheck、認證、初始化）從 pytest 的錯誤訊息常看不出來
+      - name: 失敗時輸出服務日誌
+        if: failure()
+        run: docker compose --env-file .env -f docker/compose.yml logs --tail 200
+
+  image:
+    name: build image + trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: 建置 backend image
+        run: make image BACKEND_IMAGE="${BACKEND_IMAGE}"
+
+      # ADR-007 要求 non-root。這條不是形式檢查：base image 換版或 Dockerfile
+      # 重排時 USER 很容易被漏掉，而容器以 root 跑起來不會有任何症狀。
+      - name: 驗證 image 以非 root 執行
+        run: |
+          uid="$(docker run --rm "${BACKEND_IMAGE}" id -u)"
+          echo "image uid = ${uid}"
+          test "${uid}" != "0"
+
+      # 有修補版本的 HIGH/CRITICAL 直接擋 PR；--ignore-unfixed 避免被無解的
+      # base image CVE 永久卡住（那類問題靠升 base image 解，不靠擋 PR）。
+      - name: trivy 弱點掃描
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            "${TRIVY_IMAGE}" image \
+              --exit-code 1 \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --no-progress \
+              "${BACKEND_IMAGE}"

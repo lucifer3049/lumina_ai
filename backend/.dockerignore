@@ -1,0 +1,17 @@
+# 本機 venv 絕不進 build context：裡面是宿主平台的 binary，
+# 複製進 image 後會與 builder 自己建的 .venv 打架，且體積巨大。
+.venv/
+venv/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 壓測產出（可重現）
+loadtest/results/
+loadtest/tenants.json
+*.log

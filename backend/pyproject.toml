@@ -28,6 +28,10 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "django-stubs[compatible-mypy]>=5.1",
+    # 分層依賴的強制工具（02 §3）；contracts 見本檔 [tool.importlinter]
+    "import-linter>=2.0",
+    # tests/unit/test_ci_pipeline.py 解析 workflow YAML 用
+    "pyyaml>=6.0",
 ]
 loadtest = [
     "locust>=2.32",
@@ -122,3 +126,48 @@ addopts = "-ra --strict-markers"
 markers = [
     "slow: 需要較長時間（連線洩漏等重複性測試）",
 ]
+
+# ──────────────────────────────────────────────────────────────
+# 分層依賴強制（02 §3 / CLAUDE.md 鐵則 2）
+#
+# import-linter 只驗證「已宣告的規則沒被違反」——新增一層卻忘了寫 contract 時它會
+# 安靜全綠。因此另有 tests/unit/test_layer_contracts.py 檢查「每個存在的層級套件
+# 都被某條 contract 提到」，兩者搭配才擋得住腐化。
+#
+# ai / rag / etl / tool / common / worker 的 contract 於各自套件建立時補上
+# （目錄一出現，上述測試就會要求）。
+#
+# 每條 contract 都帶 `allow_indirect_imports = true`：規則管的是**直接 import**。
+# api → services → repositories 是正常的架構路徑，預設設定會把這種間接鏈也算成
+# 違反，等於禁止分層本身。
+# ──────────────────────────────────────────────────────────────
+[tool.importlinter]
+root_packages = ["api", "apps", "core", "repositories", "services"]
+
+[[tool.importlinter.contracts]]
+name = "api 不碰 ORM（Controller 三行原則）"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["api"]
+forbidden_modules = ["repositories", "apps"]
+
+[[tool.importlinter.contracts]]
+name = "services 只能經 repository 取資料"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["services"]
+forbidden_modules = ["apps"]
+
+[[tool.importlinter.contracts]]
+name = "core 是最內圈，不知道任何外層"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["core"]
+forbidden_modules = ["api", "services", "repositories", "apps"]
+
+[[tool.importlinter.contracts]]
+name = "repositories 不反向依賴上層"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["repositories"]
+forbidden_modules = ["api", "services"]

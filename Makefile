@@ -16,6 +16,8 @@ BACKEND := backend
 # --env-file ../.env：路徑相對於 --directory 之後的工作目錄，故指向 repo 根的 .env。
 UV      := uv --directory $(BACKEND)
 UV_RUN  := $(UV) run --env-file ../.env
+# CI 與本機用同一個 tag，重現問題時不必猜對方建的是哪個 image
+BACKEND_IMAGE ?= lumina/backend:dev
 
 # 壓測旋鈕（B 組）：改這幾個值重跑，比較 rps
 CONN_MAX_AGE        ?= 300
@@ -34,8 +36,8 @@ APPLY_DB_TIMEOUTS = $(COMPOSE) exec -T postgres sh -c \
 	 -c "ALTER ROLE \"$$POSTGRES_USER\" SET statement_timeout = '"'"'$(DB_STATEMENT_TIMEOUT)'"'"'"'
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs psql db-timeouts minio-init migrate seed api test verify-infra lint \
-        loadtest loadtest-headless clean
+.PHONY: help up down logs psql db-timeouts minio-init migrate seed api test test-unit \
+        test-integration test-api verify-infra image lint loadtest loadtest-headless clean
 
 help: ## 顯示可用指令
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -75,16 +77,30 @@ api: ## 啟動 API（壓測目標）；可覆寫 CONN_MAX_AGE / ORM_THREADPOOL_S
 test: ## 執行全部測試（需先 make up）
 	$(UV_RUN) pytest
 
+# 分層目標對應 02 §2 的測試四層；CI 分階段跑（unit 最快，壞掉時最好定位）。
+test-unit: ## 只跑 unit（無外部依賴，不需 make up）
+	$(UV_RUN) pytest tests/unit
+
+test-integration: ## 只跑 integration（Repository / 基礎設施；需先 make up）
+	$(UV_RUN) pytest tests/integration
+
+test-api: ## 只跑 api（權限矩陣、錯誤格式、SSE 協定；需先 make up）
+	$(UV_RUN) pytest tests/api
+
 verify-infra: ## 只跑基礎設施驗收（extension / collation / Redis / MinIO / secrets）
 	$(UV_RUN) pytest tests/integration
+
+image: ## 建置 backend image（與 CI 同一份 Dockerfile）
+	docker build -t $(BACKEND_IMAGE) $(BACKEND)
 
 # mypy 走 UV_RUN（帶 --env-file）：django-stubs 外掛會實際載入 config.settings.test，
 # 而 settings 對 DJANGO_SECRET_KEY / DB_PASSWORD 是 Fail Fast 的。缺環境變數時 mypy 只會
 # 回報「Error constructing plugin instance of NewSemanalDjangoPlugin」，指不到真正原因。
-lint: ## ruff + mypy（import-linter 於 CI 工作包接入）
+lint: ## ruff + mypy + import-linter（分層依賴強制）
 	$(UV) run ruff check .
 	$(UV) run ruff format --check .
 	$(UV_RUN) mypy .
+	$(UV) run lint-imports
 
 loadtest: ## B 組壓測：開 web UI（http://localhost:8089）
 	$(UV) run --group loadtest locust -f loadtest/locustfile.py --host http://localhost:8000

@@ -97,7 +97,9 @@ pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `1637
 | `make up` / `make down` | 啟動 / 停止基礎設施（`down` 保留資料卷） |
 | `make migrate` | 執行 Django migration |
 | `make test` | pytest（需先 `make up`） |
+| `make test-unit` / `test-integration` / `test-api` | 分層跑測試（CI 依此分階段） |
 | `make verify-infra` | 只跑基礎設施驗收（`tests/integration`） |
+| `make image` | 建置 backend image（與 CI 同一份 Dockerfile） |
 | `make minio-init` | 重建 bucket / 版本化 / 關閉匿名存取（冪等） |
 | `make db-timeouts` | 重新套用 role 層級 `statement_timeout`（冪等） |
 | `make lint` | ruff check + ruff format --check + mypy strict |
@@ -114,11 +116,26 @@ pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `1637
 
 - **LLM 測試一律用 MockProvider，禁止呼叫真實 API。**
 - factory_boy 對映每個 Model；tenant fixture 一律雙租戶（隔離測試內建）。
-- 現有 spike 測試：tenant scope 隔離、Django↔FastAPI 橋接、DB timeout、API 錯誤格式。
+- `tests/unit/` 不需任何外部依賴（含 migration 漂移、分層 contract、CI 設定的驗收）；
+  `tests/integration/` 與 `tests/api/` 需先 `make up`。
 
 ```bash
 make test
 ```
+
+## CI
+
+`.github/workflows/ci.yml`（PR 與 main 的 push 觸發）分三個 job：
+
+| Job | 內容 |
+|-----|------|
+| quality | `make lint`（ruff + mypy strict + import-linter）、`make test-unit` |
+| tests | `make up` 起真實 PG/Redis/MinIO → `make migrate` → integration + api 測試 |
+| image | `make image` → 驗證以非 root 執行 → trivy 掃描（HIGH/CRITICAL 有修補版即擋 PR） |
+
+兩條紀律：CI 各階段只呼叫 make target（指令不寫第二份），基礎設施只用
+`docker/compose.yml`（不使用 GitHub Actions 的 `services:`）。`tests/unit/test_ci_pipeline.py`
+會沿 workflow → Makefile 這條鏈驗證階段沒被拿掉。
 
 ## 程式碼規範
 
