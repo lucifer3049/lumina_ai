@@ -49,10 +49,24 @@ def _existing_layer_packages() -> set[str]:
     }
 
 
+# import-linter 各 contract 型別中，值為「模組名」的欄位。
+# 只掃這些欄位，不掃 contract 的全部值——否則 `name`（人寫的說明文字）與
+# `type`（"forbidden"）也會被當成模組名，某條 contract 恰好取名為 "worker" 時，
+# 就會讓 worker 套件在毫無約束的情況下通過覆蓋率檢查。
+MODULE_FIELDS = (
+    "source_modules",
+    "forbidden_modules",
+    "layers",
+    "containers",
+    "modules",
+)
+
+
 def _modules_mentioned(contract: dict[str, Any]) -> set[str]:
-    """contract 中提到的所有頂層模組名（不分 source / forbidden / layers）。"""
+    """contract 的模組欄位中提到的所有頂層模組名。"""
     mentioned: set[str] = set()
-    for value in contract.values():
+    for field in MODULE_FIELDS:
+        value = contract.get(field)
         if isinstance(value, str):
             candidates = [value]
         elif isinstance(value, list):

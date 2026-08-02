@@ -11,6 +11,12 @@ __pycache__/
 .coverage
 htmlcov/
 
+# secrets 絕不進 build context（鐵則 9）。應用讀的是 repo 根的 .env，
+# 但 pytest 與 manage.py 都在 backend/ 下執行，這裡出現一份 .env 很合理也很危險——
+# Dockerfile 是 `COPY . .`，它會被烘進 image 層，推上 registry 後人人可讀且毫無症狀。
+.env
+.env.*
+
 # 壓測產出（可重現）
 loadtest/results/
 loadtest/tenants.json

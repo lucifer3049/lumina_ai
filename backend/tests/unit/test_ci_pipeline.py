@@ -41,9 +41,13 @@ REQUIRED_COMMANDS = {
     "unit 測試": "pytest tests/unit",
     "integration 測試": "pytest tests/integration",
     "api 測試": "pytest tests/api",
-    "migration check": "migrate",
+    "lockfile 檢查": "lock --check",
     "build image": "docker build",
 }
+
+# 12 §6.1 的 migration check 由這支測試實作（不需連 DB，故不在 CI 另立步驟）。
+# 這裡只確認它還在——否則 CI 少了 model/migration 漂移的守門而不會有任何徵兆。
+MIGRATION_DRIFT_TEST = Path(__file__).with_name("test_migrations_in_sync.py")
 
 _SHA_PINNED = re.compile(r"^[\w.-]+/[\w.-]+(?:/[\w.-]+)*@[0-9a-f]{40}$")
 _MAKE_INVOCATION = re.compile(r"\bmake\s+([a-z][\w-]*)")
@@ -69,8 +73,18 @@ def _steps(workflow: dict[str, Any]) -> list[dict[str, Any]]:
     return [step for job in _jobs(workflow).values() for step in job.get("steps", [])]
 
 
+def _strip_shell_comments(text: str) -> str:
+    """去掉 `#` 之後的內容。
+
+    否則把某個階段註解掉（`# make test-api`）之後，下面的斷言仍會通過——
+    而這正是本檔要擋的情況。代價是 shell 字串裡的 `#` 也會被切掉，
+    在只做「指令是否存在」的比對上無影響。
+    """
+    return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+
+
 def _workflow_run_text(workflow: dict[str, Any]) -> str:
-    return "\n".join(str(step.get("run", "")) for step in _steps(workflow))
+    return _strip_shell_comments("\n".join(str(step.get("run", "")) for step in _steps(workflow)))
 
 
 def _invoked_make_targets(workflow: dict[str, Any]) -> set[str]:
@@ -90,7 +104,7 @@ def _makefile_recipes(targets: set[str]) -> str:
         match = re.match(r"^([a-z][\w-]*)\s*:(?!=)", line)
         current = match.group(1) if match else None
 
-    return "\n".join(recipes)
+    return _strip_shell_comments("\n".join(recipes))
 
 
 def _effective_commands(workflow: dict[str, Any]) -> str:
@@ -111,6 +125,17 @@ def test_required_stage_present(workflow: dict[str, Any], label: str, command: s
     """12 §6.1 的 PR 階段逐項存在（沿 workflow → Makefile 追）。"""
     assert command in _effective_commands(workflow), (
         f"CI 缺少階段「{label}」——workflow 呼叫的 make target 之中沒有任何一個會執行 `{command}`"
+    )
+
+
+def test_migration_drift_check_still_exists(workflow: dict[str, Any]) -> None:
+    """12 §6.1 的 migration check：CI 跑 unit 層，而漂移檢查就是其中一支測試。
+
+    只斷言「CI 有跑 unit」不夠——那支測試被刪掉時 unit 層照樣全綠。
+    """
+    assert "pytest tests/unit" in _effective_commands(workflow), "CI 未執行 unit 層"
+    assert MIGRATION_DRIFT_TEST.exists(), (
+        f"{MIGRATION_DRIFT_TEST.name} 不見了——model/migration 漂移將無人把關（05 §5.6）"
     )
 
 

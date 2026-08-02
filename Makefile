@@ -37,7 +37,8 @@ APPLY_DB_TIMEOUTS = $(COMPOSE) exec -T postgres sh -c \
 
 .DEFAULT_GOAL := help
 .PHONY: help up down logs psql db-timeouts minio-init migrate seed api test test-unit \
-        test-integration test-api verify-infra image lint loadtest loadtest-headless clean
+        test-integration test-api verify-infra image lock-check lint loadtest \
+        loadtest-headless clean
 
 help: ## 顯示可用指令
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -93,10 +94,16 @@ verify-infra: ## 只跑基礎設施驗收（extension / collation / Redis / MinI
 image: ## 建置 backend image（與 CI 同一份 Dockerfile）
 	docker build -t $(BACKEND_IMAGE) $(BACKEND)
 
+lock-check: ## 驗證 uv.lock 與 pyproject 一致（唯讀，不會改動 lock）
+	$(UV) lock --check
+
 # mypy 走 UV_RUN（帶 --env-file）：django-stubs 外掛會實際載入 config.settings.test，
 # 而 settings 對 DJANGO_SECRET_KEY / DB_PASSWORD 是 Fail Fast 的。缺環境變數時 mypy 只會
 # 回報「Error constructing plugin instance of NewSemanalDjangoPlugin」，指不到真正原因。
-lint: ## ruff + mypy + import-linter（分層依賴強制）
+# lock-check 是 lint 的前置：`uv run` 在鎖檔過期時會**自動重新解析並就地更新
+# uv.lock**，於是「改了 pyproject 卻忘了提交新 lock」的 PR 會全綠通過，
+# 之後才在 Dockerfile 的 `uv sync --frozen` 爆掉（或 image 與 CI 裝到不同版本）。
+lint: lock-check ## uv.lock 檢查 + ruff + mypy + import-linter（分層依賴強制）
 	$(UV) run ruff check .
 	$(UV) run ruff format --check .
 	$(UV_RUN) mypy .

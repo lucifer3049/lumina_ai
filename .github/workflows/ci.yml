@@ -16,9 +16,18 @@ on:
     branches: [main]
 
 concurrency:
-  # 同一分支的新 push 取消舊的跑；PR 連續推進時不佔滿 runner
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # 只在 PR 上取消舊的跑（連續推進時不佔滿 runner）。main 的 push 不可取消——
+  # 連續合併兩個 PR 時，前一個合併 commit 的 CI 會被後者取消，
+  # 那個 commit 就在從未被完整驗證的情況下留在 main 上（trunk-based 下 main 應隨時可發布）。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# GITHUB_TOKEN 最小權限：CI 只需要讀原始碼。
+# 舊有 repo 的預設是 read/write，而本管線會執行大量第三方程式碼
+# （uv 解析安裝依賴、pytest、docker build、trivy）——任一被投毒的依賴都能拿到
+# 具寫入權的 token 去推碼或發布。這與下方「釘 action commit SHA」是同一件事的兩面。
+permissions:
+  contents: read
 
 env:
   # 與 backend/Dockerfile 的 ARG UV_VERSION 對齊
@@ -34,7 +43,11 @@ jobs:
     steps:
       # 第三方 action 一律釘 commit SHA：tag 可被移動，等於把 CI 的執行內容
       # 交給外部帳號決定（供應鏈風險）。此為 actions/checkout v5。
+      # persist-credentials: false —— 預設會把 token 寫進 .git/config 留給後續步驟，
+      # 而後續步驟跑的是第三方程式碼；本管線不需要推回任何東西。
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
 
       - name: 安裝 uv
         run: pip install --no-cache-dir "uv==${UV_VERSION}"
@@ -44,6 +57,11 @@ jobs:
       # 這裡是實際執行版）。值是佔位字串，CI 環境用完即棄。
       - name: 準備環境變數
         run: cp .env.example .env
+
+      # 獨立一步而非藏在 lint 裡：鎖檔過期是「改了依賴卻沒提交 lock」的訊號，
+      # 值得在 CI 上一眼看到是哪一步紅的。
+      - name: uv.lock 與 pyproject 一致
+        run: make lock-check
 
       - name: ruff + mypy + import-linter
         run: make lint
@@ -57,6 +75,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
 
       - name: 安裝 uv
         run: pip install --no-cache-dir "uv==${UV_VERSION}"
@@ -88,6 +108,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
 
       - name: 建置 backend image
         run: make image BACKEND_IMAGE="${BACKEND_IMAGE}"

@@ -58,18 +58,10 @@ services:
     volumes:
       - ./pgbouncer:/tpl:ro
       - pgbouncer-config:/out
-    command:
-      - sh
-      - -c
-      - |
-        set -eu
-        for f in pgbouncer.ini userlist.txt; do
-          sed -e "s|__DB_USER__|$$DB_USER|g" \
-              -e "s|__DB_PASSWORD__|$$DB_PASSWORD|g" \
-              -e "s|__DB_NAME__|$$DB_NAME|g" \
-              "/tpl/$$f.tpl" > "/out/$$f"
-        done
-        chmod 644 /out/pgbouncer.ini /out/userlist.txt
+    # 渲染邏輯放在 render.sh：密碼不可經 sed/gsub 這類會解讀替換運算式的取代
+    # （含 & 的密碼會被靜默改寫、含 | 的直接讓容器掛掉）。理由與作法見該檔案，
+    # tests/unit/test_pgbouncer_render.py 以特殊字元密碼驗證。
+    command: ["sh", "/tpl/render.sh"]
 
   pgbouncer:
     # 釘版：latest 會漂，壓測結果就不可複現。
