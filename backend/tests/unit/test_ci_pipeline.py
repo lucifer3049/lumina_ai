@@ -42,6 +42,9 @@ REQUIRED_COMMANDS = {
     "integration 測試": "pytest tests/integration",
     "api 測試": "pytest tests/api",
     "lockfile 檢查": "lock --check",
+    # migration 實際套用在真實 PG 上（extension 也在這一步建）。與下方的
+    # 漂移檢查是兩件事：漂移檢查是純記憶體比對，不會發現 migration 本身跑不起來。
+    "migration 套用": "manage.py migrate",
     "build image": "docker build",
 }
 
@@ -74,13 +77,36 @@ def _steps(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _strip_shell_comments(text: str) -> str:
-    """去掉 `#` 之後的內容。
+    """去掉註解，但保留引號內的 `#`。
 
-    否則把某個階段註解掉（`# make test-api`）之後，下面的斷言仍會通過——
-    而這正是本檔要擋的情況。代價是 shell 字串裡的 `#` 也會被切掉，
-    在只做「指令是否存在」的比對上無影響。
+    要去掉註解，是因為把某個階段註解掉（`# make test-api`）之後下面的斷言仍會通過——
+    而這正是本檔要擋的情況。
+
+    要保留引號內的 `#`，是因為單純 `line.split("#", 1)` 會把 `grep -hE '...## ...'`
+    這種 shell 字串腰斬。目前沒有必要指令落在被腰斬的區段裡，但那是巧合而非保證：
+    哪天有人寫出 `sh -c 'pytest tests/api  # 補跑'`，該階段就會被判定為不存在，
+    而錯誤訊息會說「CI 缺少階段」，指向完全錯誤的方向。
+
+    引號狀態逐行重置（不跨行追蹤）：shell 字串跨行雖然合法但這裡沒有，
+    而一個落單的引號若能吃掉後面所有行，漏檢的範圍會大到無法預期。
     """
-    return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    stripped: list[str] = []
+
+    for line in text.splitlines():
+        quote: str | None = None
+        cut = len(line)
+        for index, char in enumerate(line):
+            if quote is not None:
+                if char == quote:
+                    quote = None
+            elif char in "'\"":
+                quote = char
+            elif char == "#":
+                cut = index
+                break
+        stripped.append(line[:cut])
+
+    return "\n".join(stripped)
 
 
 def _workflow_run_text(workflow: dict[str, Any]) -> str:

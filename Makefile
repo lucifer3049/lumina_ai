@@ -46,6 +46,11 @@ help: ## 顯示可用指令
 
 up: ## 一鍵起環境（PG+pgvector+pgroonga / PgBouncer / Redis / MinIO）並完成初始化
 	$(COMPOSE) up -d --wait
+	# PgBouncer 只在啟動時讀設定檔，而那份檔案是每次 make up 由 pgbouncer-config
+	# 重新渲染的。既有容器不會自己重載——改了 .env 的密碼之後，pgbouncer 仍以舊憑證
+	# 運作，而且**完全沒有症狀**：healthcheck 也用舊密碼，照樣綠。
+	# （實際踩過：改了 admin_users 之後，應用帳號仍然能下 PAUSE。）
+	$(COMPOSE) up -d --wait --force-recreate pgbouncer
 	$(APPLY_DB_TIMEOUTS)
 	$(COMPOSE) run --rm minio-init
 
@@ -88,8 +93,11 @@ test-integration: ## 只跑 integration（Repository / 基礎設施；需先 mak
 test-api: ## 只跑 api（權限矩陣、錯誤格式、SSE 協定；需先 make up）
 	$(UV_RUN) pytest tests/api
 
+# 只挑 test_infra_*.py（-k 會比對 module 名，不用 shell glob——glob 會在 repo 根展開，
+# 而 pytest 的工作目錄是 backend/，路徑對不上）。與 test-integration 的差別在此：
+# 那個目標跑整個 integration 層（含 bridge / tenant scope / db timeout）。
 verify-infra: ## 只跑基礎設施驗收（extension / collation / Redis / MinIO / secrets）
-	$(UV_RUN) pytest tests/integration
+	$(UV_RUN) pytest tests/integration -k infra
 
 image: ## 建置 backend image（與 CI 同一份 Dockerfile）
 	docker build -t $(BACKEND_IMAGE) $(BACKEND)
@@ -103,6 +111,8 @@ lock-check: ## 驗證 uv.lock 與 pyproject 一致（唯讀，不會改動 lock�
 # lock-check 是 lint 的前置：`uv run` 在鎖檔過期時會**自動重新解析並就地更新
 # uv.lock**，於是「改了 pyproject 卻忘了提交新 lock」的 PR 會全綠通過，
 # 之後才在 Dockerfile 的 `uv sync --frozen` 爆掉（或 image 與 CI 裝到不同版本）。
+# CI 另外獨立跑一次 lock-check，**這個重複是刻意的**：CI 那步是為了讓紅燈一眼看出
+# 是鎖檔問題，這個前置則是讓本機 `make lint` 同樣受保護。拿掉任一邊都會少一半覆蓋。
 lint: lock-check ## uv.lock 檢查 + ruff + mypy + import-linter（分層依賴強制）
 	$(UV) run ruff check .
 	$(UV) run ruff format --check .

@@ -7,6 +7,7 @@ Phase 0 全量之後這個豁免結束——本檔就是那條界線的自動化
 - `.env.example` 必須涵蓋 compose 用到的每一個變數，否則新人 clone 後照著
   `.env.example` 複製仍然起不來（Phase 0 DoD：新人 30 分鐘內能跑起環境）。
 - `.env` 必須被 gitignore（真值不進版控）。
+- compose 的 port 一律綁 127.0.0.1（否則四個服務帶著開發密碼對區域網路開放）。
 - 應用端缺變數要**啟動即失敗**，不能悄悄用開發預設值連上正式環境（Fail Fast）。
 
 這幾條沒有自動化就必然腐化：加一個服務、順手貼一個密碼，review 未必看得到。
@@ -19,6 +20,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from config.settings.app_settings import AppSettings
@@ -60,6 +62,29 @@ def test_compose_contains_no_literal_secrets() -> None:
     matches = _LITERAL_SECRET_PATTERN.findall(COMPOSE_FILE.read_text(encoding="utf-8"))
 
     assert not matches, f"compose.yml 出現疑似明文機密：{matches}——一律改用 ${{VAR}}"
+
+
+def test_published_ports_are_bound_to_loopback() -> None:
+    """port 一律綁 127.0.0.1（`"16432:5432"` 的簡寫等同 0.0.0.0）。
+
+    未綁的話 PG / PgBouncer / Redis / MinIO 會帶著 `change-me-locally` 這種開發密碼
+    對整個區域網路開放——接上公用 wifi 時同網段任何人可讀寫全部租戶資料，
+    而本機不會有任何徵兆。用 YAML 解析而非字串比對：`ports:` 之外的清單項
+    （healthcheck、command）長得很像，正則會誤判。
+    """
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    exposed: list[str] = []
+
+    for name, service in compose.get("services", {}).items():
+        for mapping in service.get("ports", []):
+            # long syntax（dict）目前未使用；出現時一併要求顯式 host_ip
+            if isinstance(mapping, dict):
+                if mapping.get("host_ip") != "127.0.0.1":
+                    exposed.append(f"{name}: {mapping}")
+            elif not str(mapping).startswith("127.0.0.1:"):
+                exposed.append(f"{name}: {mapping}")
+
+    assert not exposed, f"以下 port 未綁 127.0.0.1，等同對區域網路開放：{exposed}"
 
 
 def test_dotenv_is_gitignored() -> None:

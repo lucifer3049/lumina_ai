@@ -6,6 +6,12 @@
 #
 # 應用服務（api / worker / beat）不在本檔——backend image 與 CI 屬下一個工作包。
 #
+# ⚠️ **本檔僅供開發環境**，不得原樣沿用到 production。已知的殘留項只剩一條：
+#   - userlist.txt 是明文密碼且 chmod 644（PgBouncer 對 client 做 SCRAM 驗證需要），
+#     放在共享 volume 內等於全域可讀。production 需改由 secret manager 掛載。
+# （另兩項——PgBouncer admin 帳號、MinIO service account——已在本檔處理，
+#   見 pgbouncer-config 與 minio-init 兩個服務。）
+#
 # 埠位（全部走 .env，預設值見 .env.example）：
 #   postgres  ${DB_DIRECT_PORT}=15432 → 5432   僅 pytest 直連（建 test database 用）
 #   pgbouncer ${DB_PORT}=16432        → 5432   應用一律經此（05 §5.5 transaction pooling）
@@ -13,6 +19,11 @@
 #   minio     ${S3_PORT}=19000        → 9000（API）、${S3_CONSOLE_PORT}=19001 → 9001（console）
 # 非預設埠是刻意的：本機已跑原生 PostgreSQL/Redis 時，撞埠會連上錯的服務，
 # 症狀是「連得上但資料不對」，比連不上難查得多。
+#
+# **一律綁 127.0.0.1**：`"16432:5432"` 的簡寫等同 0.0.0.0，四個服務會對整個區域網路開放，
+# 而開發憑證是 .env.example 的 change-me-locally。接上公用 wifi 時同網段任何人可直接
+# 讀寫全部租戶資料，且本機完全不會有徵兆。所有既有流程（pytest、psql、locust）都走
+# localhost，加這個前綴不影響任何一項。tests/integration/test_infra_config.py 驗證。
 
 name: lumina
 
@@ -34,7 +45,7 @@ services:
       - -c
       - shared_buffers=${POSTGRES_SHARED_BUFFERS}
     ports:
-      - "${DB_DIRECT_PORT}:5432"
+      - "127.0.0.1:${DB_DIRECT_PORT}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     # 註：role 層級的 statement_timeout 與 extension 都不在這裡建。
@@ -55,6 +66,9 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
+      # 連線池的運維帳號，與應用帳號分開（見 pgbouncer.ini.tpl 的 admin_users）
+      PGBOUNCER_ADMIN_USER: ${PGBOUNCER_ADMIN_USER}
+      PGBOUNCER_ADMIN_PASSWORD: ${PGBOUNCER_ADMIN_PASSWORD}
     volumes:
       - ./pgbouncer:/tpl:ro
       - pgbouncer-config:/out
@@ -77,7 +91,7 @@ services:
     volumes:
       - pgbouncer-config:/etc/pgbouncer:ro
     ports:
-      - "${DB_PORT}:5432"
+      - "127.0.0.1:${DB_PORT}:5432"
     healthcheck:
       # 刻意跑一條真查詢而不是 pg_isready：pg_isready 只確認「有人在聽」，
       # 認證壞掉時它照樣回報 healthy，於是 compose 說就緒、應用卻連不上。
@@ -102,7 +116,7 @@ services:
       - --requirepass
       - ${REDIS_PASSWORD}
     ports:
-      - "${REDIS_PORT}:6379"
+      - "127.0.0.1:${REDIS_PORT}:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -114,12 +128,14 @@ services:
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: ["server", "/data", "--console-address", ":9001"]
+    # root 憑證只有本服務與 minio-init 看得到。應用拿的是 minio-init 建立的
+    # service account（S3_ACCESS_KEY / S3_SECRET_KEY），權限限於單一 bucket 的物件讀寫。
     environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
-      - "${S3_PORT}:9000"
-      - "${S3_CONSOLE_PORT}:9001"
+      - "127.0.0.1:${S3_PORT}:9000"
+      - "127.0.0.1:${S3_CONSOLE_PORT}:9001"
     volumes:
       - miniodata:/data
     healthcheck:
@@ -128,8 +144,12 @@ services:
       timeout: 5s
       retries: 30
 
-  # bucket 初始化：冪等，由 `make up` 觸發（profile 保護，避免 compose up 時
-  # 一次性容器的 exited 狀態干擾 `--wait`）。
+  # bucket 初始化 ＋ 應用 service account：冪等，由 `make up` 觸發（profile 保護，
+  # 避免 compose up 時一次性容器的 exited 狀態干擾 `--wait`）。
+  #
+  # 本服務是唯一持有 root 憑證的地方。三個 mc admin 指令在釘住的 mc 版本上
+  # 重複執行皆為成功（已實測），所以不加防呆分支——那種分支會讓「policy 改了但
+  # 沒重新套用」變成無症狀的失敗。
   minio-init:
     image: minio/mc:RELEASE.2024-11-05T11-29-45Z
     profiles: ["init"]
@@ -137,6 +157,8 @@ services:
       minio:
         condition: service_healthy
     environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
       S3_BUCKET: ${S3_BUCKET}
@@ -145,7 +167,7 @@ services:
       - -c
       - |
         set -eu
-        mc alias set lumina http://minio:9000 "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"
+        mc alias set lumina http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
         mc mb --ignore-existing "lumina/$$S3_BUCKET"
         # 12 §4.1 備份策略要求版本化 bucket。事後才開等於前面所有物件沒保護，
         # 屬「不可後補」項，所以放在建立流程裡而不是上線前檢查表。
@@ -153,6 +175,46 @@ services:
         # 租戶文件不得公開讀取（鐵則 4）。預設就是 none，這裡顯式設定
         # 是為了讓「有人手動開過 public」在下次 make up 時被改回來。
         mc anonymous set none "lumina/$$S3_BUCKET"
+
+        # ── 應用的 service account（最小權限）──────────────────────
+        # 應用只需要在這一個 bucket 上讀寫物件。給 root 的話它還能刪掉整個 bucket、
+        # 關掉 versioning——而 versioning 正是上面那條備份策略的地基。
+        # 兩者都不會有任何症狀，只有 tests/integration/test_infra_object_storage.py
+        # 的反向測試看得出來。
+        #
+        # 刻意**不給**的權限（每一條都對應一條驗收測試）：
+        #   s3:DeleteBucket          刪 bucket 會連版本歷史一起消失
+        #   s3:PutBucketVersioning   關掉之後所有刪除變成不可回復
+        #   s3:CreateBucket          能自建 bucket 等於能建一個不受上述保護的空間
+        #   s3:PutBucketPolicy       否則應用可自行把 bucket 開成 public（鐵則 4）
+        # heredoc 不加引號，讓容器內的 shell 直接展開 bucket 名。minio/mc image 沒有
+        # sed 也沒有 awk（已實測），所以「佔位符＋事後取代」那條路走不通。
+        #
+        # ⚠️ 這整段 entrypoint 會先經過 compose 的變數插值，$ 一律要寫成 $$。
+        # 連**註解裡**都算——本檔就曾因為註解中出現一個 S3 policy 變數的寫法而讓
+        # compose 整段插值失敗（`invalid interpolation format`），症狀是腳本原封不動
+        # 被當成文字丟給 shell。要在 JSON 裡放 policy 變數時，$ 同樣寫 $$。
+        cat > /tmp/app-policy.json <<POLICY
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+              "Resource": ["arn:aws:s3:::$${S3_BUCKET}/*"]
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetBucketVersioning"],
+              "Resource": ["arn:aws:s3:::$${S3_BUCKET}"]
+            }
+          ]
+        }
+        POLICY
+
+        mc admin policy create lumina lumina-app /tmp/app-policy.json
+        mc admin user add lumina "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"
+        mc admin policy attach lumina lumina-app --user "$$S3_ACCESS_KEY"
 
 volumes:
   pgdata:

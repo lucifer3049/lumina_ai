@@ -60,6 +60,9 @@ jobs:
 
       # 獨立一步而非藏在 lint 裡：鎖檔過期是「改了依賴卻沒提交 lock」的訊號，
       # 值得在 CI 上一眼看到是哪一步紅的。
+      # `make lint` 也把 lock-check 列為前置，於是這裡會跑兩次——**刻意保留**：
+      # 少了這一步，CI 的紅燈會落在「ruff + mypy」那格，訊息指向錯誤的方向；
+      # 少了 lint 的前置，本機 `make lint` 就完全不檢查鎖檔。跑第二次是唯讀且近乎免費。
       - name: uv.lock 與 pyproject 一致
         run: make lock-check
 
@@ -124,6 +127,13 @@ jobs:
 
       # 有修補版本的 HIGH/CRITICAL 直接擋 PR；--ignore-unfixed 避免被無解的
       # base image CVE 永久卡住（那類問題靠升 base image 解，不靠擋 PR）。
+      # ⚠️ --ignore-unfixed 只在「有定期升 base image 的流程」下才成立，
+      # 否則等同永久忽略；該流程屬 nightly workflow（12 §6.1），尚未建立。
+      #
+      # ⚠️ 掛載 docker.sock = 把 daemon 的完整控制權交給 trivy 容器。在 GitHub 託管的
+      # runner 上，PR 程式碼本來就在同一台拋棄式機器上執行，未擴大攻擊面；
+      # **改用 self-hosted runner 時這條必須同時改掉**（`trivy image --input <tar>`
+      # 搭配 `docker save`），否則它會從無害變成跨 job 的逃逸路徑。
       - name: trivy 弱點掃描
         run: |
           docker run --rm \

@@ -21,7 +21,17 @@ unix_socket_dir =
 
 auth_type = scram-sha-256
 auth_file = /etc/pgbouncer/userlist.txt
-admin_users = __DB_USER__
+
+; 管理與觀測分開：
+;   admin_users 能下 PAUSE / KILL / RELOAD / SHUTDOWN——足以讓全站連不上。
+;   stats_users 只能跑 SHOW（POOLS / STATS / CLIENTS…），純唯讀。
+; 應用帳號的密碼會出現在每個部署單元的環境變數裡，流通範圍遠大於運維憑證，
+; 所以它只拿 stats。壓測看 `SHOW POOLS` 因此完全不受影響（見下方指令）。
+;
+; __PGBOUNCER_ADMIN_USER__ 不需要是 PostgreSQL 的 role：管理主控台認的是
+; userlist.txt，連的是虛擬的 `pgbouncer` database，不會轉往 PG。
+admin_users = __PGBOUNCER_ADMIN_USER__
+stats_users = __DB_USER__
 
 ; 05 §5.5：transaction pooling
 pool_mode = transaction
@@ -46,6 +56,7 @@ ignore_startup_parameters = extra_float_digits,options
 query_wait_timeout = 10
 
 ; 壓測要看 pool 狀態時：psql -p 16432 -U lumina pgbouncer -c "SHOW POOLS;"
+; （SHOW 走 stats_users，用應用帳號即可；PAUSE / KILL 這類要改用 admin_users 的帳號）
 log_connections = 0
 log_disconnections = 0
 stats_period = 60
