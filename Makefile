@@ -76,9 +76,15 @@ migrate: ## 執行 Django migration（含 pgvector / pgroonga extension）
 seed: ## 產生壓測資料（預設 50 租戶 × 2000 筆）
 	$(UV_RUN) python manage.py seed_spike
 
+# --log-config：uvicorn 預設會給自己的 logger 掛 handler 且 propagate=False，
+# 於是啟動訊息與錯誤是純文字、應用日誌是 JSON——Loki 那頭只解析得了一半。
+# 這份設定把 handler 清空並改為 propagate，讓它們流進 config/logging.py 的 root handler。
+# --no-access-log：存取日誌由 api/main.py 的 middleware 產生（帶 request_id/tenant_id），
+# 留著 uvicorn 那份只會得到兩筆內容不同的記錄。
 api: ## 啟動 API（壓測目標）；可覆寫 CONN_MAX_AGE / ORM_THREADPOOL_SIZE / UVICORN_WORKERS
 	CONN_MAX_AGE=$(CONN_MAX_AGE) ORM_THREADPOOL_SIZE=$(ORM_THREADPOOL_SIZE) \
-	$(UV_RUN) uvicorn config.asgi:app --host 0.0.0.0 --port 8000 --workers $(UVICORN_WORKERS)
+	$(UV_RUN) uvicorn config.asgi:app --host 0.0.0.0 --port 8000 --workers $(UVICORN_WORKERS) \
+		--log-config config/uvicorn_logging.json --no-access-log
 
 test: ## 執行全部測試（需先 make up）
 	$(UV_RUN) pytest

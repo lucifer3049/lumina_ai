@@ -95,5 +95,10 @@ TIME_ZONE = "UTC"
 # 本常數是「應該是多少」的宣告，供 tests/test_db_timeouts.py 與 DB 實際值比對。
 DB_STATEMENT_TIMEOUT = os.environ.get("DB_STATEMENT_TIMEOUT", "5s")
 
+# 日誌設定不走 Django（12 §1.1）：唯一入口是 config/logging.py 的 configure_logging()，
+# 由 config/asgi.py 與 manage.py 呼叫。留著 Django 的 dictConfig 會有兩套設定互相覆蓋，
+# 而「哪一份生效」得靠讀原始碼推理——真正的症狀是 log 格式時好時壞。
+LOGGING_CONFIG = None
+
 # ADR-001 threadpool 大小；預設 2×CPU（11 §1.3 起步值）
 ORM_THREADPOOL_SIZE = int(os.environ.get("ORM_THREADPOOL_SIZE", str((os.cpu_count() or 4) * 2)))

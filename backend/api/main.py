@@ -25,7 +25,7 @@ Django connection 是 thread-local，從 event loop 執行緒呼叫關不到 thr
 
 from __future__ import annotations
 
-import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
@@ -37,10 +37,13 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.schemas.problem import PROBLEM_JSON, ProblemDetail
+from config.logging import bind_request_context, clear_request_context, get_logger
 from core.exceptions import DomainError, ErrorCode
-from core.tenant import reset_current_tenant_id, set_current_tenant_id
+from core.tenant import reset_current_tenant_id, set_current_tenant_id, try_get_current_tenant_id
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+ACCESS_EVENT = "http_request"
 
 REQUEST_ID_HEADER = "X-Request-Id"
 _INTERNAL_ERROR_DETAIL = "內部錯誤，請提供 request_id 供追查"
@@ -165,6 +168,53 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Lumina spike (ADR-001 bridge)", version="0.1.0")
 
     @app.middleware("http")
+    async def access_log_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """存取日誌，並把 request_id / tenant_id 綁進 log context（12 §1.1）。
+
+        **必須是最內層**（= 最先宣告，Starlette 以 ``insert(0)`` 堆疊），理由是
+        ``tenant_middleware`` 設定的租戶 contextvar 只往內層傳：BaseHTTPMiddleware
+        的 ``call_next`` 在**另一個 task** 裡跑下游，下游對 contextvars 的改動
+        回不到上層。掛在外層的話 tenant_id 永遠是 None，而且不會有任何錯誤。
+
+        ``path`` 刻意不含 query string：``?token=...`` 這類值會整串落地成明文
+        （鐵則 9）。需要查參數時走 audit log，那裡有欄位級的遮罩政策。
+        """
+        request_id = request_id_of(request)
+        tenant_id = try_get_current_tenant_id()
+        bind_request_context(
+            request_id=request_id,
+            tenant_id=str(tenant_id) if tenant_id else None,
+        )
+        started = time.perf_counter()
+
+        def emit(status: int) -> None:
+            logger.info(
+                ACCESS_EVENT,
+                method=request.method,
+                path=request.url.path,
+                status=status,
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            )
+
+        # log 必須在 finally 的 clear 之前發生，否則事件上不會有 request_id
+        # ——那正是這條 middleware 存在的理由。
+        try:
+            response = await call_next(request)
+        except Exception:
+            # 例外會往上冒到 ServerErrorMiddleware 才變成 500 回應，那已在本層之外。
+            # 不在這裡補一筆就會出現「有錯誤 log、卻沒有對應的存取記錄」的缺口。
+            emit(500)
+            raise
+        else:
+            emit(response.status_code)
+            return response
+        finally:
+            clear_request_context()
+
+    @app.middleware("http")
     async def tenant_middleware(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
@@ -231,10 +281,12 @@ def create_app() -> FastAPI:
             # 那是 client 不該看到的實作結構——只寫進 log，回應收斂成通用敘述。
             # code 本身不遮蔽：它屬於公開字典，遮掉只會讓 client 無從分辨。
             logger.error(
-                "%s | request_id=%s details=%s",
-                exc,
-                request_id,
-                exc.details,
+                "domain_error",
+                code=str(exc.code),
+                status=status,
+                message=exc.message,
+                details=exc.details,
+                request_id=request_id,
                 exc_info=exc,
             )
             return problem_response(
@@ -243,6 +295,17 @@ def create_app() -> FastAPI:
                 detail=_INTERNAL_ERROR_DETAIL,
                 request_id=request_id,
             )
+
+        # 4xx 記 WARNING 而非 ERROR（12 §1.1 等級紀律：ERROR = 需人看）。
+        # 把使用者打錯 id 記成 ERROR 會讓告警噪音淹掉真正需要人看的事件；
+        # 記 INFO 又和存取日誌重複、失去「單一租戶 403 暴增」這類可統計的訊號。
+        logger.warning(
+            "domain_error",
+            code=str(exc.code),
+            status=status,
+            message=exc.message,
+            request_id=request_id,
+        )
 
         # 4xx 是使用者可修正的錯誤，details 屬於契約的一部分，照實回傳。
         # 註：VALIDATION_FAILED 走 errors[]（見 validation_error_handler），
@@ -312,7 +375,9 @@ def create_app() -> FastAPI:
         ASGI server 記錄；測試端因此要用 ``raise_app_exceptions=False``。
         """
         request_id = request_id_of(request)
-        logger.error("未預期例外 | request_id=%s", request_id, exc_info=exc)
+        # request_id 明確傳值而非依賴 contextvars：本處理器由 ServerErrorMiddleware
+        # 呼叫，位置在所有 user middleware **之外**，綁在內層的 context 到不了這裡。
+        logger.error("unhandled_exception", request_id=request_id, exc_info=exc)
         return problem_response(
             status=500,
             code=str(ErrorCode.INTERNAL_ERROR),

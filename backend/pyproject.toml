@@ -14,6 +14,9 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "asgiref>=3.8",
     "redis>=5.2",
+    # 12 §1.1 指名的日誌方案：contextvars 綁定（request_id 跟著整條呼叫鏈）、
+    # processor pipeline（遮罩掛在此）、JSON renderer。設定集中於 config/logging.py。
+    "structlog>=24.4",
     # 物件儲存走 S3 API 而非 minio SDK：11 §4.2 的演進路徑是
     # 「MinIO → 雲物件儲存（S3 相容，零程式改動）」，用 S3 client 才真的走得通。
     "boto3>=1.35",

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 from pydantic import SecretStr
@@ -46,6 +47,11 @@ class AppSettings(BaseSettings):
     redis_db: int = 0
     redis_password: SecretStr
     redis_timeout_seconds: float = 0.5  # 11 §4.1
+
+    # ── 日誌（12 §1.1；設定生效點在 config/logging.py）──
+    # 容器一律 json（stdout → Loki）；本機開發可設 console 看得舒服一點。
+    log_level: str = "INFO"
+    log_format: Literal["json", "console"] = "json"
 
     # ── 物件儲存（MinIO，S3 相容）──
     s3_host: str = "127.0.0.1"

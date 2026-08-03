@@ -25,5 +25,10 @@ django.setup()
 
 # ── 分隔線：以下 import 會連帶載入 model，必須排在 django.setup() 之後 ──
 from api.main import create_app  # noqa: E402
+from config.logging import configure_logging  # noqa: E402
+
+# settings.LOGGING_CONFIG = None，所以日誌完全由這行決定。漏掉它的症狀不是沒有
+# log，而是退回 stdlib 預設：純文字、無 request_id、WARNING 以下全部消失。
+configure_logging()
 
 app = create_app()

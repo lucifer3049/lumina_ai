@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "loggers": {
+    "uvicorn": { "handlers": [], "propagate": true, "level": "INFO" },
+    "uvicorn.error": { "handlers": [], "propagate": true, "level": "INFO" },
+    "uvicorn.access": { "handlers": [], "propagate": true, "level": "INFO" }
+  }
+}
