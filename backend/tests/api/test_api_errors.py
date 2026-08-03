@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Iterator
 
 import httpx
 import pytest
@@ -19,6 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.main import REQUEST_ID_HEADER, create_app
 from api.schemas.problem import PROBLEM_JSON
+from config.settings.app_settings import get_app_settings
 from core.exceptions import ErrorCode, NotFoundError
 from tests.conftest import TENANT_A
 
@@ -54,8 +55,31 @@ def _client(app: FastAPI) -> httpx.AsyncClient:
 
 @pytest.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
-    async with _client(create_app()) as c:
+    # 本檔驗的錯誤路徑多以 /spike 端點與 X-Tenant-Id 為載具，故顯式開啟 spike 面。
+    async with _client(create_app(enable_spike_endpoints=True)) as c:
         yield c
+
+
+@pytest.fixture
+def spike_flag_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[str | None], None]]:
+    """設定 ``ENABLE_SPIKE_ENDPOINTS``（``None`` = 移除）並清掉 lru_cache。
+
+    快取**前後都要清**：不清前面會讀到別條測試建好的 settings（本測試等於沒設值），
+    不清後面則把測試用的旗標留給後續測試。兩種殘留都不會有錯誤訊息，只會讓
+    「預設關閉」這個斷言在某些執行順序下變成假綠燈。
+    """
+
+    def _set(value: str | None) -> None:
+        if value is None:
+            monkeypatch.delenv("ENABLE_SPIKE_ENDPOINTS", raising=False)
+        else:
+            monkeypatch.setenv("ENABLE_SPIKE_ENDPOINTS", value)
+        get_app_settings.cache_clear()
+
+    try:
+        yield _set
+    finally:
+        get_app_settings.cache_clear()
 
 
 class TestTenantHeaderValidation:
@@ -89,6 +113,86 @@ class TestTenantHeaderValidation:
 
         assert response.status_code == 200
         assert {row["title"] for row in response.json()} == {"a-0", "a-1", "a-2"}
+
+
+class TestSpikeSurfaceOffByDefault:
+    """回歸：spike 面預設關閉——未認證跨租戶讀取的攻擊面不存在（ADR-002）。
+
+    修復前：``tenant_middleware`` 無條件掛載且從 client 的 ``X-Tenant-Id`` 取租戶，
+    ``/api/v1/spike/items`` 也無條件掛載，任何人帶一個租戶 id 即可讀該租戶資料。
+    修復後：``enable_spike_endpoints`` 預設 False（正式部署），兩者都不掛。
+    """
+
+    async def test_spike_route_absent_when_disabled(self) -> None:
+        """旗標關閉時 /spike 路由不存在——回 404，而非吐資料。"""
+        async with _client(create_app(enable_spike_endpoints=False)) as client:
+            response = await client.get(
+                "/api/v1/spike/items",
+                headers={"X-Tenant-Id": str(TENANT_A)},
+            )
+
+        # 路由未掛載 → 走 HTTPException handler 的 404，X-Tenant-Id 完全不生效。
+        assert_problem_details(response, status=404, code=ErrorCode.RESOURCE_NOT_FOUND)
+
+    async def test_client_tenant_header_not_bound_when_disabled(self) -> None:
+        """旗標關閉時 tenant_middleware 未註冊：client 自報的租戶不進 context。
+
+        掛一條會回讀 TenantContext 的臨時路由；帶了 X-Tenant-Id 也應看不到租戶，
+        證明未認證的 client 無法設定租戶 context。
+        """
+        from core.tenant import try_get_current_tenant_id
+
+        app = create_app(enable_spike_endpoints=False)
+
+        @app.get("/api/v1/_tenant_probe")
+        async def _probe() -> dict[str, str | None]:
+            tid = try_get_current_tenant_id()
+            return {"tenant_id": str(tid) if tid else None}
+
+        async with _client(app) as client:
+            response = await client.get(
+                "/api/v1/_tenant_probe",
+                headers={"X-Tenant-Id": str(TENANT_A)},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["tenant_id"] is None, "未認證的 X-Tenant-Id 不該進 context"
+
+    async def test_disabled_when_env_flag_absent(
+        self, spike_flag_env: Callable[[str | None], None]
+    ) -> None:
+        """不帶參數的 ``create_app()``——即 config/asgi.py 的正式路徑——預設關閉。
+
+        上面兩條驗的是**參數**，這條驗的是**部署實際走的那條路**：環境變數沒設時
+        整條鏈（env → ``AppSettings.enable_spike_endpoints`` → ``create_app``）必須
+        收斂到關閉。刻意用 delenv 而非設 ``"false"``：設值會連 ``AppSettings`` 的
+        欄位預設一起繞過，欄位被改成 ``True`` 時不會有紅燈。
+        """
+        spike_flag_env(None)
+
+        async with _client(create_app()) as client:
+            response = await client.get(
+                "/api/v1/spike/items",
+                headers={"X-Tenant-Id": str(TENANT_A)},
+            )
+
+        assert_problem_details(response, status=404, code=ErrorCode.RESOURCE_NOT_FOUND)
+
+    async def test_env_flag_is_actually_read(
+        self, spike_flag_env: Callable[[str | None], None]
+    ) -> None:
+        """反向：env 設 true 時 spike 面掛得起來。
+
+        變異驗證用——少了這條，把 ``create_app`` 的 settings 分支寫死成 False
+        也會全綠，上一條就只是在測一個永遠成立的常數。
+
+        用 OpenAPI ``paths`` 而不是走訪 ``app.routes``：include_router 進來的路由在
+        ``app.routes`` 裡是一個 ``_IncludedRouter`` 包裝物件，沒有 ``path`` 屬性，
+        照 path 比對會恆為 False（= 假紅燈）。也不打 HTTP，那條會連 DB。
+        """
+        spike_flag_env("true")
+
+        assert "/api/v1/spike/items" in create_app().openapi()["paths"]
 
 
 class TestDomainErrorMapping:
@@ -228,7 +332,7 @@ class TestOpenApiDeclaresErrorContract:
     """A3：錯誤契約必須進 OpenAPI，否則前端 codegen 產不出錯誤型別（09 §4、鐵則 10）。"""
 
     def test_every_operation_declares_problem_responses(self) -> None:
-        schema = create_app().openapi()
+        schema = create_app(enable_spike_endpoints=True).openapi()
         problem_ref = "#/components/schemas/ProblemDetail"
 
         for path, operations in schema["paths"].items():
@@ -243,7 +347,7 @@ class TestOpenApiDeclaresErrorContract:
                     assert content[PROBLEM_JSON]["schema"]["$ref"] == problem_ref
 
     def test_problem_schema_carries_contract_fields(self) -> None:
-        schema = create_app().openapi()
+        schema = create_app(enable_spike_endpoints=True).openapi()
         properties = schema["components"]["schemas"]["ProblemDetail"]["properties"]
 
         # RFC 9457 §3.1 成員 + 09 §1.3 的 extension member

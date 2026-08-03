@@ -38,6 +38,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.schemas.problem import PROBLEM_JSON, ProblemDetail
 from config.logging import bind_request_context, clear_request_context, get_logger
+from config.settings.app_settings import get_app_settings
 from core.exceptions import DomainError, ErrorCode
 from core.tenant import reset_current_tenant_id, set_current_tenant_id, try_get_current_tenant_id
 
@@ -164,7 +165,26 @@ def request_id_of(request: Request) -> str:
     return request_id
 
 
-def create_app() -> FastAPI:
+def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
+    """建立 FastAPI app。
+
+    ``enable_spike_endpoints`` 控制 **spike 專用面**——``tenant_middleware``
+    （從 ``X-Tenant-Id`` 標頭取租戶）與 ``/spike`` 路由。兩者無認證且違反
+    ADR-002，未開啟時完全不掛：未認證的跨租戶讀取面不存在。
+
+    ``None``（預設）時讀 ``AppSettings.enable_spike_endpoints``（環境變數
+    ``ENABLE_SPIKE_ENDPOINTS``，預設 ``False``），所以正式部署一律關閉；
+    壓測與測試以顯式參數開啟。錯誤處理（exception handler）不受此旗標影響，
+    一律掛上——那段會活到正式版。
+
+    「省略即讀設定、給值就完全不碰設定」與 ``config/logging.py`` 的
+    ``configure_logging`` 是同一個約定，刻意保持一致：``AppSettings`` 有必填憑證
+    （Redis / S3），只要測試顯式傳值就不需要 ``.env``。**測試請一律顯式傳參**，
+    裸呼叫會讓結果隨本機環境變數而變（跑壓測時旗標正是開的）。
+    """
+    if enable_spike_endpoints is None:
+        enable_spike_endpoints = get_app_settings().enable_spike_endpoints
+
     app = FastAPI(title="Lumina spike (ADR-001 bridge)", version="0.1.0")
 
     @app.middleware("http")
@@ -214,7 +234,6 @@ def create_app() -> FastAPI:
         finally:
             clear_request_context()
 
-    @app.middleware("http")
     async def tenant_middleware(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
@@ -224,8 +243,10 @@ def create_app() -> FastAPI:
         ⚠️ **SPIKE ONLY —— 這違反 ADR-002「不接受 client 自報 tenant_id」。**
 
         正式實作必須從已驗證的 JWT claim 取得租戶，client 送什麼都不採信。
-        此處這樣寫的唯一理由是壓測需要在無認證的情況下切換租戶；Phase 0 接上
-        認證後**必須刪除**這段，並改由 api/middleware/tenant_context.py 承擔。
+        此處這樣寫的唯一理由是壓測需要在無認證的情況下切換租戶；因此本
+        middleware **只在 ``enable_spike_endpoints`` 開啟時才註冊**（見 create_app
+        簽名），未開啟時客戶端自報的租戶標頭完全不生效。Phase 0 接上認證後
+        **必須刪除**這段，並改由 api/middleware/tenant_context.py 承擔。
         """
         raw = request.headers.get("X-Tenant-Id")
         token = None
@@ -246,6 +267,12 @@ def create_app() -> FastAPI:
         finally:
             if token is not None:
                 reset_current_tenant_id(token)
+
+    # 註冊順序有意義（見下方 request_id_middleware）：tenant 必須排在 access_log
+    # 之後、request_id 之前註冊。旗標關閉時整條略過——這正是修掉未認證跨租戶
+    # 讀取的關鍵：沒有這條 middleware，client 的 X-Tenant-Id 不再能污染租戶 context。
+    if enable_spike_endpoints:
+        app.middleware("http")(tenant_middleware)
 
     @app.middleware("http")
     async def request_id_middleware(
@@ -385,8 +412,11 @@ def create_app() -> FastAPI:
             request_id=request_id,
         )
 
-    from api.v1.spike import router as spike_router
+    # spike 路由（未認證、暴露租戶資料）只在旗標開啟時掛載；關閉時 app 只剩
+    # 錯誤處理骨架，沒有任何可讀取租戶資料的端點。
+    if enable_spike_endpoints:
+        from api.v1.spike import router as spike_router
 
-    app.include_router(spike_router, prefix="/api/v1")
+        app.include_router(spike_router, prefix="/api/v1")
     _install_problem_schema(app)
     return app

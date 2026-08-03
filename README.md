@@ -103,12 +103,18 @@ pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `1637
 | `make minio-init` | 重建 bucket / 版本化 / 關閉匿名存取（冪等） |
 | `make db-timeouts` | 重新套用 role 層級 `statement_timeout`（冪等） |
 | `make lint` | ruff check + ruff format --check + mypy strict |
+| `make api` | 啟動 API（壓測目標，會開啟 spike 面——見下方說明） |
 | `make loadtest` | Locust 壓測（web UI） |
 | `make loadtest-headless` | 無頭跑 60 秒直接吐數字 |
 | `make psql` | 進 psql（直連 PG，繞過 PgBouncer） |
 | `make clean` | 停止並**刪除資料卷**（清空資料庫） |
 
 壓測旋鈕可覆寫：`make api CONN_MAX_AGE=300 ORM_THREADPOOL_SIZE=8 UVICORN_WORKERS=4`。
+
+**`ENABLE_SPIKE_ENDPOINTS`**：`/api/v1/spike/*` 路由與「從 `X-Tenant-Id` 標頭取租戶」的
+middleware 皆掛在此旗標下，**預設關閉**。兩者無認證且違反 ADR-002（見
+`docs/plan/01` ADR-002 的「已知偏離」），只有壓測需要，因此由 `make api` 顯式開啟；
+`.env` 與正式部署一律不要設這個值。Phase 0 接上 JWT 後整組移除。
 
 ## 測試
 

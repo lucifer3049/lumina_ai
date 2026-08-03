@@ -81,7 +81,12 @@ seed: ## 產生壓測資料（預設 50 租戶 × 2000 筆）
 # 這份設定把 handler 清空並改為 propagate，讓它們流進 config/logging.py 的 root handler。
 # --no-access-log：存取日誌由 api/main.py 的 middleware 產生（帶 request_id/tenant_id），
 # 留著 uvicorn 那份只會得到兩筆內容不同的記錄。
-api: ## 啟動 API（壓測目標）；可覆寫 CONN_MAX_AGE / ORM_THREADPOOL_SIZE / UVICORN_WORKERS
+# ENABLE_SPIKE_ENDPOINTS=true：本 target 是**壓測目標**，locustfile 打的
+# /api/v1/spike/* 與 X-Tenant-Id 取租戶都掛在這個旗標下（預設關，見 .env.example）。
+# 不在這裡開，make loadtest 會整片 404——而 locust 只顯示失敗率，看不出是旗標沒開。
+# 這裡用 shell 前綴而非寫進 .env：環境變數優先於 --env-file，容器部署照樣是關的。
+api: ## 啟動 API（壓測目標，會開啟 spike 面）；可覆寫 CONN_MAX_AGE / ORM_THREADPOOL_SIZE / UVICORN_WORKERS
+	ENABLE_SPIKE_ENDPOINTS=true \
 	CONN_MAX_AGE=$(CONN_MAX_AGE) ORM_THREADPOOL_SIZE=$(ORM_THREADPOOL_SIZE) \
 	$(UV_RUN) uvicorn config.asgi:app --host 0.0.0.0 --port 8000 --workers $(UVICORN_WORKERS) \
 		--log-config config/uvicorn_logging.json --no-access-log

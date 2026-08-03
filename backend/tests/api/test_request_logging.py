@@ -49,7 +49,8 @@ def _client(app: FastAPI) -> httpx.AsyncClient:
 async def client(capsys: pytest.CaptureFixture[str]) -> AsyncIterator[httpx.AsyncClient]:
     """在 capsys 生效後才設定 logging——handler 綁的是當下的 sys.stdout。"""
     configure_logging(level="INFO", fmt="json")
-    async with _client(create_app()) as c:
+    # 存取日誌的租戶綁定以 X-Tenant-Id 為輸入，需 spike 的 tenant_middleware。
+    async with _client(create_app(enable_spike_endpoints=True)) as c:
         yield c
 
 
@@ -119,7 +120,9 @@ class TestErrorCorrelation:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         configure_logging(level="INFO", fmt="json")
-        app = create_app()
+        # 顯式關閉：本測試只用自掛的 /boom，不需要 spike 面。裸 create_app() 會改讀
+        # AppSettings，測試結果就隨本機 .env 而變（跑壓測時 .env 可能是開的）。
+        app = create_app(enable_spike_endpoints=False)
 
         @app.get("/boom")
         async def boom() -> None:
@@ -144,7 +147,7 @@ class TestErrorCorrelation:
         把 404 記成 ERROR 會讓告警噪音淹掉真正需要人看的事件。
         """
         configure_logging(level="INFO", fmt="json")
-        app = create_app()
+        app = create_app(enable_spike_endpoints=False)  # 理由同上：只用自掛的 /missing
 
         @app.get("/missing")
         async def missing() -> None:
