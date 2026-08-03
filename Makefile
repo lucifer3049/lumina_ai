@@ -8,6 +8,15 @@
 #   make up → make migrate → make verify-infra
 #   壓測：make seed → make api（另開視窗）→ make loadtest
 
+# ── 環境守門：統一在 WSL2 開發，Windows 側直接拒絕 ────────────────────
+# 同一份 backend/.venv 被 WSL2 與 Windows 交替使用時，uv 每次都會偵測到
+# 「對面平台建的 venv」而整個砍掉重建；在 Windows 檔案鎖下重建常砍到一半失敗，
+# 留下不可用的殘骸（2026-08-03 實際發生）。守門放這裡是因為砍 venv 發生在
+# `uv run` 當下——事後才擋（例如測試裡）venv 已經沒了。
+ifneq ($(shell uname -s),Linux)
+$(error 本專案統一在 WSL2 開發：請在 WSL2 內執行 make。Windows 側執行 uv 會毀掉 backend/.venv)
+endif
+
 # --env-file：compose 與 backend 共用 repo 根的 .env（唯一來源，見 .env.example）
 COMPOSE := docker compose --env-file .env -f docker/compose.yml
 BACKEND := backend
@@ -130,12 +139,18 @@ lint: lock-check ## uv.lock 檢查 + ruff + mypy + import-linter（分層依賴�
 	$(UV_RUN) mypy .
 	$(UV) run lint-imports
 
+# PYTHONUTF8=1：locust 啟動時會自動探測設定檔，其中包含 backend/pyproject.toml
+# （找 [tool.locust] 區段），並以**平台預設編碼**開檔。Windows 繁中環境預設 cp950，
+# 解不了該檔的中文與破折號，locust 會在壓測開始前就死在
+# 「Couldn't parse TOML file: 'cp950' codec can't decode byte 0xe2」——web UI 連開都開不了。
+# UTF-8 模式讓預設編碼變 UTF-8；Linux/WSL2 本來就是 UTF-8，這行在那邊是 no-op。
+LOCUST := PYTHONUTF8=1 $(UV) run --group loadtest locust -f loadtest/locustfile.py
+
 loadtest: ## B 組壓測：開 web UI（http://localhost:8089）
-	$(UV) run --group loadtest locust -f loadtest/locustfile.py --host http://localhost:8000
+	$(LOCUST) --host http://localhost:8000
 
 loadtest-headless: ## B 組壓測：無頭跑 60 秒直接吐數字
-	$(UV) run --group loadtest locust -f loadtest/locustfile.py \
-		--host http://localhost:8000 --headless -u 50 -r 50 -t 60s
+	$(LOCUST) --host http://localhost:8000 --headless -u 50 -r 50 -t 60s
 
 clean: ## 停止並刪除資料卷（會清空資料庫、Redis、MinIO）
 	$(COMPOSE) down -v

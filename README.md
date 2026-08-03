@@ -70,6 +70,11 @@ docs/plan/        架構設計文件 00–15（SAD）
 
 **前置需求**：WSL2 Ubuntu（或 Linux / macOS）、Docker、[uv](https://github.com/astral-sh/uv)、GNU Make。
 
+> ⚠️ **Windows 使用者一律進 WSL2 操作，不要從 Windows 側（PowerShell / Git Bash）執行
+> `make`、`uv`、`pytest`。** 同一份 `backend/.venv` 被兩個平台交替使用時，uv 會偵測到
+> 「對面平台建的 venv」而整個砍掉重建，且在 Windows 檔案鎖下常砍到一半失敗、留下不可用
+> 的殘骸。Makefile 與 pytest conftest 都設有守門，非 Linux 環境會直接拒絕並說明原因。
+
 ```bash
 git clone https://github.com/lucifer3049/lumina_ai.git
 cd lumina_ai
