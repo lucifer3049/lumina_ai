@@ -1,0 +1,19 @@
+# ── subject：type(scope): 一句話，≤ 72 字元，句末不加句號 ────────────
+# type：feat / fix / docs / refactor / test / chore / perf / ci / build
+# ↓ 只寫這一行，寫完務必留下面那行空白行
+
+
+# ── body：這行以下才是內文；上面必須有一行空白，否則整段會被併進 subject ──
+# 寫「為什麼」而不是「改了什麼」（改了什麼看 diff 就有）。
+# 條列用「- 檔案: 理由」；換行自由，git 不會吃掉。
+
+
+# ── footer（選填）────────────────────────────────────────────────
+# BREAKING CHANGE: <說明>
+# Refs: docs/plan/<編號> §<節>
+
+# 用法：`git commit`（會開這個模板）；已設定 commit.template 的話不必加參數。
+# 若要用 -m，subject 與 body 必須拆成兩個 -m，git 才會補上中間的空白行：
+#   git commit -m "fix(api): 標題" -m "內文第一段…"
+# 單一 -m 貼多行文字時換行常被 shell 吃掉，整段會塞進 subject（2026-08-03 發生過）。
+# 以上 # 開頭的行不會進 commit message。

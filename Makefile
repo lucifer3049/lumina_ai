@@ -8,13 +8,18 @@
 #   make up → make migrate → make verify-infra
 #   壓測：make seed → make api（另開視窗）→ make loadtest
 
-# ── 環境守門：統一在 WSL2 開發，Windows 側直接拒絕 ────────────────────
+# ── 環境守門：擋掉 Windows 側執行 ────────────────────────────────────
 # 同一份 backend/.venv 被 WSL2 與 Windows 交替使用時，uv 每次都會偵測到
 # 「對面平台建的 venv」而整個砍掉重建；在 Windows 檔案鎖下重建常砍到一半失敗，
 # 留下不可用的殘骸（2026-08-03 實際發生）。守門放這裡是因為砍 venv 發生在
 # `uv run` 當下——事後才擋（例如測試裡）venv 已經沒了。
-ifneq ($(shell uname -s),Linux)
-$(error 本專案統一在 WSL2 開發：請在 WSL2 內執行 make。Windows 側執行 uv 會毀掉 backend/.venv)
+#
+# 白名單而非「只准 Linux」：問題出在 Windows 的檔案鎖與路徑語意，不在 POSIX
+# 平台之間。macOS（Darwin）與 README 的前置需求一致，照樣放行。
+# uname 不存在時 $(shell) 回空字串 → 不在白名單 → 照樣擋下，這是要的行為。
+UNAME_S := $(shell uname -s)
+ifeq ($(filter Linux Darwin,$(UNAME_S)),)
+$(error 本專案在 Linux / WSL2 / macOS 開發（偵測到：$(UNAME_S)）。從 Windows 側執行 uv 會毀掉 backend/.venv，請進 WSL2)
 endif
 
 # --env-file：compose 與 backend 共用 repo 根的 .env（唯一來源，見 .env.example）
@@ -140,10 +145,15 @@ lint: lock-check ## uv.lock 檢查 + ruff + mypy + import-linter（分層依賴�
 	$(UV) run lint-imports
 
 # PYTHONUTF8=1：locust 啟動時會自動探測設定檔，其中包含 backend/pyproject.toml
-# （找 [tool.locust] 區段），並以**平台預設編碼**開檔。Windows 繁中環境預設 cp950，
-# 解不了該檔的中文與破折號，locust 會在壓測開始前就死在
+# （找 [tool.locust] 區段），並以**該環境的預設編碼**開檔。該檔有中文與破折號，
+# 預設編碼不是 UTF-8 時 locust 會在壓測開始前就死在
 # 「Couldn't parse TOML file: 'cp950' codec can't decode byte 0xe2」——web UI 連開都開不了。
-# UTF-8 模式讓預設編碼變 UTF-8；Linux/WSL2 本來就是 UTF-8，這行在那邊是 no-op。
+#
+# 誠實標註現況：實際咬到人的是 Windows 繁中的 cp950（2026-08-03），而上方的平台
+# 守門已經把 Windows 擋在門外，所以這行**目前是防禦性的，不是活的修復**。
+# 保留而非刪除的理由：locust 也可能被繞過 make 直接以 `uv run locust` 啟動。
+# 實測過 Linux 端不需要它——Ubuntu 24.04 + Python 3.12 即使 LC_ALL=C，
+# 因 PEP 538/540 的 C locale coercion，預設編碼仍是 utf-8（"LANG=C 會炸" 是誤解）。
 LOCUST := PYTHONUTF8=1 $(UV) run --group loadtest locust -f loadtest/locustfile.py
 
 loadtest: ## B 組壓測：開 web UI（http://localhost:8089）
