@@ -21,11 +21,16 @@ from core.tenant import tenant_context
 # **之前**就已把 WSL2 建的 .venv 砍掉重建（跨平台 venv 不相容）——這裡攔不回來，
 # 但能把「為什麼測試環境突然壞掉」講清楚，而不是讓人繼續在 Windows 上開發到
 # venv 變成殘骸（2026-08-03 實際發生）。CI（ubuntu）與 WSL2 都是 linux，不受影響。
+#
+# 訊息刻意寫成**純 ASCII 英文**：Windows 主控台預設是本地 codepage（繁中為
+# cp950），中文訊息在那裡會整段變成亂碼——而這正是唯一會看到這則訊息的平台。
+# 上面的中文註解給讀原始碼的人看，那是在編輯器裡，不受 codepage 影響。
+# （2026-08-03 實測：原本的中文版在 Windows console 呈現為「���M�ײΤ@...」。）
 if sys.platform == "win32":
     raise pytest.UsageError(
-        "本專案統一在 WSL2 開發：請在 WSL2 內執行測試。"
-        "剛才這次 uv 呼叫已在 Windows 側重建了 backend/.venv，"
-        "回 WSL2 後第一次執行會再重建一次（uv sync 即可，無資料損失）。"
+        "This project must be developed inside WSL2; run the tests there, not from Windows. "
+        "The uv call you just made has already rebuilt backend/.venv for Windows. "
+        "Back in WSL2 the first command will rebuild it again (plain `uv sync`, no data loss)."
     )
 
 TENANT_A = uuid.UUID("11111111-1111-5111-8111-111111111111")
