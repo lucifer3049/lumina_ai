@@ -38,6 +38,24 @@ CONN_MAX_AGE        ?= 300
 ORM_THREADPOOL_SIZE ?= 8
 UVICORN_WORKERS     ?= 4
 
+# ── 單機量測的補償措施（11 §1.4 已知偏離）────────────────────────────
+# 本專案為個人開發，無獨立負載產生機。locust 與 API 搶同一批核心時量到的是
+# 兩者競爭的結果——2026-08-05 實測 200 併發下 CPU 尚有 27.5% idle、DB 連線池
+# 零排隊（cl_waiting=0、sv_idle=20）、DB 查詢僅 0.715ms，p95 卻破 1 秒。
+# 綁核心讓兩邊各有專屬 CPU，前後比較才有意義。
+#
+# **這不等於分機量測**：記憶體頻寬、L3、DB 容器仍共用，仍不足以取代 §1.4 的
+# 分機要求。用途是「同一台機器上的可重現基準線」，不是絕對值認證。
+# 核心編號依 nproc 調整；預設假設 6 核（API 4 顆、負載 2 顆）。
+API_CPUS   ?= 0-3
+LOAD_CPUS  ?= 4-5
+# 壓測參數集中在此，基準線才可重現（DoD 值見 13 Phase 0）
+LOAD_USERS ?= 200
+LOAD_RATE  ?= 50
+LOAD_TIME  ?= 60s
+# 伺服器端延遲分析的輸入：api-pinned 的 stdout 導向此檔
+API_LOG    ?= /tmp/lumina-api.log
+
 # DB 端 statement_timeout —— 值出自 11 §4.1 Timeout 全域字典（DB 5s）。
 # 與 backend/config/settings/base.py 的 DB_STATEMENT_TIMEOUT 是同一個值；
 # 漂移時 tests/test_db_timeouts.py 會失敗（它比對 DB 上實際生效的值）。
@@ -50,9 +68,9 @@ APPLY_DB_TIMEOUTS = $(COMPOSE) exec -T postgres sh -c \
 	 -c "ALTER ROLE \"$$POSTGRES_USER\" SET statement_timeout = '"'"'$(DB_STATEMENT_TIMEOUT)'"'"'"'
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs psql db-timeouts minio-init migrate seed api test test-unit \
-        test-integration test-api verify-infra image lock-check lint loadtest \
-        loadtest-headless clean
+.PHONY: help up down logs psql db-timeouts minio-init migrate seed api api-pinned \
+        test test-unit test-integration test-api verify-infra image lock-check lint \
+        loadtest loadtest-headless loadtest-pinned loadtest-report clean
 
 help: ## 顯示可用指令
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -99,11 +117,20 @@ seed: ## 產生壓測資料（預設 50 租戶 × 2000 筆）
 # /api/v1/spike/* 與 X-Tenant-Id 取租戶都掛在這個旗標下（預設關，見 .env.example）。
 # 不在這裡開，make loadtest 會整片 404——而 locust 只顯示失敗率，看不出是旗標沒開。
 # 這裡用 shell 前綴而非寫進 .env：環境變數優先於 --env-file，容器部署照樣是關的。
+#
+# 指令拆成 API_ENV / API_ARGS 兩個變數，是為了讓 api 與 api-pinned 共用同一份
+# 定義——兩份會漂，而漂掉時症狀是「綁核心那組跑出不同數字」，看起來像 CPU
+# 綁定的效果，其實只是參數不同。
+API_ENV  = ENABLE_SPIKE_ENDPOINTS=true CONN_MAX_AGE=$(CONN_MAX_AGE) ORM_THREADPOOL_SIZE=$(ORM_THREADPOOL_SIZE)
+API_ARGS = config.asgi:app --host 0.0.0.0 --port 8000 --workers $(UVICORN_WORKERS) \
+	--log-config config/uvicorn_logging.json --no-access-log
+
 api: ## 啟動 API（壓測目標，會開啟 spike 面）；可覆寫 CONN_MAX_AGE / ORM_THREADPOOL_SIZE / UVICORN_WORKERS
-	ENABLE_SPIKE_ENDPOINTS=true \
-	CONN_MAX_AGE=$(CONN_MAX_AGE) ORM_THREADPOOL_SIZE=$(ORM_THREADPOOL_SIZE) \
-	$(UV_RUN) uvicorn config.asgi:app --host 0.0.0.0 --port 8000 --workers $(UVICORN_WORKERS) \
-		--log-config config/uvicorn_logging.json --no-access-log
+	$(API_ENV) $(UV_RUN) uvicorn $(API_ARGS)
+
+# taskset 放在 uv 之前：affinity 由子行程繼承，uvicorn 的 worker 全都會落在同一組核心。
+api-pinned: ## 啟動 API 並綁定 CPU $(API_CPUS)（基準線用）。log 導向 $(API_LOG) 供 loadtest-report 分析
+	$(API_ENV) taskset -c $(API_CPUS) $(UV_RUN) uvicorn $(API_ARGS) 2>&1 | tee $(API_LOG)
 
 test: ## 執行全部測試（需先 make up）
 	$(UV_RUN) pytest
@@ -154,13 +181,29 @@ lint: lock-check ## uv.lock 檢查 + ruff + mypy + import-linter（分層依賴�
 # 保留而非刪除的理由：locust 也可能被繞過 make 直接以 `uv run locust` 啟動。
 # 實測過 Linux 端不需要它——Ubuntu 24.04 + Python 3.12 即使 LC_ALL=C，
 # 因 PEP 538/540 的 C locale coercion，預設編碼仍是 utf-8（"LANG=C 會炸" 是誤解）。
-LOCUST := PYTHONUTF8=1 $(UV) run --group loadtest locust -f loadtest/locustfile.py
+LOCUST_BIN := $(UV) run --group loadtest locust -f loadtest/locustfile.py
+LOCUST     := PYTHONUTF8=1 $(LOCUST_BIN)
+# 環境變數前綴在 taskset 之前：shell 先設環境，taskset 再 exec locust，env 照樣繼承。
+LOCUST_PIN  = PYTHONUTF8=1 taskset -c $(LOAD_CPUS) $(LOCUST_BIN)
 
 loadtest: ## B 組壓測：開 web UI（http://localhost:8089）
 	$(LOCUST) --host http://localhost:8000
 
 loadtest-headless: ## B 組壓測：無頭跑 60 秒直接吐數字
 	$(LOCUST) --host http://localhost:8000 --headless -u 50 -r 50 -t 60s
+
+# 基準線三步：make api-pinned（另一視窗）→ make loadtest-pinned → make loadtest-report
+loadtest-pinned: ## 基準線壓測：負載綁 CPU $(LOAD_CPUS)，參數走 LOAD_USERS/LOAD_RATE/LOAD_TIME
+	$(LOCUST_PIN) --host http://localhost:8000 --headless \
+		-u $(LOAD_USERS) -r $(LOAD_RATE) -t $(LOAD_TIME)
+
+# locust 的 p95 是**客戶端**量的，含它自己在同一台機器上排隊的時間；access log 的
+# duration_ms 是**伺服器內部**量的。兩者對照即可分辨「系統慢」與「壓測工具跟不上」。
+# --last-seconds 比 LOAD_TIME 多 10 秒：涵蓋整輪又不吃進上一輪（log 是持續附加的，
+# API 不重啟連跑多輪時不篩時間會拿到混合值）。
+loadtest-report: ## 從 $(API_LOG) 算伺服器端延遲分位數（只看最後一輪）
+	$(UV) run python loadtest/analyze_access_log.py $(API_LOG) \
+		--path /api/v1/spike/items --last-seconds $$(( $(LOAD_TIME:s=) + 10 ))
 
 clean: ## 停止並刪除資料卷（會清空資料庫、Redis、MinIO）
 	$(COMPOSE) down -v

@@ -121,14 +121,28 @@ class TestUvicornLogConfig:
             assert logger_config["handlers"] == [], f"{name} 仍自帶 handler，輸出不會是 JSON"
             assert logger_config["propagate"] is True, f"{name} 未 propagate，root handler 收不到"
 
-    def test_make_api_uses_the_log_config(self) -> None:
-        """設定檔存在但沒被啟動指令帶上等於沒有——只有跑起來才看得出差異。"""
-        makefile = (_REPO_ROOT / "Makefile").read_text(encoding="utf-8")
-        api_target = makefile.split("\napi:", 1)[1].split("\n\n", 1)[0]
+    @pytest.mark.parametrize("target", ["api", "api-pinned"])
+    def test_make_api_uses_the_log_config(self, target: str) -> None:
+        """設定檔存在但沒被啟動指令帶上等於沒有——只有跑起來才看得出差異。
 
-        assert "--log-config config/uvicorn_logging.json" in api_target
+        ``api`` 與 ``api-pinned`` 兩個目標都要驗：只驗一個的話，另一個漏帶
+        ``--log-config`` 時症狀是「基準線量測那組的日誌格式不同」，而不是錯誤。
+
+        指令展開一層 ``$(API_ARGS)`` 再比對，不直接對 recipe 字串斷言：兩個目標
+        共用同一份參數定義（Makefile 註解說明了理由），寫死在 recipe 裡的斷言會
+        在任何一次合理重構後假紅燈。
+        """
+        makefile = (_REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+        recipe = makefile.split(f"\n{target}:", 1)[1].split("\n\n", 1)[0]
+        assert "$(API_ARGS)" in recipe, f"{target} 未使用共用的 API_ARGS"
+
+        # API_ARGS 是續行定義（行尾 \），取到第一個沒有續行符的行為止。
+        api_args = makefile.split("\nAPI_ARGS =", 1)[1]
+        api_args = api_args[: api_args.index("\n\n")]
+
+        assert "--log-config config/uvicorn_logging.json" in api_args
         # uvicorn 的存取日誌與 api/main.py 的 middleware 重複，且不帶 request_id。
-        assert "--no-access-log" in api_target
+        assert "--no-access-log" in api_args
 
 
 class TestStdlibBridge:

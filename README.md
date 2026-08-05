@@ -111,10 +111,28 @@ pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `1637
 | `make api` | 啟動 API（壓測目標，會開啟 spike 面——見下方說明） |
 | `make loadtest` | Locust 壓測（web UI） |
 | `make loadtest-headless` | 無頭跑 60 秒直接吐數字 |
+| `make api-pinned` / `loadtest-pinned` / `loadtest-report` | 基準線量測三步（見下方） |
 | `make psql` | 進 psql（直連 PG，繞過 PgBouncer） |
 | `make clean` | 停止並**刪除資料卷**（清空資料庫） |
 
 壓測旋鈕可覆寫：`make api CONN_MAX_AGE=300 ORM_THREADPOOL_SIZE=8 UVICORN_WORKERS=4`。
+
+### 基準線量測（單機）
+
+本專案為個人開發，沒有獨立負載產生機。locust 與 API 搶同一批 CPU 時，量到的是
+兩者競爭的結果——實測 200 併發下 CPU 尚有 27.5% idle、DB 連線池零排隊、查詢僅
+0.7ms，客戶端 p95 卻破 1 秒。因此基準線改用兩項補償措施（依據與邊界見
+[`docs/plan/11`](docs/plan/11_NFR_效能與可用性.md) §1.4「單機量測法」）：
+
+```bash
+make api-pinned        # 視窗 A：API 綁 CPU 0-3，log 導向 /tmp/lumina-api.log
+make loadtest-pinned   # 視窗 B：locust 綁 CPU 4-5（LOAD_USERS 可覆寫，預設 200）
+make loadtest-report   # 讀 log 算「伺服器端」延遲分位數
+```
+
+`loadtest-report` 讀的是 access log 的 `duration_ms`（伺服器行程內量的），不含
+locust 自己在同一台機器上排隊的時間。兩個數字對照即可分辨「系統慢」與「壓測
+工具跟不上」。核心數不是 6 的機器改 `API_CPUS` / `LOAD_CPUS`。
 
 **`ENABLE_SPIKE_ENDPOINTS`**：`/api/v1/spike/*` 路由與「從 `X-Tenant-Id` 標頭取租戶」的
 middleware 皆掛在此旗標下，**預設關閉**。兩者無認證且違反 ADR-002（見
