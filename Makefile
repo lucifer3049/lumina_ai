@@ -68,7 +68,7 @@ APPLY_DB_TIMEOUTS = $(COMPOSE) exec -T postgres sh -c \
 	 -c "ALTER ROLE \"$$POSTGRES_USER\" SET statement_timeout = '"'"'$(DB_STATEMENT_TIMEOUT)'"'"'"'
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs psql db-timeouts minio-init migrate seed api api-pinned \
+.PHONY: help up down logs psql db-timeouts minio-init migrate seed dev api api-pinned \
         test test-unit test-integration test-api verify-infra image lock-check lint \
         loadtest loadtest-headless loadtest-pinned loadtest-report clean
 
@@ -131,6 +131,45 @@ api: ## 啟動 API（壓測目標，會開啟 spike 面）；可覆寫 CONN_MAX_
 # taskset 放在 uv 之前：affinity 由子行程繼承，uvicorn 的 worker 全都會落在同一組核心。
 api-pinned: ## 啟動 API 並綁定 CPU $(API_CPUS)（基準線用）。log 導向 $(API_LOG) 供 loadtest-report 分析
 	$(API_ENV) taskset -c $(API_CPUS) $(UV_RUN) uvicorn $(API_ARGS) 2>&1 | tee $(API_LOG)
+
+# ── 日常開發伺服器 ──────────────────────────────────────────────
+# 與 api（壓測目標）刻意分開，三個場景三組值：
+#   dev  = 1 worker + --reload：斷點會停在你設的那行、改完自動重啟、log 是人看的
+#   api  = $(UVICORN_WORKERS) workers：要壓榨核心量吞吐，斷點與熱重載都不適用
+#   部署 = 每 replica 2（01 附錄 A 註 1）
+# uvicorn 的 --reload 與 --workers > 1 互斥，本來就不能兩者兼得；多行程下中斷點
+# 落在 fork 出去的子行程，IDE 接不到——這是「開發用單 worker」的真正理由，
+# 與效能無關（同 Odoo 本地 workers=0 走 threaded 模式的道理）。
+#
+# 不帶 ENABLE_SPIKE_ENDPOINTS：spike 面無認證且違反 ADR-002，開發環境沒有理由開。
+# 因此 Phase 0 現階段起來後只有 /docs 與 /openapi.json，沒有業務端點——這是預期
+# 的（業務端點自 Phase 1 起才出現），不是壞掉。要打 spike 端點請用 make api。
+#
+# --host 127.0.0.1（而非 api 的 0.0.0.0）：開發機不需要對區網開放。
+#
+# 熱重載在本專案的環境下需要兩項設定，**缺任一項都會靜默失效**（沒有錯誤訊息，
+# 只是改檔後永遠不重啟）。兩項都是實測出來的：
+#
+# 1. WATCHFILES_FORCE_POLLING=1
+#    uvicorn 的 --reload 交給 watchfiles，後者預設走 inotify；本 repo 位於
+#    /mnt/d（WSL2 的 DrvFs，Windows 檔案系統的轉接層）而 **DrvFs 不支援 inotify**
+#    ——事件永遠不會來。改成輪詢即可偵測。
+#
+# 2. --reload-dir 限定在原始碼目錄
+#    uvicorn 預設監看整個工作目錄，而 backend/ 底下 13,028 個檔案有 12,836 個
+#    在 .venv/ 裡（98.5%）。輪詢模式要逐一 stat，在 9p 上慢到形同沒有監看
+#    （實測：監看 . 時改檔 30 秒無反應；限定 api/ 後立即偵測到）。
+#
+# 新增頂層套件（common/、ai/、rag/…）時必須同步加進來，否則那個目錄的改動不會
+# 觸發重載——由 tests/unit/test_logging.py 的 DEV_RELOAD_DIRS 對帳測試擋住。
+# 若日後把 repo 搬進 WSL2 原生檔案系統（~/），兩項都可以拿掉。
+DEV_RELOAD_DIRS = api apps config core repositories services
+
+dev: ## 開發伺服器：單 worker + 熱重載 + console log（不開 spike 面）
+	LOG_FORMAT=console WATCHFILES_FORCE_POLLING=1 \
+	$(UV_RUN) uvicorn config.asgi:app --host 127.0.0.1 --port 8000 \
+		--reload $(addprefix --reload-dir ,$(DEV_RELOAD_DIRS)) \
+		--log-config config/uvicorn_logging.json --no-access-log
 
 test: ## 執行全部測試（需先 make up）
 	$(UV_RUN) pytest

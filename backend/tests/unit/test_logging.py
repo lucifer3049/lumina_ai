@@ -121,28 +121,81 @@ class TestUvicornLogConfig:
             assert logger_config["handlers"] == [], f"{name} 仍自帶 handler，輸出不會是 JSON"
             assert logger_config["propagate"] is True, f"{name} 未 propagate，root handler 收不到"
 
-    @pytest.mark.parametrize("target", ["api", "api-pinned"])
-    def test_make_api_uses_the_log_config(self, target: str) -> None:
+    @staticmethod
+    def _launch_command(makefile: str, target: str) -> str:
+        """取出 target 的啟動指令，並把 ``$(API_ARGS)`` 展開。
+
+        不直接對 recipe 字串斷言：``api`` / ``api-pinned`` 共用一份參數定義
+        （Makefile 註解說明了理由），寫死在 recipe 裡的斷言會在任何一次合理重構
+        後假紅燈。``dev`` 的參數不同（單 worker + --reload），它是直接寫在 recipe
+        裡的，所以這裡只在有引用時才展開。
+        """
+        recipe = makefile.split(f"\n{target}:", 1)[1].split("\n\n", 1)[0]
+        if "$(API_ARGS)" in recipe:
+            api_args = makefile.split("\nAPI_ARGS =", 1)[1]
+            recipe = recipe.replace("$(API_ARGS)", api_args[: api_args.index("\n\n")])
+        return recipe
+
+    @pytest.mark.parametrize("target", ["api", "api-pinned", "dev"])
+    def test_uvicorn_targets_use_the_log_config(self, target: str) -> None:
         """設定檔存在但沒被啟動指令帶上等於沒有——只有跑起來才看得出差異。
 
-        ``api`` 與 ``api-pinned`` 兩個目標都要驗：只驗一個的話，另一個漏帶
-        ``--log-config`` 時症狀是「基準線量測那組的日誌格式不同」，而不是錯誤。
-
-        指令展開一層 ``$(API_ARGS)`` 再比對，不直接對 recipe 字串斷言：兩個目標
-        共用同一份參數定義（Makefile 註解說明了理由），寫死在 recipe 裡的斷言會
-        在任何一次合理重構後假紅燈。
+        三個啟動 uvicorn 的目標都要驗。只驗一個的話，其餘漏帶 ``--log-config``
+        時症狀是「那個情境的日誌格式不一樣」而不是錯誤——`dev` 尤其危險：
+        開發時看到的格式與壓測 / 部署不同，問題到後面才浮現。
         """
         makefile = (_REPO_ROOT / "Makefile").read_text(encoding="utf-8")
-        recipe = makefile.split(f"\n{target}:", 1)[1].split("\n\n", 1)[0]
-        assert "$(API_ARGS)" in recipe, f"{target} 未使用共用的 API_ARGS"
+        command = self._launch_command(makefile, target)
 
-        # API_ARGS 是續行定義（行尾 \），取到第一個沒有續行符的行為止。
-        api_args = makefile.split("\nAPI_ARGS =", 1)[1]
-        api_args = api_args[: api_args.index("\n\n")]
-
-        assert "--log-config config/uvicorn_logging.json" in api_args
+        assert "--log-config config/uvicorn_logging.json" in command
         # uvicorn 的存取日誌與 api/main.py 的 middleware 重複，且不帶 request_id。
-        assert "--no-access-log" in api_args
+        assert "--no-access-log" in command
+
+    def test_dev_target_keeps_the_spike_surface_closed(self) -> None:
+        """``dev`` 不得開啟 spike 面——那是無認證的跨租戶讀取面（ADR-002 已知偏離）。
+
+        `api` 需要它（壓測目標打的就是那些路由），開發伺服器不需要。混進來的話
+        每個人的日常環境都會長期掛著一個未認證端點，而且不會有任何徵兆。
+        """
+        makefile = (_REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+
+        assert "ENABLE_SPIKE_ENDPOINTS" not in self._launch_command(makefile, "dev")
+
+    def test_dev_reload_dirs_cover_every_source_package(self) -> None:
+        """``DEV_RELOAD_DIRS`` 必須涵蓋所有頂層原始碼套件。
+
+        漏掉一個目錄的症狀是「改那個目錄的檔案不會重啟」——沒有錯誤訊息，只是
+        改了沒反應，很容易被當成程式沒生效而白花時間。
+
+        不能改回「監看整個 backend/」：那底下 98.5% 的檔案在 .venv/ 裡，而 WSL2
+        的 DrvFs 不支援 inotify、必須用輪詢，逐一 stat 一萬多個檔案在 9p 上慢到
+        形同沒有監看（Makefile 註解有實測數據）。所以是白名單 + 這條對帳測試。
+        """
+        makefile = (_REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+        declared = set(makefile.split("\nDEV_RELOAD_DIRS =", 1)[1].split("\n", 1)[0].split())
+
+        backend = _CONFIG_DIR.parent
+        # 排除：測試與壓測腳本（改它們不需要重啟伺服器）、venv、快取。
+        ignored = {"tests", "loadtest", ".venv", "__pycache__", ".ruff_cache", ".pytest_cache"}
+        packages = {
+            path.name
+            for path in backend.iterdir()
+            if path.is_dir() and not path.name.startswith(".") and path.name not in ignored
+        }
+
+        assert packages <= declared, f"新套件未加進 DEV_RELOAD_DIRS：{sorted(packages - declared)}"
+
+    def test_dev_target_is_single_worker_with_reload(self) -> None:
+        """``dev`` 必須是單 worker + ``--reload``。
+
+        uvicorn 的 ``--reload`` 與 ``--workers > 1`` 互斥；更關鍵的是多行程下
+        中斷點落在 fork 出去的子行程、IDE 接不到。這條把「開發用單 worker」
+        釘住，避免有人為了「跟 api 一致」把 workers 加回來。
+        """
+        command = self._launch_command((_REPO_ROOT / "Makefile").read_text(encoding="utf-8"), "dev")
+
+        assert "--reload" in command
+        assert "--workers" not in command, "dev 帶了 --workers → 與 --reload 互斥且斷點會失效"
 
 
 class TestStdlibBridge:
