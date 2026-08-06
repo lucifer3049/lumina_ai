@@ -46,7 +46,7 @@ class AppSettings(BaseSettings):
     # 兩者無認證且違反 ADR-002「不接受 client 自報 tenant_id」，因此**預設關閉**：
     # 缺這個旗標時 create_app() 不掛 tenant_middleware、也不掛 spike 路由，
     # 未認證的跨租戶讀取面根本不存在。僅在跑 B 組壓測時顯式設 True。
-    # Phase 0 接上 JWT 認證後，整段 spike 面與本旗標一併刪除。
+    # 工作包 1A 接上 JWT 認證後，整段 spike 面與本旗標一併刪除（ADR-002 結案條件）。
     enable_spike_endpoints: bool = False
 
     # ── Redis（01 附錄 A；埠位非預設，避免撞本機原生 Redis）──

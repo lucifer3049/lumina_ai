@@ -153,7 +153,7 @@ locust 自己在同一台機器上排隊的時間。兩個數字對照即可分�
 **`ENABLE_SPIKE_ENDPOINTS`**：`/api/v1/spike/*` 路由與「從 `X-Tenant-Id` 標頭取租戶」的
 middleware 皆掛在此旗標下，**預設關閉**。兩者無認證且違反 ADR-002（見
 `docs/plan/01` ADR-002 的「已知偏離」），只有壓測需要，因此由 `make api` 顯式開啟；
-`.env` 與正式部署一律不要設這個值。Phase 0 接上 JWT 後整組移除。
+`.env` 與正式部署一律不要設這個值。工作包 1A 接上 JWT 後整組移除（ADR-002 結案條件）。
 
 ## 測試
 

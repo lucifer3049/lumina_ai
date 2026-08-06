@@ -245,8 +245,8 @@ def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
         正式實作必須從已驗證的 JWT claim 取得租戶，client 送什麼都不採信。
         此處這樣寫的唯一理由是壓測需要在無認證的情況下切換租戶；因此本
         middleware **只在 ``enable_spike_endpoints`` 開啟時才註冊**（見 create_app
-        簽名），未開啟時客戶端自報的租戶標頭完全不生效。Phase 0 接上認證後
-        **必須刪除**這段，並改由 api/middleware/tenant_context.py 承擔。
+        簽名），未開啟時客戶端自報的租戶標頭完全不生效。工作包 1A 接上認證後
+        **必須刪除**這段（ADR-002 結案條件），並改由 api/middleware/tenant_context.py 承擔。
         """
         raw = request.headers.get("X-Tenant-Id")
         token = None
@@ -257,7 +257,7 @@ def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
                 return problem_response(
                     status=400,
                     # 這個 code 不在 09 附錄 A 的字典裡：本 middleware 是 spike
-                    # 專用且 Phase 0 會整段刪除（見上方 ⚠️），刻意不為它污染契約字典。
+                    # 專用且會在 1A 整段刪除（見上方 ⚠️），刻意不為它污染契約字典。
                     code="INVALID_TENANT_ID",
                     detail="X-Tenant-Id 不是合法 UUID",
                     request_id=request_id_of(request),
