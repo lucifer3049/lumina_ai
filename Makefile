@@ -1,11 +1,12 @@
 # AI 智庫平台 —— 開發指令入口
 # 執行環境：WSL2 Ubuntu（ADR-007 工具鏈：uv / pnpm）
 #
-# Phase 0 範圍：基礎設施全套（PG+pgvector+pgroonga、Redis、MinIO）。
-# 應用容器（api/worker/beat image）、CI、smoke、前端目標於後續工作包補上。
+# Phase 0 範圍：基礎設施全套（PG+pgvector+pgroonga、Redis、MinIO）、前端骨架與
+# OpenAPI codegen 管線。smoke suite 於 1A（E2E 骨架）補上。
 #
 # 典型流程：
 #   make up → make migrate → make verify-infra
+#   前端：make fe-install → make fe-test（後端 schema 改過就先 make openapi gen-api）
 #   壓測：make seed → make api（另開視窗）→ make loadtest
 
 # ── 環境守門：擋掉 Windows 側執行 ────────────────────────────────────
@@ -30,6 +31,13 @@ BACKEND := backend
 # --env-file ../.env：路徑相對於 --directory 之後的工作目錄，故指向 repo 根的 .env。
 UV      := uv --directory $(BACKEND)
 UV_RUN  := $(UV) run --env-file ../.env
+FRONTEND := frontend
+# --dir：與 UV 的 --directory 同理，讓 pnpm 的工作目錄落在 frontend/，
+# 在 repo 根下指令才找得到 package.json。
+PNPM    := pnpm --dir $(FRONTEND)
+# 前端 codegen 的輸入與輸出（09 §4、03 §3.1）。兩者都進版控，漂移由 openapi-check 擋。
+CONTRACT  := openapi.json
+GENERATED := $(FRONTEND)/src/api/generated
 # CI 與本機用同一個 tag，重現問題時不必猜對方建的是哪個 image
 BACKEND_IMAGE ?= lumina/backend:dev
 
@@ -70,6 +78,7 @@ APPLY_DB_TIMEOUTS = $(COMPOSE) exec -T postgres sh -c \
 .DEFAULT_GOAL := help
 .PHONY: help up down logs psql db-timeouts minio-init migrate seed dev api api-pinned \
         test test-unit test-integration test-api verify-infra image lock-check lint \
+        fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
         loadtest loadtest-headless loadtest-pinned loadtest-report clean
 
 help: ## 顯示可用指令
@@ -189,6 +198,51 @@ test-api: ## 只跑 api（權限矩陣、錯誤格式、SSE 協定；需先 make
 # 那個目標跑整個 integration 層（含 bridge / tenant scope / db timeout）。
 verify-infra: ## 只跑基礎設施驗收（extension / collation / Redis / MinIO / secrets）
 	$(UV_RUN) pytest tests/integration -k infra
+
+# ── 前端與 OpenAPI codegen（03、09 §4）─────────────────────────────
+# Node 由 nvm 管（~/.nvm，見 README 前置需求）；版本依 ADR-007 為 22 LTS，
+# frontend/package.json 的 engines 與 packageManager 兩個欄位釘住。
+
+fe-install: ## 安裝前端相依（照 lockfile，不會就地更新）
+	# --frozen-lockfile：不帶時 pnpm 會就地改寫 pnpm-lock.yaml，於是 CI 裝到的版本
+	# 可能與任何人本機裝的都不同，而 lockfile 的改動不會出現在 PR 裡。
+	$(PNPM) install --frozen-lockfile
+
+fe-lint: ## 前端 eslint + vue-tsc（型別）
+	# 兩條都要跑：eslint 不做型別推導，vue-tsc 才是 TS strict 的守門，
+	# 其中一個被拿掉時另一個照樣全綠。
+	$(PNPM) run lint
+	$(PNPM) run typecheck
+
+fe-test: ## 前端 vitest（含 tests/types 的型別層）
+	$(PNPM) run test
+
+fe-build: ## 前端 production build（vue-tsc + vite build）
+	$(PNPM) run build
+
+fe-dev: ## 前端開發伺服器（http://localhost:5173，/api 由 proxy 轉給 make dev）
+	$(PNPM) run dev
+
+openapi: ## 匯出 OpenAPI 契約到 $(CONTRACT)（單一事實來源仍是 FastAPI）
+	$(UV_RUN) python scripts/export_openapi.py
+
+gen-api: ## 由契約重新產生前端 typed client（禁止手改產物）
+	# 產生器的 --default-non-nullable false 是必要的：openapi-typescript 預設把
+	# 「有 default 值的欄位」當成回應中必定存在，但本 API 的錯誤回應是手工組出來的
+	# （api/main.py 的 problem_response），code / errors / details 不存在時整個鍵就不在。
+	# 不關掉的話前端型別會說 `problem.code` 必有，實際上拿到 undefined。
+	$(PNPM) run gen:api
+
+# 兩段鏈一起驗（03 §3.1）：契約 == app、generated == 契約。
+# 前置目標的順序有意義：先重新匯出，再重新產生，最後看工作區乾不乾淨。
+openapi-check: openapi gen-api ## 驗證契約與 generated client 未過期（CI 用）
+	git diff --exit-code -- $(CONTRACT) $(GENERATED)
+	# 上一行看不到**未追蹤**的檔案：第一次產生 generated 卻忘了 git add 時，
+	# diff 是空的、CI 全綠，而 clone 下來的人根本沒有那個目錄。
+	@test -z "$$(git status --porcelain -- $(CONTRACT) $(GENERATED))" || { \
+		echo "契約或 generated client 有未提交的變更："; \
+		git status --short -- $(CONTRACT) $(GENERATED); \
+		exit 1; }
 
 image: ## 建置 backend image（與 CI 同一份 Dockerfile）
 	docker build -t $(BACKEND_IMAGE) $(BACKEND)

@@ -175,8 +175,17 @@ class TestUvicornLogConfig:
         declared = set(makefile.split("\nDEV_RELOAD_DIRS =", 1)[1].split("\n", 1)[0].split())
 
         backend = _CONFIG_DIR.parent
-        # 排除：測試與壓測腳本（改它們不需要重啟伺服器）、venv、快取。
-        ignored = {"tests", "loadtest", ".venv", "__pycache__", ".ruff_cache", ".pytest_cache"}
+        # 排除：測試與壓測腳本（改它們不需要重啟伺服器）、建置腳本（scripts/ 是
+        # `make openapi` 這類一次性工具，不在伺服器的 import 圖裡）、venv、快取。
+        ignored = {
+            "tests",
+            "loadtest",
+            "scripts",
+            ".venv",
+            "__pycache__",
+            ".ruff_cache",
+            ".pytest_cache",
+        }
         packages = {
             path.name
             for path in backend.iterdir()

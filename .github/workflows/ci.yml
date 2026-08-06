@@ -1,4 +1,4 @@
-# PR pipeline（12 §6.1）。前端 lint/vitest、OpenAPI diff、query-count 斷言
+# PR pipeline（12 §6.1）。query-count 斷言、oasdiff 的 breaking change 判定
 # 於對應工作包建立後接入；nightly（E2E / 評測 / Locust / pip-audit / SBOM）另立 workflow。
 #
 # **每個階段都呼叫 make target，不在此重寫指令**：指令一旦有兩份（Makefile 一份、
@@ -104,6 +104,46 @@ jobs:
       - name: 失敗時輸出服務日誌
         if: failure()
         run: docker compose --env-file .env -f docker/compose.yml logs --tail 200
+
+  frontend:
+    name: 前端 lint / type / vitest + OpenAPI codegen 同步
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      # actions/setup-node v5，釘 commit SHA（同 checkout 的理由）。
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: "22"
+
+      # pnpm 版本不寫在這裡：frontend/package.json 的 packageManager 欄位是唯一來源，
+      # corepack 讀它。在 workflow 另外指定一次就會與本機漂開。
+      - name: 啟用 pnpm（corepack）
+        run: corepack enable pnpm
+
+      # 本 job 也要跑 make openapi（重新匯出契約），那一步是 Python。
+      - name: 安裝 uv
+        run: pip install --no-cache-dir "uv==${UV_VERSION}"
+
+      - name: 準備環境變數
+        run: cp .env.example .env
+
+      - name: 安裝前端相依
+        run: make fe-install
+
+      - name: eslint + vue-tsc
+        run: make fe-lint
+
+      - name: vitest（含型別層）
+        run: make fe-test
+
+      # 契約治理（09 §4 / 03 §3.1）：重新匯出 schema、重新產生 client，工作區必須乾淨。
+      # 後端改了端點卻沒重新產生前端 client 時在此擋下——前後端契約不會默默脫節。
+      - name: OpenAPI 契約與 generated client 同步
+        run: make openapi-check
 
   image:
     name: build image + trivy

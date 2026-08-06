@@ -171,7 +171,8 @@ Accept: text/event-stream
 ## 4. OpenAPI 治理
 
 - FastAPI 自動生成 + 手動補 `operation_id`（決定 codegen 函式名，命名穩定性視同 API 契約）。
-- CI：schema diff 檢查（oasdiff）——breaking change 需明確標記與 review；前端 generated client 過期即 fail（03 §3.1）。
+- 契約以檔案形式進版控：repo 根的 `openapi.json`，由 `make openapi`（`backend/scripts/export_openapi.py`）從 app 匯出，**不含 spike 面**（匯出顯式關閉旗標，避免未認證端點進入公開契約）。它是 oasdiff 的比對基準，也是前端 codegen 的唯一輸入（03 §3.1）。
+- CI：schema diff 檢查（oasdiff）——breaking change 需明確標記與 review；契約與前端 generated client 過期即 fail（`make openapi-check`）。
 - 錯誤 code 字典維護於單一 enum，文件自動生成。
 
 ## 5. 優點 / 缺點 / 適用情境

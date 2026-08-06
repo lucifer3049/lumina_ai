@@ -15,10 +15,14 @@ htmlcov/
 .env.*
 !.env.example
 
-# ── Node / 前端（Phase 0 後段）──
+# ── Node / 前端 ──
 node_modules/
 dist/
 .vite/
+# pnpm 的內容可定址儲存區。WSL2 下 pnpm 會自己把 store 建在專案所在磁碟
+# （實測為 /mnt/d/.pnpm-store，因為家目錄的 ext4 與 /mnt/d 跨檔案系統、無法 hardlink），
+# 預設落在 repo 之外；這條是防止有人把 store-dir 改到 repo 內時整包被提交。
+.pnpm-store/
 
 # ── 壓測與 spike 產出 ──
 loadtest/results/
@@ -32,6 +36,7 @@ backend/loadtest/tenants.json
 # ⚠️ 以下內容**沒有任何版本保護**，誤刪即永久遺失，請自行備份。
 CLAUDE.md
 新文字文件.txt
+環境指令.md
 
 # 註：docs/ 已納入版控——程式碼註解大量引用 docs/plan
 #     （如「09 §1.3」「11 §4.1」），clone 下來的人看得到被引用的來源。

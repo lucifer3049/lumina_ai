@@ -57,6 +57,13 @@ backend/
   config/         Django settings（base / dev / test）+ ASGI 掛載
   tests/          unit / integration / api 測試
   loadtest/       Locust 壓測腳本
+  scripts/        建置與維運腳本（export_openapi.py…）
+frontend/
+  src/api/        client.ts（fetch 封裝）+ generated/（OpenAPI codegen 產物，禁改）
+  src/types/      型別的單一 import 入口（re-export generated）
+  src/router/     route 定義（lazy views）
+  tests/          vitest：unit/ 與型別層 types/
+openapi.json      API 契約（由 make openapi 產生，進版控）
 docker/           Compose、PostgreSQL 自建 image、PgBouncer 設定樣板
 docs/plan/        架構設計文件 00–15（SAD）
 ```
@@ -68,10 +75,12 @@ docs/plan/        架構設計文件 00–15（SAD）
 
 ## 開發環境
 
-**前置需求**：WSL2 Ubuntu（或 Linux / macOS）、Docker、[uv](https://github.com/astral-sh/uv)、GNU Make。
+**前置需求**：WSL2 Ubuntu（或 Linux / macOS）、Docker、[uv](https://github.com/astral-sh/uv)、GNU Make、
+Node.js 22 LTS + pnpm（ADR-007；建議用 [nvm](https://github.com/nvm-sh/nvm) 裝，pnpm 由 `corepack enable pnpm`
+啟用，版本由 `frontend/package.json` 的 `packageManager` 欄位決定）。
 
 > ⚠️ **Windows 使用者一律進 WSL2 操作，不要從 Windows 側（PowerShell / Git Bash）執行
-> `make`、`uv`、`pytest`。** 同一份 `backend/.venv` 被兩個平台交替使用時，uv 會偵測到
+> `make`、`uv`、`pytest`、`pnpm`。** 同一份 `backend/.venv` 被兩個平台交替使用時，uv 會偵測到
 > 「對面平台建的 venv」而整個砍掉重建，且在 Windows 檔案鎖下常砍到一半失敗、留下不可用
 > 的殘骸。Makefile 與 pytest conftest 都設有守門，非 Linux 環境會直接拒絕並說明原因。
 
@@ -84,6 +93,9 @@ make migrate           # Django migration（含 pgvector / pgroonga extension）
 make verify-infra      # 基礎設施驗收測試（extension / collation / Redis / MinIO / secrets）
 make seed              # 產生壓測資料（50 租戶 × 2000 筆）
 make api               # 另開視窗：啟動 FastAPI（http://localhost:8000）
+
+make fe-install        # 前端相依（照 pnpm-lock.yaml）
+make fe-dev            # 另開視窗：Vite（http://localhost:5173，/api 由 proxy 轉給後端）
 ```
 
 `make` 不帶參數會列出所有可用指令。
@@ -108,6 +120,10 @@ pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `1637
 | `make minio-init` | 重建 bucket / 版本化 / 關閉匿名存取（冪等） |
 | `make db-timeouts` | 重新套用 role 層級 `statement_timeout`（冪等） |
 | `make lint` | ruff check + ruff format --check + mypy strict |
+| `make fe-install` / `fe-lint` / `fe-test` / `fe-build` / `fe-dev` | 前端相依 / eslint+vue-tsc / vitest / build / dev server |
+| `make openapi` | 由 FastAPI 匯出 API 契約到 `openapi.json` |
+| `make gen-api` | 由契約重新產生前端 typed client（`frontend/src/api/generated/`） |
+| `make openapi-check` | 驗證契約與 generated client 未過期（CI 用） |
 | `make api` | 啟動 API（壓測目標，會開啟 spike 面——見下方說明） |
 | `make loadtest` | Locust 壓測（web UI） |
 | `make loadtest-headless` | 無頭跑 60 秒直接吐數字 |
@@ -145,21 +161,29 @@ middleware 皆掛在此旗標下，**預設關閉**。兩者無認證且違反 A
 
 - **LLM 測試一律用 MockProvider，禁止呼叫真實 API。**
 - factory_boy 對映每個 Model；tenant fixture 一律雙租戶（隔離測試內建）。
-- `tests/unit/` 不需任何外部依賴（含 migration 漂移、分層 contract、CI 設定的驗收）；
-  `tests/integration/` 與 `tests/api/` 需先 `make up`。
+- `tests/unit/` 不需任何外部依賴（含 migration 漂移、分層 contract、CI 設定、OpenAPI
+  契約漂移的驗收）；`tests/integration/` 與 `tests/api/` 需先 `make up`。
 
 ```bash
 make test
 ```
 
+前端（03 §6.1）：vitest 跑 `frontend/tests/unit/`（API client 以 msw mock，不打真後端）
+與 `frontend/tests/types/`（型別層，由 vue-tsc 檢查）。
+
+```bash
+make fe-test
+```
+
 ## CI
 
-`.github/workflows/ci.yml`（PR 與 main 的 push 觸發）分三個 job：
+`.github/workflows/ci.yml`（PR 與 main 的 push 觸發）分四個 job：
 
 | Job | 內容 |
 |-----|------|
 | quality | `make lint`（ruff + mypy strict + import-linter）、`make test-unit` |
 | tests | `make up` 起真實 PG/Redis/MinIO → `make migrate` → integration + api 測試 |
+| frontend | `make fe-lint`（eslint + vue-tsc）、`make fe-test`（vitest）、`make openapi-check` |
 | image | `make image` → 驗證以非 root 執行 → trivy 掃描（HIGH/CRITICAL 有修補版即擋 PR） |
 
 兩條紀律：CI 各階段只呼叫 make target（指令不寫第二份），基礎設施只用

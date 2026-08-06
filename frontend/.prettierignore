@@ -1,0 +1,6 @@
+# codegen 產物：格式化會讓「重新產生」與「已格式化」兩種狀態互相覆蓋，
+# CI 的漂移檢查（make openapi-check）因此永遠紅。
+src/api/generated/
+
+dist/
+pnpm-lock.yaml

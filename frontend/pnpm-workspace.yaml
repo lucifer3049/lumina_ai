@@ -1,0 +1,13 @@
+# pnpm 11 起，安裝相關設定從 package.json 的 `pnpm` 欄位搬到這裡
+# （寫在 package.json 會被忽略，而且只印一行提示，看起來像設定沒生效）。
+#
+# allowBuilds：pnpm 預設**不執行**相依套件的 install 腳本（供應鏈防線——
+# 一個被投毒的傳遞相依不該因為 pnpm install 就取得執行權）。這裡逐一裁決。
+#
+# - esbuild：vite / vitest 的必要相依，腳本負責取得平台對應的原生執行檔。
+#   設 false 時 vite 會以「找不到 esbuild 二進位檔」失敗。
+# - msw：其腳本是把 service worker 複製到 public/，只有**瀏覽器端** mock 需要。
+#   本專案用的是 msw/node（03 §6.1），關掉照樣運作。
+allowBuilds:
+  esbuild: true
+  msw: false

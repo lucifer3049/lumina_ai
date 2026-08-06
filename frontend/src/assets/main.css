@@ -1,0 +1,11 @@
+/* design tokens 與 UI 套件的樣式（03 §2 assets/）於 1E 選型定案後進來。
+   這裡只放讓骨架不至於難以辨識的最小值。 */
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Noto Sans TC', sans-serif;
+  line-height: 1.6;
+}
+
+body {
+  margin: 0;
+}

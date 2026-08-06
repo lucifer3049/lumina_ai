@@ -21,6 +21,7 @@ workflow 各階段呼叫的是 make target（指令只定義一次，避免 Make
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 MAKEFILE = REPO_ROOT / "Makefile"
 
-# 12 §6.1 PR pipeline 中，本階段（尚無前端與 OpenAPI baseline）適用的項目。
+# 12 §6.1 PR pipeline 的項目。
 REQUIRED_COMMANDS = {
     "ruff lint": "ruff check",
     "ruff format": "ruff format --check",
@@ -46,6 +47,23 @@ REQUIRED_COMMANDS = {
     # 漂移檢查是兩件事：漂移檢查是純記憶體比對，不會發現 migration 本身跑不起來。
     "migration 套用": "manage.py migrate",
     "build image": "docker build",
+    # ── 前端（12 §6.1「eslint/vue-tsc + vitest」、03 §6.1）──
+    "前端 lint": "eslint",
+    # 型別檢查與 lint 分開列：eslint 不做型別推導，vue-tsc 才是 TS strict 的守門。
+    # 兩者其中一個被拿掉時，另一個照樣全綠。
+    "前端型別檢查": "vue-tsc",
+    "前端 unit 測試": "vitest run",
+    # ── OpenAPI 契約與 codegen（09 §4、03 §3.1）──
+    # 三段鏈缺一不可：匯出（後端 schema → openapi.json）、產生（openapi.json →
+    # generated client）、比對（產完之後工作區必須是乾淨的）。
+    # 只驗最後一段的話，匯出步驟被拿掉時「契約沒變 → 沒有 diff」，CI 照樣綠，
+    # 而契約其實早已與 app 脫節。
+    "OpenAPI 契約匯出": "export_openapi.py",
+    "前端 client 產生": "openapi-typescript",
+    "契約/generated 漂移檢查": "git diff --exit-code",
+    # 前端相依必須照 lockfile 裝：不帶 --frozen-lockfile 時 pnpm 會就地更新
+    # pnpm-lock.yaml，於是 CI 裝到的版本可能與任何人本機裝的都不同。
+    "前端 lockfile 檢查": "--frozen-lockfile",
 }
 
 # 12 §6.1 的 migration check 由這支測試實作（不需連 DB，故不在 CI 另立步驟）。
@@ -54,6 +72,11 @@ MIGRATION_DRIFT_TEST = Path(__file__).with_name("test_migrations_in_sync.py")
 
 _SHA_PINNED = re.compile(r"^[\w.-]+/[\w.-]+(?:/[\w.-]+)*@[0-9a-f]{40}$")
 _MAKE_INVOCATION = re.compile(r"\bmake\s+([a-z][\w-]*)")
+# `pnpm --dir frontend run lint` / `pnpm -C frontend gen:api`：取被呼叫的 script 名。
+# 旗標與其參數先吃掉，否則 `--dir` 後面的 `frontend` 會被當成 script 名。
+_PNPM_SCRIPT = re.compile(r"\bpnpm\s+(?:(?:-[\w-]+|--[\w-]+)(?:[= ]\S+)?\s+)*(?:run\s+)?([\w:-]+)")
+
+FRONTEND_PACKAGE_JSON = REPO_ROOT / "frontend" / "package.json"
 
 
 @pytest.fixture(scope="module")
@@ -117,25 +140,116 @@ def _invoked_make_targets(workflow: dict[str, Any]) -> set[str]:
     return set(_MAKE_INVOCATION.findall(_workflow_run_text(workflow)))
 
 
+_ASSIGNMENT = re.compile(r"^([A-Z][A-Z0-9_]*)\s*[:?+]?=\s*(.*)$")
+_TARGET = re.compile(r"^([a-z][\w-]*)\s*:(?!=)\s*(.*)$")
+_VARIABLE_REFERENCE = re.compile(r"\$\(([A-Z][A-Z0-9_]*)\)")
+
+
+def _makefile_variables() -> dict[str, str]:
+    """Makefile 的變數定義（`NAME := value`）。"""
+    variables: dict[str, str] = {}
+    for line in MAKEFILE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("\t"):
+            continue
+        if match := _ASSIGNMENT.match(line):
+            variables[match.group(1)] = match.group(2)
+    return variables
+
+
+def _expand(text: str, variables: dict[str, str], depth: int = 5) -> str:
+    """展開 `$(NAME)`。
+
+    不展開的話，`$(PNPM) run lint` 這種寫法會讓本檔的斷言全部落空——指令**確實**
+    在 CI 裡跑，只是文字裡看不到 `pnpm`。而失敗訊息會說「CI 缺少階段」，
+    指向完全錯誤的方向（實際踩過）。
+
+    深度上限防的是變數互相引用造成的無限展開；到達上限就原樣留著，
+    留著的最壞後果是某條斷言誤判為缺少，不會是安靜通過。
+    """
+    for _ in range(depth):
+        expanded = _VARIABLE_REFERENCE.sub(lambda m: variables.get(m.group(1), m.group(0)), text)
+        if expanded == text:
+            break
+        text = expanded
+    return text
+
+
+def _targets_with_prerequisites(targets: set[str]) -> set[str]:
+    """把前置目標也算進來（`openapi-check: openapi gen-api`）。
+
+    只看被 workflow 直接呼叫的那個 target 是不夠的：實際跑起來時 make 會先跑
+    前置目標，真正執行匯出與產生的正是它們。少了這段，把 `openapi` 從前置清單
+    移除會讓 CI 只剩「比對」而不再重新產生——於是永遠沒有 diff，永遠綠燈。
+    """
+    prerequisites: dict[str, list[str]] = {}
+    for line in MAKEFILE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("\t") or line.startswith(".PHONY"):
+            continue
+        if match := _TARGET.match(line):
+            # recipe 說明（`## …`）不是前置目標
+            prerequisites[match.group(1)] = match.group(2).split("##", 1)[0].split()
+
+    resolved = set(targets)
+    pending = list(targets)
+    while pending:
+        for name in prerequisites.get(pending.pop(), []):
+            if name in prerequisites and name not in resolved:
+                resolved.add(name)
+                pending.append(name)
+    return resolved
+
+
 def _makefile_recipes(targets: set[str]) -> str:
-    """取出指定 target 的 recipe 行（以 tab 起首的行）。"""
+    """取出指定 target（含其前置目標）的 recipe 行，並展開變數。"""
+    wanted = _targets_with_prerequisites(targets)
+    variables = _makefile_variables()
     recipes: list[str] = []
     current: str | None = None
 
     for line in MAKEFILE.read_text(encoding="utf-8").splitlines():
         if line.startswith("\t"):
-            if current in targets:
+            if current in wanted:
                 recipes.append(line.strip())
             continue
-        match = re.match(r"^([a-z][\w-]*)\s*:(?!=)", line)
+        match = _TARGET.match(line)
         current = match.group(1) if match else None
 
-    return _strip_shell_comments("\n".join(recipes))
+    return _strip_shell_comments(_expand("\n".join(recipes), variables))
+
+
+def _pnpm_scripts(recipes: str) -> str:
+    """recipe 呼叫到的 pnpm script 的實際指令（frontend/package.json 的 `scripts`）。
+
+    鏈要多追這一段，理由與「workflow → Makefile」那段完全相同：Makefile 裡寫的是
+    `pnpm --dir frontend run lint`，真正跑什麼定義在 package.json。少了這段，
+    把 `eslint` 從 package.json 的 lint script 換成 `echo ok` 一樣全綠。
+    """
+    if not FRONTEND_PACKAGE_JSON.exists():
+        return ""
+
+    package = json.loads(FRONTEND_PACKAGE_JSON.read_text(encoding="utf-8"))
+    scripts = package.get("scripts", {})
+    if not isinstance(scripts, dict):
+        return ""
+
+    invoked = set(_PNPM_SCRIPT.findall(recipes))
+    # script 之間會互相呼叫（`pnpm run lint` 內含 `pnpm run typecheck`），
+    # 但只展開一層就夠：本檔要的是「這些指令有沒有被 CI 跑到」，
+    # 而多層展開需要處理循環引用，複雜度不划算。
+    nested = {name for value in scripts.values() for name in _PNPM_SCRIPT.findall(str(value))}
+    return "\n".join(str(command) for name, command in scripts.items() if name in invoked | nested)
 
 
 def _effective_commands(workflow: dict[str, Any]) -> str:
-    """CI 實際會執行到的指令文字：workflow 的 run ＋ 它呼叫的 make target 的 recipe。"""
-    return _workflow_run_text(workflow) + "\n" + _makefile_recipes(_invoked_make_targets(workflow))
+    """CI 實際會執行到的指令文字。
+
+    沿三段鏈展開：workflow 的 `run` → 它呼叫的 make target 的 recipe →
+    recipe 呼叫的 pnpm script 的定義。
+    """
+    recipes = _makefile_recipes(_invoked_make_targets(workflow))
+    return "\n".join(
+        [_workflow_run_text(workflow), recipes, _strip_shell_comments(_pnpm_scripts(recipes))]
+    )
 
 
 def test_triggers_on_pull_request_and_main(workflow: dict[str, Any]) -> None:
