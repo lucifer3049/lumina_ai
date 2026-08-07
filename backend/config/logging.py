@@ -22,9 +22,11 @@ request_id / tenant_id / event。`trace_id` 與 `user_id` 由後續工作包補�
    時「哪一份生效」要靠讀原始碼推理。呼叫點：``config/asgi.py``（服務）與
    ``manage.py``（CLI）。
 
-未涵蓋：uvicorn 以 CLI 啟動時會套用自己的 ``log_config``（access log 走它自己的
-格式）。本檔的存取日誌由 api/main.py 的 middleware 產生，兩者重複但欄位不同；
-移除 uvicorn 那份需在部署指令加 ``--no-access-log``，屬部署工作包。
+uvicorn 以 CLI 啟動時會套用自己的 ``log_config``，且 access log 走它自己的格式，
+與本檔的契約衝突。因此**每一條啟動指令**都必須帶 ``--log-config
+config/uvicorn_logging.json --no-access-log``：Makefile 的 dev / api / api-pinned
+與 backend/Dockerfile 的 CMD。缺了不會有錯誤，只會得到「一半 JSON、一半純文字」
+加上每個請求兩筆欄位不同的存取記錄。由 tests/unit/test_logging.py 對帳所有啟動點。
 """
 
 from __future__ import annotations
@@ -41,6 +43,9 @@ _HANDLER_MARK = "_lumina_logging_handler"
 REDACTED = "***"
 
 # key 名比對用（小寫、子字串比對）。刻意不放 "auth"——那會連 "author" 一起遮掉。
+# 新增項目一律經 re.escape 進正則（見 _KEY_VALUE_PAIR）：含 `-` 或 `.` 的項目
+# （"x-api-key"、"client.secret"）未轉義時會變成 metachar，樣式看起來有寫、
+# 實際比對的是別的東西。
 _SENSITIVE_KEY_PARTS: tuple[str, ...] = (
     "password",
     "passwd",
@@ -61,16 +66,37 @@ _TW_ID = re.compile(r"(?<![0-9A-Za-z])[A-Z][12]\d{8}(?![0-9A-Za-z])")
 _TW_PHONE = re.compile(r"(?<![0-9A-Za-z])09\d{2}-?\d{3}-?\d{3}(?![0-9A-Za-z])")
 _DIGIT_RUN = re.compile(r"(?<![0-9A-Za-z])\d{13,19}(?![0-9A-Za-z])")
 
+# URL 內嵌憑證 `scheme://user:password@host`。AppSettings 組出來的 Redis DSN
+# 正是這個形狀（``redis://:{password}@host``），而 ``.get_secret_value()`` 的結果
+# 是普通 str——SecretStr 的自動遮罩（見 _mask_value）到這裡已經幫不上忙。
+# 連線失敗時把 DSN 印進錯誤訊息是套件與我們自己都會做的事。
+_URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)([^\s/:@]*):([^\s/@]*)@")
+
 # `token=xxx` / `api_key=xxx` 形式（query string、連線字串、第三方套件印出的 URL）。
 # 我們自己的存取日誌會先砍掉 query string，但**第三方 logger 不會**：httpx 的
 # "HTTP Request: GET https://...?api_key=..." 就是一整條明文，而那是 AI Gateway
 # 外呼時真實會發生的情況。key 名比對用同一份 _SENSITIVE_KEY_PARTS。
+#
+# 三個看似多餘的細節，各對應一種實際漏接（tests/unit/test_logging.py 逐條釘住）：
+#
+# 1. key 允許前後綴而非 ``\b`` 開頭：``_`` 是 word char，所以 ``\btoken`` 在
+#    ``access_token`` 上**不成立**——JSON 化的 payload 幾乎都是這種複合鍵名。
+# 2. 分隔符與值各允許一個引號：``{"access_token": "sk-..."}`` 的 key 右側是 `"`
+#    而不是 `[=:]`，值左側同理。少了這一層，字串化的 dict 整包不會被遮。
+# 3. 值可帶 ``Bearer`` / ``Basic`` scheme：``Authorization: Bearer <jwt>`` 的值
+#    若從 ``Bearer`` 起算就會在空白處截斷，結果是遮掉 "Bearer" 這個字、JWT 原樣
+#    留著。scheme 不回填進輸出——它不是機密，但留著只會讓人以為遮罩失敗。
+_SENSITIVE_KEY_ALTERNATION = "|".join(re.escape(part) for part in _SENSITIVE_KEY_PARTS)
 _KEY_VALUE_PAIR = re.compile(
-    rf"(?i)\b({'|'.join(_SENSITIVE_KEY_PARTS)})(\s*[=:]\s*)([^&\s\"',}}）]+)"
+    rf"(?i)([A-Za-z0-9_.\-]*(?:{_SENSITIVE_KEY_ALTERNATION})[A-Za-z0-9_.\-]*)"
+    rf"([\"']?\s*[=:]\s*)([\"']?)(?:bearer|basic|token)?\s*[^&\s\"',}}）]+"
 )
 
 _VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (_KEY_VALUE_PAIR, rf"\1\2{REDACTED}"),
+    # URL 憑證先掃：DSN 裡的密碼可能含 `=`，被 key/value 樣式咬掉一段後
+    # 剩下的半截仍是明碼。
+    (_URL_CREDENTIALS, rf"\1\2:{REDACTED}@"),
+    (_KEY_VALUE_PAIR, rf"\1\2\3{REDACTED}"),
     # email 先掃：email 內含的數字可能先被其他樣式咬掉一段，留下半截明碼。
     (_EMAIL, "<email>"),
     (_TW_ID, "<id>"),
@@ -102,9 +128,20 @@ def _mask_value(value: Any) -> Any:
             key: (REDACTED if _is_sensitive_key(str(key)) else _mask_value(item))
             for key, item in value.items()
         }
+    if isinstance(value, (set, frozenset)):
+        # 沒有這一支的話 set 會落到最後的 return value，內容完全不經遮罩。
+        return type(value)(_mask_value(item) for item in value)
     if isinstance(value, (list, tuple)):
         masked = [_mask_value(item) for item in value]
-        return type(value)(masked) if isinstance(value, tuple) else masked
+        if not isinstance(value, tuple):
+            return masked
+        # namedtuple 的建構子吃**位置參數**，``type(value)(list)`` 會
+        # ``TypeError: __new__() missing N required positional arguments``——而這裡
+        # 位於 processor chain 內，例外會從 logger.info() 呼叫點冒出去，把一筆純
+        # 診斷用的 log 變成 500。urlsplit 的 SplitResult、sys.version_info、
+        # values_list(named=True) 的每一列都是 namedtuple。
+        make = getattr(value, "_make", None)  # namedtuple 的公開建構 API
+        return make(masked) if callable(make) else tuple(masked)
     return value
 
 

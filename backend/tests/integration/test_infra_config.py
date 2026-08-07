@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from django.conf import settings
 from pydantic import ValidationError
 
 from config.settings.app_settings import AppSettings
@@ -93,6 +94,30 @@ def test_dotenv_is_gitignored() -> None:
 
     assert ".env" in rules, ".gitignore 未忽略 .env"
     assert "!.env.example" in rules, ".gitignore 未放行 .env.example（新人照抄的樣板）"
+
+
+def test_server_side_cursors_are_disabled_for_transaction_pooling() -> None:
+    """PgBouncer 走 transaction pooling，而 Django 的 server-side cursor 預設**開啟**。
+
+    ``QuerySet.iterator()`` 會 ``DECLARE`` 一個 cursor 再分批 ``FETCH``；transaction
+    pooling 下兩者落在不同交易、也就是不同的 server 連線，於是
+    ``InvalidCursorName: cursor "_django_curs_..." does not exist``。
+
+    在 Phase 0 就釘住的理由是它**測不出來**：config/settings/test.py 直連
+    PostgreSQL、繞過 PgBouncer，所以 ``iterator()`` 在整個測試套件裡永遠正常，
+    只有部署環境會炸。而 ``iterator()`` 正是 ETL / 匯出處理大量列的標準寫法
+    （Phase 2 必然用到），屆時症狀會出現在離設定很遠的地方。
+    """
+    pgbouncer_ini = (REPO_ROOT / "docker" / "pgbouncer" / "pgbouncer.ini.tpl").read_text(
+        encoding="utf-8"
+    )
+
+    assert "pool_mode = transaction" in pgbouncer_ini, (
+        "pool_mode 不再是 transaction——本條斷言的前提改變了，請重新評估"
+    )
+    assert settings.DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] is True, (
+        "DISABLE_SERVER_SIDE_CURSORS 未開 → QuerySet.iterator() 在部署環境會失敗"
+    )
 
 
 def test_app_settings_fail_fast_when_secret_missing(monkeypatch: pytest.MonkeyPatch) -> None:

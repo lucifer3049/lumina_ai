@@ -36,14 +36,23 @@ threadpool 內呼叫，不得在 event loop 上直接用——後者會阻塞整
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 from django.db import connection, transaction
 
+from core.exceptions import CrossTenantTransactionError
 from core.tenant import get_current_tenant_id
 
 TENANT_GUC = "app.tenant_id"
+
+# 當前交易已綁定的租戶。巢狀 UoW 靠它偵測「同一交易內換租戶」——見
+# unit_of_work 的「為什麼巢狀換租戶必須 raise」。
+_active_uow_tenant: ContextVar[uuid.UUID | None] = ContextVar("active_uow_tenant", default=None)
+
+_SET_TENANT_GUC = f"SELECT set_config('{TENANT_GUC}', %s, true)"
 
 
 @contextmanager
@@ -58,11 +67,32 @@ def unit_of_work() -> Iterator[None]:
     缺 TenantContext 一律 raise（鐵則 4）。**不提供無租戶模式**：靜默略過的話
     交易照跑而參數是空的，RLS policy 上線後查詢會回空集合或全表，兩者都不會有
     錯誤訊息。Migration 與維運腳本走 bypass 角色，不經本模組（05 §5.1）。
+
+    ## 為什麼巢狀換租戶必須 raise
+
+    ``set_config(..., true)`` 是交易區域而**不是** savepoint 區域的：在子交易
+    （savepoint）內設定的值，只要該子交易正常結束就會**保留到外層交易結束**，
+    只有 savepoint 回滾才會還原。所以「外層租戶 A 的交易裡，巢狀進一個租戶 B
+    的 UoW」在內層離開後不會回到 A——GUC 停在 B，而外層後續的每一條語句都會在
+    RLS 之下被當成 B。ORM 的 tenant filter 仍說 A、DB 的 policy 說 B，兩者不一致
+    卻沒有任何錯誤訊息。
+
+    因此偵測到就 raise（:class:`~core.exceptions.CrossTenantTransactionError`）。
+    不採「離開時還原成外層值」的修法：那讓「一個交易兩個租戶」變成可用寫法，
+    而它在 RLS 之下沒有正確語意——跨租戶操作本來就該各自開交易。
     """
     tenant_id = get_current_tenant_id(operation="unit_of_work")
-    with transaction.atomic():
-        with connection.cursor() as cursor:
-            # 參數化：租戶 id 雖然來自 contextvars 而非請求，但這條 SQL 的安全性
-            # 不該建立在「呼叫端保證乾淨」上（10 §injection）。
-            cursor.execute(f"SELECT set_config('{TENANT_GUC}', %s, true)", [str(tenant_id)])
-        yield
+    active = _active_uow_tenant.get()
+    if active is not None and active != tenant_id:
+        raise CrossTenantTransactionError(active=str(active), requested=str(tenant_id))
+
+    token = _active_uow_tenant.set(tenant_id)
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                # 參數化：租戶 id 雖然來自 contextvars 而非請求，但這條 SQL 的安全性
+                # 不該建立在「呼叫端保證乾淨」上（10 §injection）。
+                cursor.execute(_SET_TENANT_GUC, [str(tenant_id)])
+            yield
+    finally:
+        _active_uow_tenant.reset(token)

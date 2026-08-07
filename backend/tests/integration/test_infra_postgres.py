@@ -42,6 +42,52 @@ def test_required_extensions_installed_in_this_database() -> None:
 
 
 @pytest.mark.django_db
+def test_rls_enabled_tables_are_actually_enforced() -> None:
+    """絆線：只要有任何一張表開了 RLS，兩個前置條件就必須同時成立。
+
+    RLS policy 屬工作包 1A（13 §3），Phase 0 一張都沒有，所以這條現在會 skip。
+    它存在的理由是 RLS 有兩種「開了卻無效」的失敗模式，而兩者都**完全無症狀**
+    ——policy 建好了、查詢正常回傳、測試全綠，隔離卻不存在：
+
+    1. 連線角色是 superuser 或帶 ``BYPASSRLS``：policy 對它完全不適用。
+    2. 連線角色是表的 owner 而該表沒有 ``FORCE ROW LEVEL SECURITY``：owner 預設
+       豁免 policy。
+
+    目前的 compose 恰好命中第 1 種——``POSTGRES_USER`` 同時是 initdb superuser、
+    schema owner 與應用連線帳號（見 docker/compose.yml），而 05 §5.1 明確要求應用
+    連線走非 superuser 角色。角色拆分要重建資料卷（``make clean``），因此列為 1A
+    的前置工作而不在 Phase 0 動它。這條測試負責讓那件事不可能被忘記：1A 一旦下
+    ``ENABLE ROW LEVEL SECURITY``，這裡就會紅燈，而不是安靜地失效。
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT relname, relforcerowsecurity FROM pg_class "
+            "WHERE relrowsecurity AND relkind = 'r'"
+        )
+        rls_tables = cursor.fetchall()
+
+        if not rls_tables:
+            pytest.skip("尚無啟用 RLS 的資料表——RLS 屬工作包 1A，屆時本條自動生效")
+
+        cursor.execute("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
+        role = cursor.fetchone()
+
+    assert role is not None
+    is_superuser, bypasses_rls = role
+
+    assert not is_superuser, (
+        "應用連線是 superuser → RLS policy 完全不適用（05 §5.1 要求非 superuser 角色）"
+    )
+    assert not bypasses_rls, "應用連線帶 BYPASSRLS → RLS policy 完全不適用"
+
+    unforced = [name for name, forced in rls_tables if not forced]
+    assert not unforced, (
+        f"以下表啟用了 RLS 但未 FORCE：{unforced}——表的 owner 預設豁免 policy，"
+        "而 migration 建表時的 owner 很可能正是應用角色，那 policy 等於沒開"
+    )
+
+
+@pytest.mark.django_db
 def test_halfvec_column_and_hnsw_index_are_usable() -> None:
     """halfvec(1536) 欄位 + HNSW `halfvec_cosine_ops` 索引可建、可查（05 §3.2、§4）。
 

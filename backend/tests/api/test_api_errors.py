@@ -234,6 +234,30 @@ class TestDomainErrorMapping:
         assert body["detail"] == "找不到資源"
         assert body["details"] == {"resource_id": "abc"}
 
+    async def test_non_json_native_details_keep_the_original_status(self) -> None:
+        """``details`` 帶 UUID / datetime 時仍須回原本的 4xx，不得降級成 500。
+
+        ``DomainError.details`` 的型別是 ``dict[str, Any]``，而
+        ``details={"resource_id": item_id}`` 帶一個 UUID 是最自然的寫法。
+        ``JSONResponse.render()`` 是裸的 ``json.dumps``——TypeError 會在
+        **exception handler 內部**炸開，ServerErrorMiddleware 於是把本來的 404
+        降級成純文字 500：client 看到「伺服器錯誤」而不是「找不到資源」，而伺服器
+        端只會多一筆 unhandled_exception，指不到真正的原因。
+        """
+        resource_id = uuid.uuid4()
+        app = create_app()
+
+        @app.get("/api/v1/_details_with_uuid")
+        async def _raises() -> None:
+            raise NotFoundError("找不到資源", details={"resource_id": resource_id})
+
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get("/api/v1/_details_with_uuid")
+
+        body = assert_problem_details(response, status=404, code=ErrorCode.RESOURCE_NOT_FOUND)
+        assert body["details"] == {"resource_id": str(resource_id)}
+
 
 class TestEveryErrorEntryPointIsProblemJson:
     """**格式統一的反查測試**：打遍每一個會產生錯誤回應的入口。
@@ -305,6 +329,35 @@ class TestEveryErrorEntryPointIsProblemJson:
         assert body["title"], "title 是 RFC 9457 必填成員，不得為空"
         assert "code" not in body, "不得為字典外的 status 憑空產生 code"
         assert body["request_id"] == response.headers[REQUEST_ID_HEADER]
+
+    async def test_5xx_http_exception_does_not_echo_detail(self) -> None:
+        """5xx ``HTTPException`` 的 ``detail`` 不得回給 client。
+
+        ``detail`` 由 raise 的那一方自由填寫，而第三方套件與未來的中介層會把上游
+        端點、金鑰片段這類內容寫進去。原本這個 handler 對**所有**狀態碼一律回吐
+        ``exc.detail``，於是 5xx 成了資訊洩漏破口——與 ``domain_error_handler``
+        對 5xx 的處理（收斂成通用敘述）不一致，而不一致的那半沒有測試。
+
+        對照組是 4xx（``test_status_without_contract_code_uses_about_blank`` 的 405
+        與下面的 404）：4xx 的 detail 是使用者可修正的資訊，必須照實回傳。
+        """
+        app = create_app()
+
+        @app.get("/api/v1/_upstream_5xx")
+        async def _upstream() -> None:
+            raise StarletteHTTPException(
+                status_code=503,
+                detail="upstream http://minio:9000 rejected key AKIA-LEAKED-EXAMPLE",
+            )
+
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get("/api/v1/_upstream_5xx")
+
+        assert response.status_code == 503, "狀態碼必須保留，只收斂 detail"
+        assert response.headers["content-type"].startswith(PROBLEM_JSON)
+        assert "AKIA-LEAKED-EXAMPLE" not in response.text, "金鑰片段洩漏到回應"
+        assert "minio:9000" not in response.text, "內部端點洩漏到回應"
 
     async def test_unhandled_exception_is_problem_json(self) -> None:
         """兜底 handler：未預期例外 → 500 Problem Details，不洩內部細節。

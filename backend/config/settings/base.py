@@ -74,6 +74,16 @@ DATABASES = {
         "CONN_MAX_AGE": int(os.environ.get("CONN_MAX_AGE", "300")),
         # 重用連線時必開：連線可能已被對端關閉，健康檢查避免拿到死連線。
         "CONN_HEALTH_CHECKS": True,
+        # PgBouncer transaction mode 與 server-side cursor 不相容，而 Django 的
+        # 預設是**開啟**。`QuerySet.iterator()` 會 `DECLARE` 一個 cursor 再分批
+        # `FETCH`，兩者落在不同交易 → 不同的 server 連線 → `InvalidCursorName:
+        # cursor "_django_curs_..." does not exist`。
+        #
+        # 現在就關掉而不是等踩到：iterator() 是 ETL / 匯出處理大量列的標準寫法
+        # （Phase 2 的 2x 工作包必然會用），而 config/settings/test.py 直連 PG
+        # 繞過 PgBouncer——測試永遠是綠的，只有部署環境會炸。
+        # 關閉後 iterator() 退化成 client 端分批，語意不變。
+        "DISABLE_SERVER_SIDE_CURSORS": True,
         "OPTIONS": {
             # PgBouncer transaction mode 不支援 server-side prepared statement
             # （05 §5.5）。psycopg3 預設會 prepare，不關掉會直接報錯。

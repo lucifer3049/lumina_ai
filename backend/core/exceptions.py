@@ -71,3 +71,20 @@ class TenantContextMissingError(DomainError):
             f"TenantContext 缺失，拒絕存取 tenant-scoped 資源{detail}",
             details={"operation": operation} if operation else None,
         )
+
+
+class CrossTenantTransactionError(DomainError):
+    """→ 500 + P1 告警。
+
+    同一個交易內出現兩個租戶。與 :class:`TenantContextMissingError` 同樣是程式
+    錯誤而非使用者錯誤：``app.tenant_id`` 是交易區域參數，一個交易只能有一個值，
+    因此「一個交易服務兩個租戶」在 RLS 之下沒有正確語意可言。詳見 core/uow.py。
+    """
+
+    code = ErrorCode.INTERNAL_ERROR
+
+    def __init__(self, *, active: str, requested: str) -> None:
+        super().__init__(
+            f"交易已綁定租戶 {active}，不得在其中改用租戶 {requested}——跨租戶操作請各自開交易",
+            details={"active_tenant": active, "requested_tenant": requested},
+        )

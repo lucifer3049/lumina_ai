@@ -6,7 +6,9 @@ raise（Fail Fast），不提供「預設租戶」或「無租戶模式」的退
 
 **PgBouncer transaction mode 的限制**（05 §5.5）：本層禁用 session 級功能
 ——advisory lock、``SET``（``SET LOCAL`` 在交易內安全）、server-side prepared
-statement（已於 settings 以 ``prepare_threshold=None`` 關閉）。
+statement（已於 settings 以 ``prepare_threshold=None`` 關閉）、以及 **server-side
+cursor**（``QuerySet.iterator()``；已於 settings 以
+``DISABLE_SERVER_SIDE_CURSORS=True`` 關閉，理由見該處）。
 """
 
 from __future__ import annotations

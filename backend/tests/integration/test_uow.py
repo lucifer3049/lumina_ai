@@ -16,17 +16,18 @@ transaction mode 下會讓租戶 A 的設定殘留給下一個借到同一條連
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 
 import pytest
 from django.core.exceptions import SynchronousOnlyOperation
-from django.db import connection
+from django.db import connection, transaction
 
 from apps.spike.models import SpikeItem
-from core.exceptions import TenantContextMissingError
+from core.exceptions import CrossTenantTransactionError, TenantContextMissingError
 from core.tenant import tenant_context
 from core.uow import unit_of_work
-from tests.conftest import TENANT_A
+from tests.conftest import TENANT_A, TENANT_B
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -122,6 +123,79 @@ class TestTenantGuc:
             assert _current_setting() == str(tenant_a)
         with tenant_context(tenant_b), unit_of_work():
             assert _current_setting() == str(tenant_b)
+
+
+class TestNestedTenantGuard:
+    """B 組續：同一個交易內不得出現第二個租戶。
+
+    ``set_config(..., true)`` 是**交易**區域而不是 savepoint 區域的：在子交易
+    （Django 巢狀 ``atomic`` = savepoint）內設定的值，只要該子交易正常結束就會
+    保留到**外層交易**結束，只有 savepoint 回滾才還原。
+
+    所以「租戶 A 的交易裡巢狀進一個租戶 B 的 UoW」在內層離開後不會回到 A：GUC 停在
+    B，而外層後續的每一條語句都會在 RLS 之下被當成 B。ORM 的 tenant filter 說 A、
+    DB 的 policy 說 B，兩者不一致卻沒有任何錯誤訊息——RLS 上線後這是跨租戶寫入。
+    """
+
+    def test_nested_uow_with_another_tenant_raises(self) -> None:
+        """B4：偵測到就 raise，不允許「一個交易兩個租戶」成為可用寫法。"""
+        with tenant_context(TENANT_A), unit_of_work():
+            assert _current_setting() == str(TENANT_A), "前提不成立：外層交易沒綁到租戶 A"
+
+            with (
+                pytest.raises(CrossTenantTransactionError),
+                tenant_context(TENANT_B),
+                unit_of_work(),
+            ):
+                pytest.fail("不該進到區塊內")
+
+    def test_outer_tenant_survives_the_rejected_nesting(self) -> None:
+        """B5：守門的重點不是「有例外」，是**外層的 GUC 沒有被改掉**。
+
+        這條才是會抓到迴歸的那一條：若日後有人把守門改成「內層離開時還原成外層
+        值」，B4 會紅、看起來只是規則變寬；而真正的風險是還原沒做到位，那只有這裡
+        看得出來。
+        """
+        with tenant_context(TENANT_A), unit_of_work():
+            with (
+                contextlib.suppress(CrossTenantTransactionError),
+                tenant_context(TENANT_B),
+                unit_of_work(),
+            ):
+                pass
+
+            assert _current_setting() == str(TENANT_A), "外層交易的租戶參數被內層改掉了"
+
+    def test_guard_is_released_after_the_transaction(self) -> None:
+        """B6：守門只在交易內生效——交易各自獨立時換租戶是正常用法。
+
+        守門若靠一個沒有還原的旗標實作，第二個交易會被誤擋，而症狀是「換租戶就
+        壞掉」這種完全無關的表象。
+        """
+        with tenant_context(TENANT_A), unit_of_work():
+            pass
+        with tenant_context(TENANT_B), unit_of_work():
+            assert _current_setting() == str(TENANT_B)
+
+    def test_postgres_keeps_subtransaction_local_settings(self) -> None:
+        """B7：釘住守門的**前提**——子交易正常結束時 ``SET LOCAL`` 不會還原。
+
+        驗的是 PostgreSQL 的行為，不是我們的程式碼，所以刻意繞過 UoW 直接下 SQL。
+        沒有這一條，上面三條測試的理由就只是註解裡的一句斷言；而這個前提若在某次
+        PG 升版後改變，守門的設計依據就要重新評估（雖然 raise 本身仍然合理）。
+        """
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT set_config('app.tenant_id', %s, true)", [str(TENANT_A)])
+
+            # Django 巢狀 atomic = savepoint
+            with transaction.atomic(), connection.cursor() as cursor:
+                cursor.execute("SELECT set_config('app.tenant_id', %s, true)", [str(TENANT_B)])
+
+            assert _current_setting() == str(TENANT_B), (
+                "PostgreSQL 的行為變了：子交易的 SET LOCAL 現在會隨 savepoint 還原"
+                "——core/uow.py 跨租戶守門的依據需要重新評估"
+            )
 
 
 class TestFailFast:

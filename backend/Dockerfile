@@ -36,13 +36,29 @@ RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin app
 WORKDIR /app
 COPY --from=builder --chown=app:app /app /app
 
+# DJANGO_SETTINGS_MODULE 必須顯式指定：config/asgi.py 用的是
+# `setdefault(..., "config.settings.dev")`，不設就等於**用 dev 設定跑部署**，
+# 而那不會有任何症狀（dev 目前恰好等同 base）。理由詳見 config/settings/prod.py。
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    DJANGO_SETTINGS_MODULE=config.settings.prod
 
 USER app
 EXPOSE 8000
 
 # 設定與 secrets 一律由環境變數注入（鐵則 9），不進 image。
 # 註：HEALTHCHECK 待 /healthz 端點存在後補（11 §4.2）。
-CMD ["uvicorn", "config.asgi:app", "--host", "0.0.0.0", "--port", "8000"]
+#
+# --log-config / --no-access-log 不是可選的調校，是日誌契約的一部分（12 §1.1）：
+# 少了它們，uvicorn 會用自己的 handler（純文字、propagate=False）並另外輸出一份
+# 欄位不同的 access log，結果是 Loki 只解析得了一半、每個請求兩筆記錄。
+# 與 Makefile 的 dev / api / api-pinned 是同一組旗標，由
+# tests/unit/test_logging.py 對帳所有啟動點——漏一處不會有錯誤訊息。
+#
+# worker 數刻意不寫死（見檔頭「一個 image 多角色」）：部署時以 --workers 覆寫，
+# 01 附錄 A 註 1 的起始值是每 replica 2。
+CMD ["uvicorn", "config.asgi:app", \
+     "--host", "0.0.0.0", "--port", "8000", \
+     "--log-config", "config/uvicorn_logging.json", \
+     "--no-access-log"]

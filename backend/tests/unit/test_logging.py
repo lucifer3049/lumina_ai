@@ -23,6 +23,7 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from pydantic import SecretStr
@@ -207,6 +208,41 @@ class TestUvicornLogConfig:
         assert "--workers" not in command, "dev 帶了 --workers → 與 --reload 互斥且斷點會失效"
 
 
+class TestDeployedImageCommand:
+    """部署用的 image 必須帶齊與 Makefile 相同的啟動旗標。
+
+    Makefile 的三個 target 都被上方 ``TestUvicornLogConfig`` 釘住了，但**真正上線
+    跑的是 backend/Dockerfile 的 CMD**——那條指令原本三項全缺（settings module、
+    log-config、no-access-log），而 CI 照樣 build、scan、通過。本機與 CI 都看不出
+    差異，只有部署環境的日誌會壞。
+    """
+
+    @staticmethod
+    def _image_cmd() -> str:
+        """取出 CMD 並把續行接起來（CMD 是多行 JSON 陣列，逐行比對會漏）。"""
+        dockerfile = (_REPO_ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
+        joined = dockerfile.replace("\\\n", " ")
+        return joined.split("\nCMD ", 1)[1].split("\n", 1)[0]
+
+    def test_image_command_uses_the_log_config(self) -> None:
+        cmd = self._image_cmd()
+
+        assert "config/uvicorn_logging.json" in cmd, "image 未帶 --log-config → 輸出一半純文字"
+        assert "--no-access-log" in cmd, "image 未帶 --no-access-log → 每個請求兩筆存取記錄"
+
+    def test_image_pins_the_settings_module(self) -> None:
+        """不指定 DJANGO_SETTINGS_MODULE 等於用 dev 設定跑部署。
+
+        ``config/asgi.py`` 用的是 ``setdefault(..., "config.settings.dev")``，所以
+        漏設不會有錯誤——dev 目前恰好等同 base，行為一致、測試全綠。危險在於 dev.py
+        是「可以放開發便利設定」的地方，一旦有人在那裡加東西就會同時進到部署環境。
+        """
+        dockerfile = (_REPO_ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
+
+        assert "DJANGO_SETTINGS_MODULE=config.settings.prod" in dockerfile
+        assert (_CONFIG_DIR / "settings" / "prod.py").exists(), "指定了不存在的 settings module"
+
+
 class TestStdlibBridge:
     """stdlib logging 必須流進同一個 pipeline。"""
 
@@ -376,3 +412,75 @@ class TestRedaction:
         logging.getLogger("api.main").error("寄信失敗: bob@example.com")
 
         assert "bob@example.com" not in _log_lines(capsys.readouterr().out)[0]["event"]
+
+    def test_json_shaped_secret_in_text_is_masked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """字串化的 dict —— 複合鍵名 ＋ 帶引號的值。
+
+        兩個都是舊樣式漏接的原因：``_`` 是 word char，所以 ``\\btoken`` 在
+        ``access_token`` 上不成立；而 key 右側是 ``"`` 而不是 ``[=:]``。第三方套件
+        把回應 body 塞進錯誤訊息是常態，AI Gateway 外呼失敗時就是這個形狀。
+        """
+        configure_logging(level="INFO", fmt="json")
+        logging.getLogger("httpx").warning(
+            'provider 400: {"access_token": "sk-live-abc123", "model": "gpt-4o-mini"}'
+        )
+
+        event = _log_lines(capsys.readouterr().out)[0]["event"]
+
+        assert "sk-live-abc123" not in event
+        assert "gpt-4o-mini" in event, "非敏感欄位不該被一併吃掉"
+
+    def test_bearer_token_in_text_is_masked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """``Authorization: Bearer <jwt>``。
+
+        舊樣式的值從 ``Bearer`` 起算並在空白處截斷，結果是遮掉 "Bearer" 這個字、
+        JWT 原封不動留著——看起來有遮，實際洩漏。
+        """
+        configure_logging(level="INFO", fmt="json")
+        logging.getLogger("httpx").info(
+            "retrying with Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig"
+        )
+
+        event = _log_lines(capsys.readouterr().out)[0]["event"]
+
+        assert "eyJhbGciOiJIUzI1NiJ9" not in event
+        assert "sig" not in event.split("Authorization")[-1]
+
+    def test_url_embedded_credentials_are_masked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """``scheme://user:password@host`` —— AppSettings 組出的 Redis DSN 形狀。
+
+        ``.get_secret_value()`` 的結果是普通 str，SecretStr 的自動遮罩到這裡幫不上
+        忙；連線失敗時把 DSN 印進錯誤訊息是套件與我們自己都會做的事。
+        """
+        configure_logging(level="INFO", fmt="json")
+        logging.getLogger("redis").error("connect failed: redis://:hunter2@127.0.0.1:16379/0")
+
+        event = _log_lines(capsys.readouterr().out)[0]["event"]
+
+        assert "hunter2" not in event
+        assert "16379" in event, "主機與埠仍須看得見，否則失去診斷價值"
+
+    def test_namedtuple_value_does_not_break_the_processor(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """namedtuple 值不得讓遮罩 processor 拋例外。
+
+        ``type(value)(masked_list)`` 對 namedtuple 是 ``TypeError``（建構子吃位置
+        參數），而 processor 的例外會從 ``logger.info()`` 呼叫點冒出去——一筆純診斷
+        用的 log 把整個請求變成 500。``SplitResult`` / ``sys.version_info`` /
+        ``values_list(named=True)`` 的每一列都是 namedtuple。
+        """
+        configure_logging(level="INFO", fmt="json")
+        get_logger("test").info("outbound_call", target=urlsplit("https://api.example.com/v1"))
+
+        event = _log_lines(capsys.readouterr().out)[0]
+
+        assert event["event"] == "outbound_call"
+        assert "api.example.com" in str(event["target"])
+
+    def test_set_values_are_masked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """set / frozenset 原本整支落到「不處理」的分支，內容完全不經遮罩。"""
+        configure_logging(level="INFO", fmt="json")
+        get_logger("test").info("pii_found", chunks={"聯絡人 A123456789"})
+
+        assert "A123456789" not in capsys.readouterr().out

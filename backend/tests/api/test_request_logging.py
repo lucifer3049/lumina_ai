@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.main import REQUEST_ID_HEADER, create_app
 from config.logging import configure_logging
@@ -100,6 +101,26 @@ class TestAccessLog:
 
         assert _access_logs(capsys.readouterr().out)[0]["tenant_id"] == str(TENANT_A)
 
+    async def test_short_circuited_400_is_still_logged(
+        self, client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """無效 ``X-Tenant-Id`` 的 400 也必須留下存取記錄。
+
+        這條 400 在呼叫下游**之前**就產生。前一版把租戶與存取日誌拆成兩條
+        BaseHTTPMiddleware（存取日誌在內層），短路的回應因此永遠跑不到日誌那層：
+        回應 body 帶著 request_id，log 裡卻一筆都沒有——使用者回報 id 撈不到東西，
+        而壓測的 4xx 計數與延遲分位數會系統性少算這一整類請求。這正是本檔開頭第 1
+        條「存取日誌漏掉某條路徑」的實例。
+        """
+        response = await client.get("/api/v1/spike/items", headers={"X-Tenant-Id": "not-a-uuid"})
+
+        assert response.status_code == 400
+        logs = _access_logs(capsys.readouterr().out)
+
+        assert len(logs) == 1, "短路的回應沒有存取記錄"
+        assert logs[0]["status"] == 400
+        assert logs[0]["request_id"] == response.headers[REQUEST_ID_HEADER]
+
     async def test_context_does_not_leak_between_requests(
         self, client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -138,6 +159,31 @@ class TestErrorCorrelation:
         assert error_events, "500 必須留下 ERROR 級 log，否則回應裡的 request_id 撈不到細節"
         assert all(e["request_id"] == request_id for e in error_events)
         assert "kaboom" in error_events[0]["exception"]
+
+    async def test_5xx_http_exception_log_shares_request_id(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """5xx ``HTTPException`` 必須留 ERROR 級 log 且共用同一個 request_id。
+
+        回應那半（不回吐 ``exc.detail``）由 test_api_errors.py 驗；這裡驗觀測那半：
+        原本這條路徑完全不記 log，於是「上游 503」在故障期間產生**零筆** ERROR
+        事件——告警不會響，而回應裡給使用者的 request_id 也撈不到任何細節。
+        """
+        configure_logging(level="INFO", fmt="json")
+        app = create_app(enable_spike_endpoints=False)
+
+        @app.get("/upstream")
+        async def upstream() -> None:
+            raise StarletteHTTPException(status_code=503, detail="upstream rejected")
+
+        async with _client(app) as client:
+            response = await client.get("/upstream")
+
+        request_id = response.json()["request_id"]
+        error_events = [e for e in _log_lines(capsys.readouterr().out) if e["level"] == "error"]
+
+        assert error_events, "5xx 未留 ERROR log → 故障期間告警不會響"
+        assert all(e["request_id"] == request_id for e in error_events)
 
     async def test_domain_error_4xx_is_not_error_level(
         self, capsys: pytest.CaptureFixture[str]

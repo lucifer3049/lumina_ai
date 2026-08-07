@@ -28,10 +28,12 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextvars import Token
 from http import HTTPStatus
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -124,7 +126,12 @@ def problem_response(
         body.update(extensions)
     return JSONResponse(
         status_code=status,
-        content=body,
+        # jsonable_encoder：``extensions`` 的內容（多半是 ``DomainError.details``）
+        # 型別是 ``dict[str, Any]``，很自然會帶 UUID / datetime / Decimal。
+        # JSONResponse.render() 是裸的 ``json.dumps``，遇到這些會 TypeError——
+        # 而這行跑在 exception handler **內部**，處理器自己爆掉就沒人接得住：
+        # ServerErrorMiddleware 會把本來的 404 降級成純文字 500。
+        content=jsonable_encoder(body),
         media_type=PROBLEM_JSON,
         headers={**(headers or {}), REQUEST_ID_HEADER: request_id},
     )
@@ -165,6 +172,44 @@ def request_id_of(request: Request) -> str:
     return request_id
 
 
+# ── SPIKE ONLY：以下三個名字在工作包 1A 接上認證後整組刪除 ──────────────
+# （ADR-002 結案條件；改由 api/middleware/tenant_context.py 從已驗證的 JWT claim
+#   取租戶。刪除範圍 = 這個區塊 ＋ request_context_middleware 內標註的 5 行。）
+
+SPIKE_TENANT_HEADER = "X-Tenant-Id"
+
+
+class _InvalidTenantHeaderError(Exception):
+    """標頭存在但不是合法 UUID。
+
+    不用 ``DomainError``：那條路會經 exception handler，而本例外產生於
+    middleware——middleware 拋的例外到不了 handler（見 create_app 的
+    ``request_context_middleware``），所以這裡只當作內部訊號用。
+    """
+
+
+def _bind_spike_tenant(request: Request) -> Token[uuid.UUID] | None:
+    """從 ``X-Tenant-Id`` 標頭取租戶並綁定；回傳供還原用的 token。
+
+    ⚠️ **SPIKE ONLY —— 這違反 ADR-002「不接受 client 自報 tenant_id」。**
+
+    正式實作必須從已驗證的 JWT claim 取得租戶，client 送什麼都不採信。此處這樣
+    寫的唯一理由是壓測需要在無認證的情況下切換租戶；因此只在
+    ``enable_spike_endpoints`` 開啟時才會被呼叫，未開啟時客戶端自報的租戶標頭
+    完全不生效。
+    """
+    raw = request.headers.get(SPIKE_TENANT_HEADER)
+    if not raw:
+        return None
+    try:
+        return set_current_tenant_id(uuid.UUID(raw))
+    except ValueError as exc:
+        raise _InvalidTenantHeaderError from exc
+
+
+# ── SPIKE ONLY 區塊結束 ────────────────────────────────────────────
+
+
 def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
     """建立 FastAPI app。
 
@@ -188,27 +233,50 @@ def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
     app = FastAPI(title="Lumina spike (ADR-001 bridge)", version="0.1.0")
 
     @app.middleware("http")
-    async def access_log_middleware(
+    async def request_context_middleware(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        """存取日誌，並把 request_id / tenant_id 綁進 log context（12 §1.1）。
+        """請求層的追蹤 context、存取日誌、回應標頭，以及（spike）租戶綁定。
 
-        **必須是最內層**（= 最先宣告，Starlette 以 ``insert(0)`` 堆疊），理由是
-        ``tenant_middleware`` 設定的租戶 contextvar 只往內層傳：BaseHTTPMiddleware
-        的 ``call_next`` 在**另一個 task** 裡跑下游，下游對 contextvars 的改動
-        回不到上層。掛在外層的話 tenant_id 永遠是 None，而且不會有任何錯誤。
+        **四件事合成一條 middleware 是刻意的**，前一版是三條互相依賴的
+        ``BaseHTTPMiddleware``，代價是三個問題：
+
+        1. **短路的回應不會被記錄。** 無效 ``X-Tenant-Id`` 的 400 由租戶那條直接
+           回傳、不呼叫 ``call_next``，於是最內層的存取日誌永遠跑不到——回應
+           body 裡有 request_id，log 裡卻一筆都沒有。壓測時這類 400 完全不計入
+           統計，而回應看起來完全正常。
+        2. **順序約束只寫在註解裡。** ``BaseHTTPMiddleware`` 的 ``call_next`` 在
+           另一個 task 裡跑下游，下游對 contextvars 的改動回不到上層，因此租戶
+           必須在存取日誌**之外**設定、request_id 必須在租戶**之外**——三條規則
+           散在三段 docstring，沒有任何測試釘住，排錯了的症狀是 log 少一個欄位。
+        3. **每條 middleware 每個請求都要建一組 anyio task group ＋ 兩個 memory
+           object stream。** 三條就是三份，落在 B 組壓測的熱路徑上。
+
+        合成一條之後全部消失：租戶在 ``call_next`` 之前設定（同一個 context，
+        下游的 copy 自然帶著），存取日誌涵蓋所有出口（含短路與例外），順序由程式
+        流程本身決定而不是註冊次序。
 
         ``path`` 刻意不含 query string：``?token=...`` 這類值會整串落地成明文
         （鐵則 9）。需要查參數時走 audit log，那裡有欄位級的遮罩政策。
         """
         request_id = request_id_of(request)
+        started = time.perf_counter()
+
+        # ── SPIKE ONLY：1A 接上認證後刪除以下 5 行（見 _bind_spike_tenant）──
+        tenant_token: Token[uuid.UUID] | None = None
+        invalid_tenant_header = False
+        if enable_spike_endpoints:
+            try:
+                tenant_token = _bind_spike_tenant(request)
+            except _InvalidTenantHeaderError:
+                invalid_tenant_header = True
+
         tenant_id = try_get_current_tenant_id()
         bind_request_context(
             request_id=request_id,
             tenant_id=str(tenant_id) if tenant_id else None,
         )
-        started = time.perf_counter()
 
         def emit(status: int) -> None:
             logger.info(
@@ -222,7 +290,18 @@ def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
         # log 必須在 finally 的 clear 之前發生，否則事件上不會有 request_id
         # ——那正是這條 middleware 存在的理由。
         try:
-            response = await call_next(request)
+            response: Response
+            if invalid_tenant_header:
+                response = problem_response(
+                    status=400,
+                    # 這個 code 不在 09 附錄 A 的字典裡：租戶標頭是 spike 專用且
+                    # 會在 1A 整段刪除，刻意不為它污染契約字典。
+                    code="INVALID_TENANT_ID",
+                    detail=f"{SPIKE_TENANT_HEADER} 不是合法 UUID",
+                    request_id=request_id,
+                )
+            else:
+                response = await call_next(request)
         except Exception:
             # 例外會往上冒到 ServerErrorMiddleware 才變成 500 回應，那已在本層之外。
             # 不在這裡補一筆就會出現「有錯誤 log、卻沒有對應的存取記錄」的缺口。
@@ -230,65 +309,14 @@ def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
             raise
         else:
             emit(response.status_code)
+            # 回寫 request_id 讓 client 回報的 id 對得上 log。problem_response 自己
+            # 也會帶上，這裡涵蓋的是正常回應與下游自組的回應。
+            response.headers[REQUEST_ID_HEADER] = request_id
             return response
         finally:
+            if tenant_token is not None:
+                reset_current_tenant_id(tenant_token)
             clear_request_context()
-
-    async def tenant_middleware(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        """從 ``X-Tenant-Id`` 標頭取租戶。
-
-        ⚠️ **SPIKE ONLY —— 這違反 ADR-002「不接受 client 自報 tenant_id」。**
-
-        正式實作必須從已驗證的 JWT claim 取得租戶，client 送什麼都不採信。
-        此處這樣寫的唯一理由是壓測需要在無認證的情況下切換租戶；因此本
-        middleware **只在 ``enable_spike_endpoints`` 開啟時才註冊**（見 create_app
-        簽名），未開啟時客戶端自報的租戶標頭完全不生效。工作包 1A 接上認證後
-        **必須刪除**這段（ADR-002 結案條件），並改由 api/middleware/tenant_context.py 承擔。
-        """
-        raw = request.headers.get("X-Tenant-Id")
-        token = None
-        if raw:
-            try:
-                token = set_current_tenant_id(uuid.UUID(raw))
-            except ValueError:
-                return problem_response(
-                    status=400,
-                    # 這個 code 不在 09 附錄 A 的字典裡：本 middleware 是 spike
-                    # 專用且會在 1A 整段刪除（見上方 ⚠️），刻意不為它污染契約字典。
-                    code="INVALID_TENANT_ID",
-                    detail="X-Tenant-Id 不是合法 UUID",
-                    request_id=request_id_of(request),
-                )
-        try:
-            return await call_next(request)
-        finally:
-            if token is not None:
-                reset_current_tenant_id(token)
-
-    # 註冊順序有意義（見下方 request_id_middleware）：tenant 必須排在 access_log
-    # 之後、request_id 之前註冊。旗標關閉時整條略過——這正是修掉未認證跨租戶
-    # 讀取的關鍵：沒有這條 middleware，client 的 X-Tenant-Id 不再能污染租戶 context。
-    if enable_spike_endpoints:
-        app.middleware("http")(tenant_middleware)
-
-    @app.middleware("http")
-    async def request_id_middleware(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        """指派 request_id 並回寫成標頭，讓 client 回報的 id 對得上 log。
-
-        **註冊順序有意義**：Starlette 的 user middleware 以 ``insert(0)`` 堆疊，
-        後註冊者在外層。本 middleware 必須排在 ``tenant_middleware`` 之後宣告，
-        才會比它先執行——否則 tenant_middleware 回的 400 拿不到同一個 id。
-        """
-        request_id = request_id_of(request)
-        response = await call_next(request)
-        response.headers[REQUEST_ID_HEADER] = request_id
-        return response
 
     @app.exception_handler(DomainError)
     async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
@@ -380,13 +408,38 @@ def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
 
         ``exc.headers`` 必須傳遞下去：405 的 ``Allow``、429 的 ``Retry-After``
         都靠它，吞掉會讓回應不符合 HTTP 語意。
+
+        5xx 的處理與 :func:`domain_error_handler` 是**同一個契約**（不洩細節、
+        記 ERROR、附 request_id），不是巧合的重複：``HTTPException`` 的
+        ``detail`` 由 raise 的那一方自由填寫，而第三方套件與未來的中介層會把
+        上游端點、金鑰片段這類內容寫進去。原本這裡對所有狀態碼一律回吐
+        ``exc.detail`` 且完全不記 log，於是 5xx 同時是資訊洩漏破口與觀測盲區
+        ——故障期間 ERROR 級事件為零，告警不會響。
         """
         code = _STATUS_CODE.get(exc.status_code)
+        request_id = request_id_of(request)
+
+        if exc.status_code >= 500:
+            logger.error(
+                "http_exception",
+                status=exc.status_code,
+                detail=str(exc.detail),
+                request_id=request_id,
+                exc_info=exc,
+            )
+            return problem_response(
+                status=exc.status_code,
+                code=str(code) if code else None,
+                detail=_INTERNAL_ERROR_DETAIL,
+                request_id=request_id,
+                headers=dict(exc.headers) if exc.headers else None,
+            )
+
         return problem_response(
             status=exc.status_code,
             code=str(code) if code else None,
             detail=str(exc.detail),
-            request_id=request_id_of(request),
+            request_id=request_id,
             headers=dict(exc.headers) if exc.headers else None,
         )
 

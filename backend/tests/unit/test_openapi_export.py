@@ -116,6 +116,45 @@ def test_export_excludes_the_spike_surface(
     )
 
 
+def test_every_v1_router_is_mounted() -> None:
+    """``api/v1/`` 下每一個 router 模組的路由都必須真的掛在 app 上。
+
+    **為什麼上面的漂移比對抓不到這件事**：``test_contract_matches_the_current_app``
+    驗的是「契約 == app」，而漏了 ``include_router`` 時**兩邊都是空的**——契約沒有
+    那個端點、app 也沒有，於是 diff 乾淨、CI 全綠，只有前端拿到一個少了端點的
+    typed client。``make openapi-check`` 同理，它比的是 export 與 codegen 兩份產物，
+    共同的上游若整段缺失，兩份會一致地缺。
+
+    Phase 0 的契約 ``paths`` 目前確實是空的（唯一的 router 是 spike，而契約刻意
+    不收錄它，見 ``test_export_excludes_the_spike_surface``），所以這裡比對的是
+    **開啟旗標**的 app：驗的是「router 有被掛上」，與契約要不要收錄它是兩件事。
+    1A 加入第一個正式 router 後，這條會在忘記 ``include_router`` 時紅燈。
+    """
+    from api.main import create_app
+
+    paths = create_app(enable_spike_endpoints=True).openapi()["paths"]
+    modules = sorted(
+        path.stem for path in (BACKEND_ROOT / "api" / "v1").glob("*.py") if path.stem != "__init__"
+    )
+
+    assert modules, "api/v1/ 下沒有任何模組——這條守門會變成空轉"
+
+    missing: list[str] = []
+    for name in modules:
+        router = getattr(importlib.import_module(f"api.v1.{name}"), "router", None)
+        if router is None:
+            continue
+        # getattr：BaseRoute 不保證有 path（Mount / WebSocketRoute 就沒有）。
+        declared = [getattr(route, "path", None) for route in router.routes]
+        missing += [
+            f"api.v1.{name}:{path}"
+            for path in declared
+            if isinstance(path, str) and not any(mounted.endswith(path) for mounted in paths)
+        ]
+
+    assert not missing, f"以下路由未被 create_app 掛載（漏了 include_router）：{missing}"
+
+
 def test_contract_carries_the_error_schema(contract: dict[str, Any]) -> None:
     """`ProblemDetail` 必須在 components 裡。
 
