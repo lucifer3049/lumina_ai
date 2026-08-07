@@ -20,6 +20,8 @@ import io
 import json
 import logging
 import sys
+import timeit
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,7 @@ import pytest
 from pydantic import SecretStr
 
 from config.logging import (
+    _mask_text,
     bind_request_context,
     clear_request_context,
     configure_logging,
@@ -477,6 +480,37 @@ class TestRedaction:
 
         assert event["event"] == "outbound_call"
         assert "api.example.com" in str(event["target"])
+
+    def test_redaction_cost_does_not_explode_on_long_opaque_strings(self) -> None:
+        """遮罩成本不得隨字串長度爆炸——**這是一條效能回歸測試**。
+
+        踩過的坑：為了讓 ``access_token`` 這種複合鍵名命中，key 樣式曾寫成
+        ``[A-Za-z0-9_.\\-]*(?:token|...)``。開頭那個無錨點的貪婪量詞使引擎在每個
+        位置都先吞掉整段 word char 再回溯比對 10 個候選字，成本隨長度呈平方成長。
+
+        為什麼這條特別值得一個測試：遮罩跑在**每一筆** log 上，而存取日誌固定帶
+        ``request_id``（32 hex）與 ``tenant_id``（36 字）——兩個長且不含敏感字的
+        字串，正是最壞情況。實測單筆事件的 key/value 掃描由 10.8 µs 惡化到
+        158.5 µs，200 併發壓測的伺服器端 p95 從 351ms 掉到 495–611ms。而功能面
+        **完全正常**：所有遮罩測試照樣全綠，只有壓測數字會變差。
+
+        比的是同一台機器上「長字串 vs 短字串」的**相對**成本，不是絕對微秒數：
+        絕對值隨硬體與 CI 負載變，相對值才是「有沒有回溯爆炸」的訊號。
+        實測 ratio——修好的樣式 17.8（68/3 ≈ 22.7，即次線性）、壞樣式 133.6；
+        門檻取 50，兩邊各留約 2.7 倍餘裕。
+        """
+        short = "GET"
+        # 68 字、不含任何敏感字：最壞情況是「掃了半天什麼都沒找到」。
+        long_opaque = uuid.uuid4().hex + str(uuid.uuid4())
+
+        elapsed_short = timeit.timeit(lambda: _mask_text(short), number=3000)
+        elapsed_long = timeit.timeit(lambda: _mask_text(long_opaque), number=3000)
+        ratio = elapsed_long / elapsed_short
+
+        assert ratio < 50, (
+            f"長字串的遮罩成本是短字串的 {ratio:.0f} 倍——樣式出現回溯爆炸。"
+            "檢查 config/logging.py 的 _VALUE_PATTERNS 是否有樣式以無錨點的貪婪量詞開頭"
+        )
 
     def test_set_values_are_masked(self, capsys: pytest.CaptureFixture[str]) -> None:
         """set / frozenset 原本整支落到「不處理」的分支，內容完全不經遮罩。"""

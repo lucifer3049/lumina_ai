@@ -79,16 +79,25 @@ _URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)([^\s/:@]*):([^\s/@
 #
 # 三個看似多餘的細節，各對應一種實際漏接（tests/unit/test_logging.py 逐條釘住）：
 #
-# 1. key 允許前後綴而非 ``\b`` 開頭：``_`` 是 word char，所以 ``\btoken`` 在
-#    ``access_token`` 上**不成立**——JSON 化的 payload 幾乎都是這種複合鍵名。
+# 1. **沒有 ``\b``**：``_`` 是 word char，所以 ``\btoken`` 在 ``access_token`` 上
+#    **不成立**——而 JSON 化的 payload 幾乎都是這種複合鍵名。不加邊界即可命中
+#    內部；未被捕獲的前綴（``access_``）原樣留在字串裡，輸出不受影響。
 # 2. 分隔符與值各允許一個引號：``{"access_token": "sk-..."}`` 的 key 右側是 `"`
 #    而不是 `[=:]`，值左側同理。少了這一層，字串化的 dict 整包不會被遮。
 # 3. 值可帶 ``Bearer`` / ``Basic`` scheme：``Authorization: Bearer <jwt>`` 的值
 #    若從 ``Bearer`` 起算就會在空白處截斷，結果是遮掉 "Bearer" 這個字、JWT 原樣
 #    留著。scheme 不回填進輸出——它不是機密，但留著只會讓人以為遮罩失敗。
+#
+# ⚠️ **樣式不得以無錨點的貪婪量詞開頭。** 曾經為了涵蓋 key 的前綴而寫成
+# ``[A-Za-z0-9_.\-]*(?:token|...)``，結果每個位置都要先吞掉整段 word char 再回溯
+# 比對 10 個候選字，成本隨字串長度呈平方成長。本檔跑在**每一筆** log 上，而存取
+# 日誌的 ``request_id``（32 hex）與 ``tenant_id``（36 字）正是最壞情況：單筆事件
+# 的 key/value 掃描由 10.8 µs 惡化到 158.5 µs（14.7 倍），200 併發壓測的 p95 從
+# 351ms 掉到 495–611ms。以敏感字本身開頭讓引擎能用字首集合快速跳過不可能的位置，
+# 恢復到 17.9 µs（相對原樣式 1.7 倍，換到的是上述三個漏接）。
 _SENSITIVE_KEY_ALTERNATION = "|".join(re.escape(part) for part in _SENSITIVE_KEY_PARTS)
 _KEY_VALUE_PAIR = re.compile(
-    rf"(?i)([A-Za-z0-9_.\-]*(?:{_SENSITIVE_KEY_ALTERNATION})[A-Za-z0-9_.\-]*)"
+    rf"(?i)((?:{_SENSITIVE_KEY_ALTERNATION})[A-Za-z0-9_.\-]*)"
     rf"([\"']?\s*[=:]\s*)([\"']?)(?:bearer|basic|token)?\s*[^&\s\"',}}）]+"
 )
 
