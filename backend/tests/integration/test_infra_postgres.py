@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import pytest
-from django.db import connection
+from django.db import connection, connections
 
 # 05 §5.3 / §3.2：向量檢索與中文 FTS 的兩個必要 extension。
 REQUIRED_EXTENSIONS = {"vector", "pgroonga"}
@@ -87,15 +87,20 @@ def test_rls_enabled_tables_are_actually_enforced() -> None:
     )
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(databases=["admin"])
 def test_halfvec_column_and_hnsw_index_are_usable() -> None:
     """halfvec(1536) 欄位 + HNSW `halfvec_cosine_ops` 索引可建、可查（05 §3.2、§4）。
 
     參數 m=16 / ef_construction=64 取自 05 §4 索引策略表——這裡連參數一起建，
     是為了讓「pgvector 版本太舊不支援 halfvec ops」在 Phase 0 就爆，
     而不是等 Phase 1C 建 embeddings 表時才發現要換 image。
+
+    走 ``admin`` alias：角色拆分（13 §3.1）之後 default 是應用角色，它**沒有**
+    public schema 的 CREATE 權限（見 tests/integration/test_db_roles.py）。
+    這裡驗的是資料庫本身的能力，不是應用角色的權限，所以用 owner 連線是對的——
+    要讓應用角色能跑這段 DDL，得把權限放寬到廢掉整個拆分。
     """
-    with connection.cursor() as cursor:
+    with connections["admin"].cursor() as cursor:
         cursor.execute(f"CREATE TABLE _acc_vec (id int primary key, v halfvec({EMBEDDING_DIM}))")
         cursor.execute(
             "CREATE INDEX _acc_vec_hnsw ON _acc_vec "
@@ -116,10 +121,13 @@ def test_halfvec_column_and_hnsw_index_are_usable() -> None:
     assert row is not None and row[0] == 1, "halfvec 餘弦距離排序結果不符預期"
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(databases=["admin"])
 def test_pgroonga_matches_chinese_without_custom_dictionary() -> None:
-    """pgroonga 索引對中文查詢命中，且不相關詞不誤中（05 §5.3 的選型理由）。"""
-    with connection.cursor() as cursor:
+    """pgroonga 索引對中文查詢命中，且不相關詞不誤中（05 §5.3 的選型理由）。
+
+    走 ``admin`` alias 的理由同上一條（DDL 需要 owner 角色）。
+    """
+    with connections["admin"].cursor() as cursor:
         cursor.execute("CREATE TABLE _acc_fts (id int primary key, content text)")
         cursor.execute("CREATE INDEX _acc_fts_pgroonga ON _acc_fts USING pgroonga (content)")
         cursor.execute(

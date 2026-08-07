@@ -161,6 +161,32 @@ def test_application_user_keeps_read_only_stats_access(rendered: dict[str, str])
     )
 
 
+def test_owner_role_is_not_reachable_through_the_pool(rendered: dict[str, str]) -> None:
+    """migration / owner 角色不得出現在連線池的認證清單裡（13 §3.1）。
+
+    角色拆分後有三組憑證，而只有應用角色該走 PgBouncer：
+
+    - ``CREATE DATABASE``（pytest 建 test database）無法經 transaction mode 的
+      連線池——它綁定固定 dbname。
+    - migration 的 ``CREATE INDEX CONCURRENTLY``、advisory lock 在 transaction
+      pooling 下語意會壞掉（05 §5.5），而壞法是零星、難重現的。
+
+    把 owner 加進 userlist 不會有任何立即症狀（連得上、跑得動 SELECT），問題要
+    等到某次 migration 才爆——所以這條在拆分當下就釘住：owner 一律走直連埠。
+    ``__DB_ADMIN_USER__`` 這類佔位符若出現在樣板裡，代表有人開了那條路。
+    """
+    for name, content in rendered.items():
+        assert "__DB_ADMIN_USER__" not in content, f"{name} 引入了 owner 角色的佔位符"
+        assert "__POSTGRES_SUPERUSER__" not in content, f"{name} 引入了 superuser 的佔位符"
+
+    entries = [
+        line for line in rendered["userlist.txt"].splitlines() if line.strip().startswith('"')
+    ]
+    assert len(entries) == 2, (
+        f"userlist.txt 有 {len(entries)} 個帳號，應為 2（應用帳號 + PgBouncer 管理帳號）：{entries}"
+    )
+
+
 def test_userlist_contains_both_accounts_with_distinct_passwords(rendered: dict[str, str]) -> None:
     """兩個帳號各有自己的密碼。
 
