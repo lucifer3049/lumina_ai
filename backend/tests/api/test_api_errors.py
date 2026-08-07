@@ -381,6 +381,39 @@ class TestEveryErrorEntryPointIsProblemJson:
         assert "RuntimeError" not in response.text
 
 
+class TestDiagnosticsEndpointDoesNotLeakTopology:
+    """``/spike/healthz`` 是 repo 裡唯一的 diagnostics endpoint，且**無認證**。
+
+    放在本檔的理由：本檔的主題是「回應不得夾帶內部細節」（500 handler 那幾條驗的
+    是同一件事），只是這條不走錯誤路徑。鍵集合本身的守門在
+    ``tests/unit/test_orm_knobs.py``——那一層活得比 spike 面久（1A 會整組刪除它）；
+    這裡驗的是**經 HTTP 出去的東西**與那一層一致，也就是 controller 沒有自己加料。
+    """
+
+    async def test_healthz_exposes_only_the_measurement_knobs(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        from core.db import orm_runtime_knobs
+
+        response = await client.get("/api/v1/spike/healthz")
+
+        assert response.status_code == 200
+        assert response.json() == orm_runtime_knobs(), "controller 自行組了回應內容"
+
+    async def test_healthz_does_not_expose_db_host_or_port(self, client: httpx.AsyncClient) -> None:
+        """前一版回報 ``db_host`` / ``db_port``——無認證端點上的內部拓撲（鐵則 9）。"""
+        from django.conf import settings
+
+        body = await client.get("/api/v1/spike/healthz")
+        text = body.text
+        database = settings.DATABASES["default"]
+
+        assert "db_host" not in text
+        assert "db_port" not in text
+        assert str(database["HOST"]) not in text
+        assert str(database["PORT"]) not in text
+
+
 class TestOpenApiDeclaresErrorContract:
     """A3：錯誤契約必須進 OpenAPI，否則前端 codegen 產不出錯誤型別（09 §4、鐵則 10）。"""
 

@@ -10,6 +10,8 @@
  * 差別只在 `code`。
  */
 
+import type { ProblemDetail } from '@/types/models'
+
 /** 逾時預算。值出自 11 §4.1 Timeout 全域字典的「HTTP 對外 15s」。 */
 export const API_TIMEOUT_MS = 15_000
 
@@ -19,13 +21,19 @@ export const CLIENT_ERROR_CODES = {
   timeout: 'TIMEOUT',
 } as const
 
-/** RFC 9457 的回應形狀（09 §1.3）。型別以 generated 為準，此處只取解析需要的欄位。 */
-interface ProblemBody {
-  title?: unknown
-  detail?: unknown
-  code?: unknown
-  request_id?: unknown
-}
+/**
+ * 解析中的 problem body（09 §1.3）。
+ *
+ * 型別**綁 generated 的 `ProblemDetail`**，不自己重宣告一份。前一版是一個所有欄位
+ * 都 `?: unknown` 的本地 interface，結構上與任何 JSON 相容——後端把 `request_id`
+ * 改名時，`openapi.json` → `generated/schema.ts` → `types/models.ts` 整條鏈都會更新，
+ * 只有這裡不會：`vue-tsc` 綠、`make openapi-check` 綠，而 `ApiError.requestId` 對每個
+ * 錯誤回應都靜默變成 null。那是使用者唯一能回報、也是唯一能撈到 log 的線索。
+ *
+ * `Partial<>` 是必要的：body 來自網路，執行期不保證符合契約（標頭說 problem+json
+ * 但內容是代理吐的東西），所以解析仍要逐欄位防禦（見 `asString`）。
+ */
+type ProblemBody = Partial<ProblemDetail>
 
 export interface RequestOptions extends Omit<RequestInit, 'signal'> {
   /** 覆寫逾時（毫秒）。長任務請走 202 + job 輪詢（09 §3.3），不要無限放大這個值。 */

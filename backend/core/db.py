@@ -68,6 +68,22 @@ async def run_orm[**P, R](fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs)
     return cast("R", await _run_with_cleanup(fn, *args, **kwargs))
 
 
-def orm_threadpool_size() -> int:
-    """供 /healthz 與壓測報告回報實際生效的 threadpool 大小。"""
-    return int(settings.ORM_THREADPOOL_SIZE)
+def orm_runtime_knobs() -> dict[str, Any]:
+    """壓測旋鈕的診斷回報（供 ``/spike/healthz``）。
+
+    集中在本檔的理由：兩個旋鈕都在本檔生效（``_orm_executor`` 由
+    ``ORM_THREADPOOL_SIZE`` 建立、連線重用由 ``CONN_MAX_AGE`` 決定），而 controller
+    不該為了回報設定值去讀 ``django.conf``——鐵則 3 的 endpoint 不碰基礎設施。
+
+    **刻意不含 DB 主機與埠。** 那是內部拓撲，而這支端點無認證（spike 面），
+    回報等於公開基礎設施位置（鐵則 9）。
+
+    回報的是**設定值**。「設定值 == 真正生效的值」目前靠 ``_orm_executor`` 在
+    import 期由同一個 setting 建立來保證，本函式不另外去讀 executor 的實際寬度
+    （那要碰私有屬性）。若日後 executor 改成延遲建立或可替換，這裡必須改成讀實際
+    值——否則這支端點就失去它存在的理由（見下方 docstring 引用的量測教訓）。
+    """
+    return {
+        "conn_max_age": settings.DATABASES["default"]["CONN_MAX_AGE"],
+        "orm_threadpool_size": int(settings.ORM_THREADPOOL_SIZE),
+    }

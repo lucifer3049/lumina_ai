@@ -31,15 +31,8 @@ class SpikeService:
     async def latest_items(self, limit: int) -> list[SpikeItemRow]:
         return await run_orm(self._latest_items_sync, limit)
 
-    async def count_items(self) -> int:
-        return await run_orm(self._count_items_sync)
-
     # ── 以下在 threadpool 執行緒上執行；交易邊界在這裡，不在 async 那側 ──
 
     def _latest_items_sync(self, limit: int) -> list[SpikeItemRow]:
         with unit_of_work():
             return self._repo.latest(limit)
-
-    def _count_items_sync(self) -> int:
-        with unit_of_work():
-            return self._repo.count_all()

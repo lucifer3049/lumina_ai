@@ -12,7 +12,7 @@ from fastapi import APIRouter, Query
 
 from api.schemas.problem import ERROR_RESPONSES
 from api.schemas.spike import SpikeItemOut
-from core.db import orm_threadpool_size
+from core.db import orm_runtime_knobs
 from services.spike import SpikeService
 
 # responses 掛在 router 而非逐端點：逐端點宣告必然會漏，而漏掉時 OpenAPI 只是
@@ -37,16 +37,16 @@ async def list_items(limit: int = Query(20, ge=1, le=100)) -> list[SpikeItemOut]
 
 @router.get("/spike/healthz", operation_id="spike_healthz")
 async def healthz() -> dict[str, Any]:
-    """回報實際生效的旋鈕值。
+    """回報壓測旋鈕值。
 
     壓測時先打這支確認「你以為設定的值」和「真正生效的值」一致——上一輪
     量測不可信的教訓之一就是設定沒生效卻照樣記數據。
-    """
-    from django.conf import settings
 
-    return {
-        "conn_max_age": settings.DATABASES["default"]["CONN_MAX_AGE"],
-        "orm_threadpool_size": orm_threadpool_size(),
-        "db_host": settings.DATABASES["default"]["HOST"],
-        "db_port": settings.DATABASES["default"]["PORT"],
-    }
+    內容一律由 ``core/db.py`` 的 :func:`orm_runtime_knobs` 決定，本檔不自行組。
+    前一版在這裡 ``from django.conf import settings`` 並回報 ``db_host`` /
+    ``db_port``，同時違反三條鐵則：controller 讀基礎設施（3）、api 層碰 Django
+    組態（2 的精神，import-linter 只擋 repositories/apps 攔不到）、以及把內部拓撲
+    經**無認證**端點外流（9）。這支是 repo 裡唯一的 diagnostics endpoint，1A 要建
+    正式的 ``/healthz``（11 §4.2）時抄的就是它。
+    """
+    return orm_runtime_knobs()

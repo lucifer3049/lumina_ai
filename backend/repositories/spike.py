@@ -49,5 +49,12 @@ class SpikeItemRepository(TenantScopedRepository[SpikeItem]):
         return list(cast("Iterable[SpikeItemRow]", queryset))
 
     def count_all(self) -> int:
-        """當前租戶總筆數——供 /healthz 確認 seed 資料到位。"""
+        """當前租戶總筆數。
+
+        唯一呼叫端是 ``tests/integration/test_tenant_scope.py``——隔離斷言要能說
+        「租戶 A 只看得到自己那 3 筆」，筆數是最直接的表達。原 docstring 寫「供
+        /healthz 確認 seed 資料到位」，而 ``/spike/healthz`` 從來沒有 count 過任何
+        東西；那句話讓對應的 service 方法被當成活的而留了一條死路徑（已於 Phase 0
+        結案審查移除）。
+        """
         return self.get_queryset().count()
