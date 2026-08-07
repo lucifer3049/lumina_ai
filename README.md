@@ -4,10 +4,12 @@ Multi-tenant SaaS 的 Enterprise AI Knowledge Platform。核心能力：LLM Chat
 
 架構風格：**Modular Monolith + Clean Architecture + DDD**，保留未來拆分 Microservices 的能力。
 
-> **目前狀態：Phase 0 進行中。**
-> 已完成：ADR-001 橋接驗證 spike（Django ORM 在 FastAPI async context 下的共存方式）、
-> 開發環境基礎設施全套。尚未有業務功能，非可用產品。完整設計見 [`docs/plan/`](docs/plan/)（00–15），開發順序見
-> [`13_開發Roadmap.md`](docs/plan/13_開發Roadmap.md)。
+> **目前狀態：Phase 0 已結案（2026-08-07），下一步為工作包 1A（Identity 基礎）。**
+> 已完成：ADR-001 橋接驗證（Django ORM 在 FastAPI async context 下的共存方式）、
+> 開發環境基礎設施全套、CI 全管線、結構化日誌與請求追蹤、前端 Vite 骨架與 OpenAPI codegen 管線。
+> **尚未有任何業務功能，非可用產品**——現階段起來後只有 `/docs` 與 `/openapi.json`。
+> 完整設計見 [`docs/plan/`](docs/plan/)（00–15），開發順序與 1A 的前置條件見
+> [`13_開發Roadmap.md`](docs/plan/13_開發Roadmap.md)（§2 結案紀錄、§3.1–3.2）。
 
 ---
 
