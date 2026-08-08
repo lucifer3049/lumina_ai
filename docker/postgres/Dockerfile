@@ -39,7 +39,15 @@ RUN set -eux; \
     apt-get purge -y --auto-remove wget; \
     rm -rf /var/lib/apt/lists/* /tmp/groonga-apt-source.deb
 
-# 註：`CREATE EXTENSION` 不在這裡做，也不用 docker-entrypoint-initdb.d。
-# initdb.d 只在資料卷首次初始化時執行，pytest 另建的 test database 不會經過它，
-# 於是本機綠、CI 紅。extension 一律由 Django migration 建立
-# （apps/platform/migrations/0001_extensions.py，CLAUDE.md 鐵則 7）。
+# 註：`CREATE EXTENSION` 不在 image 內做，而在 initdb.d
+# （docker/postgres/initdb.d/20-extensions.sh，1A-1 起）——兩者的差別是「build 時」
+# 與「initdb 時」：extension 是 database 級物件，build 階段還沒有資料庫。
+#
+# 該腳本對 **template1** 也建一次，pytest 另建的 test database 因此天生帶著兩者；
+# 少了那一步就會「本機的 lumina 有、測試庫沒有」，症狀是錯誤指向使用 halfvec 的
+# 那條 SQL，而不是缺 extension。
+#
+# 為什麼不再由 Django migration 建（Phase 0 的原決定）：角色拆分後 migration 以
+# 非 superuser 的 schema owner 執行，而 vector / pgroonga 都不是 trusted extension，
+# `CREATE EXTENSION` 會被拒。migration 保留為單一宣告處，實際是 no-op
+# （apps/platform/migrations/0001_extensions.py 有完整說明）。

@@ -105,7 +105,7 @@ def test_application_role_owns_no_table() -> None:
     )
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(databases=["default", "admin"])
 def test_application_role_is_not_a_member_of_the_owner_role() -> None:
     """應用角色不得是 owner 角色的成員。
 

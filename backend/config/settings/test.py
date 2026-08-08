@@ -17,3 +17,7 @@ from .base import DATABASES
 DATABASES["default"]["HOST"] = os.environ.get("DB_DIRECT_HOST", "127.0.0.1")
 DATABASES["default"]["PORT"] = os.environ.get("DB_DIRECT_PORT", "15432")
 DATABASES["default"]["CONN_MAX_AGE"] = 0
+
+# `admin` alias（base.py）本來就直連，這裡不需要改。兩條連線的差別只在**角色**：
+# default = 應用角色（受 RLS 管），admin = schema owner（建 test database 與跑
+# migration）。繞不繞 PgBouncer 不影響 RLS——policy 認的是連線角色，不是路徑。

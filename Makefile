@@ -71,12 +71,16 @@ DB_STATEMENT_TIMEOUT ?= 5s
 # 展開成一條指令而非遞迴 $(MAKE)：專案路徑含中文，WSL 下 sub-make 會 getcwd 失敗
 # 並印出 `make: getcwd: No such file or directory`（指令仍會跑，但訊息會誤導人）。
 # 使用者/資料庫名取自容器內的環境變數，避免與 .env 的值漂開。
+#
+# **只套應用角色**（13 §3.1 的 1A-P3）：migration 角色若也吃這個 5s 上限，
+# 大表的 AddIndexConcurrently 與 HNSW 建索引會在中途被砍
+# （`canceling statement due to statement timeout`），而那時 schema 已是半套的。
 APPLY_DB_TIMEOUTS = $(COMPOSE) exec -T postgres sh -c \
 	'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -v ON_ERROR_STOP=1 \
-	 -c "ALTER ROLE \"$$POSTGRES_USER\" SET statement_timeout = '"'"'$(DB_STATEMENT_TIMEOUT)'"'"'"'
+	 -c "ALTER ROLE \"$$DB_USER\" SET statement_timeout = '"'"'$(DB_STATEMENT_TIMEOUT)'"'"'"'
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs psql db-timeouts minio-init migrate seed dev api api-pinned \
+.PHONY: help up down logs psql psql-app db-timeouts minio-init migrate seed dev api api-pinned \
         test test-unit test-integration test-api verify-infra image lock-check lint \
         fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
         loadtest loadtest-headless loadtest-pinned loadtest-report clean
@@ -101,8 +105,15 @@ down: ## 停止基礎設施（保留資料卷）
 logs: ## 追蹤基礎設施日誌
 	$(COMPOSE) logs -f
 
-psql: ## 進入 psql（直連 postgres，繞過 pgbouncer）
+# 兩個 psql 入口，因為「用哪個角色連進去」會改變你看到的東西：superuser 豁免
+# RLS 與所有權限檢查，用它查資料會看到 policy 之外的全貌——排查隔離問題時
+# 那正是最容易誤導人的視角。
+psql: ## 進入 psql（superuser，break-glass 用；豁免 RLS，查隔離問題請用 psql-app）
 	$(COMPOSE) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
+
+psql-app: ## 進入 psql（應用角色，看到的與應用一致：受 RLS 與權限限制）
+	$(COMPOSE) exec postgres sh -c \
+		'PGPASSWORD="$$DB_PASSWORD" psql -h 127.0.0.1 -U "$$DB_USER" -d "$$POSTGRES_DB"'
 
 db-timeouts: ## 套用 role 層級 statement_timeout（冪等；既有資料卷也適用）
 	$(APPLY_DB_TIMEOUTS)
@@ -111,8 +122,12 @@ db-timeouts: ## 套用 role 層級 statement_timeout（冪等；既有資料卷�
 minio-init: ## 建立 bucket、開啟版本化、關閉匿名存取（冪等）
 	$(COMPOSE) run --rm minio-init
 
-migrate: ## 執行 Django migration（含 pgvector / pgroonga extension）
-	$(UV_RUN) python manage.py migrate
+# --database=admin：migration 必須以 schema owner 執行（13 §3.1）。
+# 走 default（應用角色）會直接因缺 DDL 權限而失敗——那是好的；危險的是有人為了
+# 讓它過而把 CREATE 權限補回應用角色，那會讓每張新表的 owner 變成應用角色，
+# 而 owner 預設豁免 RLS policy。
+migrate: ## 執行 Django migration（以 owner 角色；含 pgvector / pgroonga extension）
+	$(UV_RUN) python manage.py migrate --database=admin
 
 seed: ## 產生壓測資料（預設 50 租戶 × 2000 筆）
 	$(UV_RUN) python manage.py seed_spike

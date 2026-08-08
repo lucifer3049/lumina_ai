@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPOSE_FILE = REPO_ROOT / "docker" / "compose.yml"
 ENV_EXAMPLE = REPO_ROOT / ".env.example"
 MAKEFILE = REPO_ROOT / "Makefile"
+ROLES_SCRIPT = REPO_ROOT / "docker" / "postgres" / "initdb.d" / "10-roles.sh"
 
 # .env.example 必須新增的三組值（.env 由使用者自行複製後填）
 REQUIRED_ENV_KEYS = (
@@ -90,6 +91,31 @@ def test_postgres_initdb_user_is_not_the_application_account() -> None:
     assert initdb_user.group(1) == "${POSTGRES_SUPERUSER}", (
         f"POSTGRES_USER 目前是 {initdb_user.group(1)}——initdb 帳號是 superuser，"
         "不得同時是應用連線帳號（05 §5.1）"
+    )
+
+
+def test_application_role_is_never_granted_truncate() -> None:
+    """initdb.d 授予應用角色的權限清單不得含 ``TRUNCATE``。
+
+    ``TRUNCATE`` **完全不受 RLS policy 約束**——帶著它的應用角色可以清掉其他租戶
+    的資料，而 policy 攔不住。這是 RLS 的第五條繞道，而且它不在
+    ``tests/integration/test_db_roles.py`` 的角色屬性檢查範圍內（那查的是 rolsuper
+    這類 cluster 級屬性，不是表級授權）。
+
+    測試環境是唯一例外：`transactional_db` 的 flush 就是 TRUNCATE，所以
+    ``tests/conftest.py`` 只在 test database 內補這個權限，理由寫在該函式的
+    docstring。這條測試守的是「那個例外不要外溢到 initdb.d」。
+    """
+    script = ROLES_SCRIPT.read_text(encoding="utf-8")
+    granting_lines = [
+        line
+        for line in script.splitlines()
+        if "GRANT" in line and "TRUNCATE" in line.upper() and not line.lstrip().startswith("#")
+    ]
+
+    assert not granting_lines, (
+        f"initdb.d 授予了 TRUNCATE：{granting_lines}——TRUNCATE 繞過 RLS policy，"
+        "應用角色拿到它就能清掉其他租戶的資料"
     )
 
 

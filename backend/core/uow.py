@@ -66,7 +66,15 @@ def unit_of_work() -> Iterator[None]:
 
     缺 TenantContext 一律 raise（鐵則 4）。**不提供無租戶模式**：靜默略過的話
     交易照跑而參數是空的，RLS policy 上線後查詢會回空集合或全表，兩者都不會有
-    錯誤訊息。Migration 與維運腳本走 bypass 角色，不經本模組（05 §5.1）。
+    錯誤訊息。Migration 與維運腳本不經本模組，走 ``admin`` alias 的 schema owner
+    角色（13 §3.1）。
+
+    **目前沒有 BYPASSRLS 角色，owner 也不是**：owner 建的表一律 ``FORCE ROW
+    LEVEL SECURITY``，policy 對它同樣生效（驗收見
+    ``tests/integration/test_db_roles.py``）。真正需要跨租戶讀寫的作業——backfill、
+    DLQ 重放——第一次出現在 Phase 2 的 2A，屆時再依 05 §5.1 建立顯式的 bypass
+    角色並加上 Audit。先建一個「沒人用但看得到全部租戶資料」的角色，風險是純
+    增加的。
 
     ## 為什麼巢狀換租戶必須 raise
 

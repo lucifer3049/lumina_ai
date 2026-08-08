@@ -20,7 +20,9 @@ ADR-001：Django 在本專案只是 **ORM + Migration 引擎**，不對外提供
     下 session 級設定不會跟著 client 連線走（見 repositories/base.py）。
 
     因此 statement_timeout 設在 **DB 端的 role 上**，由 ``make db-timeouts``
-    套用（冪等，``make up`` 會自動帶，新舊資料卷都適用）。
+    套用（冪等，``make up`` 會自動帶，新舊資料卷都適用）。**只套應用角色**：
+    套到 migration 角色會砍掉大表的 ``AddIndexConcurrently`` 與 HNSW 建索引，
+    而那時 schema 已經是半套的（13 §3.1 的 1A-P3）。
 
     值的來源是 **11 §4.1 Timeout 全域字典的「DB 5s」**，宣告在下方
     :data:`DB_STATEMENT_TIMEOUT`。Makefile 有一份同名變數餵給 psql；兩者漂移
@@ -66,7 +68,10 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": os.environ.get("DB_NAME", "lumina"),
-        "USER": os.environ.get("DB_USER", "lumina"),
+        # 應用角色：非 superuser、非 owner、非 BYPASSRLS（05 §5.1、13 §3.1）。
+        # RLS 的四條豁免路徑都繞過 policy 且完全無症狀，所以「應用連線用哪個角色」
+        # 不是設定偏好而是隔離機制本身——驗收在 tests/integration/test_db_roles.py。
+        "USER": os.environ.get("DB_USER", "lumina_app"),
         "PASSWORD": _required_env("DB_PASSWORD"),
         "HOST": os.environ.get("DB_HOST", "127.0.0.1"),
         # 預設連 PgBouncer(16432)，不直連 PG(15432)——見 docker/compose.spike.yml
@@ -94,7 +99,38 @@ DATABASES = {
             # 11 §4.1 Timeout 全域字典：DB 5s。
             "connect_timeout": int(os.environ.get("DB_CONNECT_TIMEOUT", "5")),
         },
-    }
+    },
+    # ── migration / 維運連線（13 §3.1 的 1A-P2）───────────────────
+    # schema owner 角色，只在三個地方使用：`make migrate`、pytest 建立 test
+    # database、維運腳本。應用執行期永遠不碰它。
+    #
+    # 為什麼不共用 default：pytest 需要 CREATE DATABASE，而該權限給了應用角色
+    # 就等於讓它能自建一個不受任何 policy 保護的資料庫；反過來，若整個測試套件
+    # 都以 owner 跑，1A-2 的跨租戶矩陣會在 RLS 完全失效時全綠——那比沒有測試更
+    # 糟，它會主動背書一個不存在的保護。
+    #
+    # 為什麼直連 PostgreSQL 而非經 PgBouncer：transaction pooling 下
+    # `CREATE DATABASE` 不可行（連線池綁定固定 dbname），migration 取的 advisory
+    # lock 與 `CREATE INDEX CONCURRENTLY` 語意也會壞掉（05 §5.5）。
+    "admin": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.environ.get("DB_NAME", "lumina"),
+        "USER": os.environ.get("DB_ADMIN_USER", "lumina_owner"),
+        "PASSWORD": _required_env("DB_ADMIN_PASSWORD"),
+        "HOST": os.environ.get("DB_DIRECT_HOST", "127.0.0.1"),
+        "PORT": os.environ.get("DB_DIRECT_PORT", "15432"),
+        # 不重用：這條連線只在 migration / 建庫時短暫使用，長連線會一直佔著
+        # 一條特權連線，而它的權限遠大於應用連線。
+        "CONN_MAX_AGE": 0,
+        "CONN_HEALTH_CHECKS": True,
+        "DISABLE_SERVER_SIDE_CURSORS": True,
+        "OPTIONS": {
+            # 直連 PG 其實可以 prepare，但兩條連線的行為差異會讓「migration 環境
+            # 能跑、應用環境不能」這類問題更難查，所以維持一致。
+            "prepare_threshold": None,
+            "connect_timeout": int(os.environ.get("DB_CONNECT_TIMEOUT", "5")),
+        },
+    },
 }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

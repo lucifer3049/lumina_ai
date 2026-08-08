@@ -109,6 +109,14 @@ pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `1637
 **secrets**：`.env` 已 gitignore，值不進版控；缺 `DJANGO_SECRET_KEY` / `DB_PASSWORD`
 等變數時 Django 會拒絕啟動（Fail Fast），不套用開發預設值。
 
+**三個 DB 角色**（05 §5.1、13 §3.1）：`POSTGRES_SUPERUSER` 只在 initdb 建另外兩個角色；
+`DB_ADMIN_USER` 是 schema owner，跑 migration 與建 test database，直連 `15432`；
+`DB_USER` 是應用執行期唯一連線，非 superuser、非 owner、無 DDL 權限，走 PgBouncer `16432`。
+拆分是 PostgreSQL RLS 生效的前提——superuser 與表的 owner 都預設豁免 policy，
+用同一個帳號跑全部會讓隔離在「測試全綠」的狀態下不存在。角色在 initdb 建立，
+`.env` 的帳號改了要 `make clean` 重建資料卷才生效。查資料時 `make psql` 是 superuser
+視角（看得到全部），`make psql-app` 才與應用看到的一致。
+
 ### 常用指令
 
 | 指令 | 用途 |

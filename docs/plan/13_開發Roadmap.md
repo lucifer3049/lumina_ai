@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 13 |
-| 版本 | v1.6 |
+| 版本 | v1.7 |
 | 日期 | 2026-07-30 |
 | 狀態 | Draft — 待審閱 |
 | 估算基準 | **1 位工程師 + AI（Claude Code）結對開發**；AI 加速 coding 與測試撰寫，但 review、整合、除錯與決策仍以人為瓶頸——時程按此重估；pw 數字保留作為工作量參考；不含需求變更緩衝（建議整體 +20%） |
-| 變更紀錄 | v1.1：估算基準改為 1 人 + AI；時程重估（27→29 週）；2C 裁切（Django Admin 頂替、自訂角色延後）；新增人機協作開發規則；R4 改寫。v1.2：§9.1 補非開發 lead time（F-10）。v1.3：人機協作規則重編為 §1.2（原誤植 §2.1，編號順序錯誤）。v1.4：新增 §3.1「1A 前置條件」（RLS 有三個漏做即靜默失效的前置項）與 §3.2「1A 同步改動：log 的租戶綁定」，兩者皆出自 Phase 0 結案程式審查（見 15 §8）；版本欄同步更正（原停在 v1.1 而變更紀錄已到 v1.3）。v1.5：Phase 0 DoD 的認證併發數改為「待分機環境判定」——單機量測法的絕對值跨 session 漂移 34–48%，無法裁決 150（08-05）與 100（08-07）孰為真（依據見 11 §1.4）。v1.6：§2 新增 Phase 0 結案紀錄（2026-08-07 通過閘門，含依據與三項不阻塞的未結項） |
+| 變更紀錄 | v1.1：估算基準改為 1 人 + AI；時程重估（27→29 週）；2C 裁切（Django Admin 頂替、自訂角色延後）；新增人機協作開發規則；R4 改寫。v1.2：§9.1 補非開發 lead time（F-10）。v1.3：人機協作規則重編為 §1.2（原誤植 §2.1，編號順序錯誤）。v1.4：新增 §3.1「1A 前置條件」（RLS 有三個漏做即靜默失效的前置項）與 §3.2「1A 同步改動：log 的租戶綁定」，兩者皆出自 Phase 0 結案程式審查（見 15 §8）；版本欄同步更正（原停在 v1.1 而變更紀錄已到 v1.3）。v1.5：Phase 0 DoD 的認證併發數改為「待分機環境判定」——單機量測法的絕對值跨 session 漂移 34–48%，無法裁決 150（08-05）與 100（08-07）孰為真（依據見 11 §1.4）。v1.6：§2 新增 Phase 0 結案紀錄（2026-08-07 通過閘門，含依據與三項不阻塞的未結項）。v1.7：§3.1 末段兩項處置在 1A-1 實作時被推翻並改寫——PgBouncer 佔位符不新增（owner 一律不經連線池）、不預先建立 bypass 角色（owner 受 FORCE RLS 管，跨租戶作業延到 2A）；兩項都有強制測試 |
 
 ---
 
@@ -82,7 +82,10 @@ gantt
 | 1A-P2 | **測試連線設計**：pytest 需 `CREATE DATABASE`（非特權角色沒有這權限），而 RLS 測試要驗的是**應用角色**的行為，兩者不能是同一條連線 | 若測試整程以特權角色跑，1A 的「跨租戶測試矩陣」會在 RLS 完全失效的情況下全綠——那比沒有測試更糟，它會主動背書一個不存在的保護 |
 | 1A-P3 | **`statement_timeout` 的套用對象**：`make db-timeouts` 目前對 `DB_USER` 下 `ALTER ROLE`，而該角色同時跑 migration。拆分後只套在應用角色上 | 5s 上限會砍掉大表的 `AddIndexConcurrently` 與 HNSW 建索引，症狀是 migration 中途 `canceling statement due to statement timeout`，而那已經是半套 schema |
 
-一併要收的兩處：`docker/pgbouncer/userlist.txt.tpl` 與 `render.sh` 的佔位符清單需加入新角色（PgBouncer 認的是自己的 userlist，不是 PG 的 role）；`core/uow.py` docstring 提到的「Migration 與維運腳本走 bypass 角色」目前在 repo 內**沒有對應角色存在**，拆分時一併落地。
+一併要收的兩處（**v1.7 修正：原文的處置在實作時被推翻，理由如下**）：
+
+1. **PgBouncer 佔位符不新增**（原文為「需加入新角色」）。應用角色沿用既有的 `__DB_USER__`，只換值（`lumina` → `lumina_app`）；owner/migration 角色**一律不經 PgBouncer**，走直連埠。三個理由各自獨立成立：transaction pooling 下 `CREATE DATABASE` 不可行（連線池綁定固定 dbname）；migration 取的 advisory lock 與 `CREATE INDEX CONCURRENTLY` 在 transaction mode 下語意會壞，且壞法零星難重現；`userlist.txt` 是明文密碼且 chmod 644 的共享 volume（`docker/compose.yml` 開頭已標為 production 待處理項），特權憑證進去等於擴大那個已知風險的爆炸半徑。這也是 Rails/Django + PgBouncer 的一般部署慣例（migration 走直連 DSN、應用走 pooler）。反向情境只有一種：PG 沒有可達的直連路徑（例如只給 pooler endpoint 的託管服務），那時才為管理連線開一個 `pool_mode=session` 的獨立 database 條目——本專案的 15432 直連埠早已存在且 pytest 在用。強制機制：`tests/unit/test_pgbouncer_render.py::test_owner_role_is_not_reachable_through_the_pool`。
+2. **不建 bypass 角色**（原文為「拆分時一併落地」）。`core/uow.py` docstring 的「Migration 與維運腳本走 bypass 角色」已改寫為陳述現況：owner 建的表一律 `FORCE ROW LEVEL SECURITY`，policy 對 owner 同樣生效，**repo 內沒有任何 BYPASSRLS 角色**。真正需要跨租戶讀寫的作業（backfill、DLQ 重放）第一次出現在 2A，屆時再依 05 §5.1 建立顯式 bypass 角色並加 Audit。提前建一個「沒人用但看得到全部租戶資料」的角色，風險是純增加的。
 
 **強制機制**：`tests/integration/test_infra_postgres.py::test_rls_enabled_tables_are_actually_enforced` 在沒有任何表啟用 RLS 時 skip，一旦有表啟用即斷言「連線角色非 superuser、非 `BYPASSRLS`、且表已 FORCE」。因此 1A 若先開 RLS 而漏了上述前置，得到的是紅燈而不是靜默失效。
 

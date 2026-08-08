@@ -53,11 +53,11 @@ def test_rls_enabled_tables_are_actually_enforced() -> None:
     2. 連線角色是表的 owner 而該表沒有 ``FORCE ROW LEVEL SECURITY``：owner 預設
        豁免 policy。
 
-    目前的 compose 恰好命中第 1 種——``POSTGRES_USER`` 同時是 initdb superuser、
-    schema owner 與應用連線帳號（見 docker/compose.yml），而 05 §5.1 明確要求應用
-    連線走非 superuser 角色。角色拆分要重建資料卷（``make clean``），因此列為 1A
-    的前置工作而不在 Phase 0 動它。這條測試負責讓那件事不可能被忘記：1A 一旦下
-    ``ENABLE ROW LEVEL SECURITY``，這裡就會紅燈，而不是安靜地失效。
+    角色拆分（1A-P1，見 docker/postgres/initdb.d/10-roles.sh）已讓前兩種不成立，
+    無條件版本的斷言在 ``tests/integration/test_db_roles.py``。本條保留的是第 3 種
+    ——**FORCE**：那是 per-table 的，每張新表都要重新做對一次，而 policy 是隨
+    1A-2 之後的每個工作包一張張長出來的。因此這條會在「某人加了新表、開了 RLS、
+    忘了 FORCE」的當下紅燈，而不是安靜地讓那張表對 owner 敞開。
     """
     with connection.cursor() as cursor:
         cursor.execute(

@@ -33,9 +33,17 @@ services:
       context: ./postgres
     image: lumina/postgres:16-pgvector-pgroonga
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      # initdb 帳號是 superuser 兼 schema owner，**不供任何連線使用**——
+      # superuser 豁免 RLS policy，拿它當應用帳號等於隔離不存在（13 §3.1 的 1A-P1）。
+      # 應用與 migration 兩個角色由 initdb.d/10-roles.sh 建立。
+      POSTGRES_USER: ${POSTGRES_SUPERUSER}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
+      # 下面四個只給 initdb.d/10-roles.sh 用（PostgreSQL 本身不讀）。
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_ADMIN_USER: ${DB_ADMIN_USER}
+      DB_ADMIN_PASSWORD: ${DB_ADMIN_PASSWORD}
       # C collation：05 §5.5。只在 initdb 生效，改了要重建資料卷。
       POSTGRES_INITDB_ARGS: "--lc-collate=C --lc-ctype=C.UTF-8"
     command:
@@ -48,11 +56,14 @@ services:
       - "127.0.0.1:${DB_DIRECT_PORT}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # 角色拆分只在 initdb 執行一次（cluster 級物件，所有資料庫共用）。
+      # 改了這支腳本要 `make clean` 重建資料卷才會生效。
+      - ./postgres/initdb.d:/docker-entrypoint-initdb.d:ro
     # 註：role 層級的 statement_timeout 與 extension 都不在這裡建。
-    # 前者由 `make db-timeouts` 套用（冪等，新舊資料卷皆適用），
+    # 前者由 `make db-timeouts` 套用（冪等，新舊資料卷皆適用；只套應用角色），
     # 後者由 Django migration 建立（initdb.d 不會套用到 pytest 另建的 test database）。
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER} -d ${DB_NAME}"]
       interval: 2s
       timeout: 3s
       retries: 30
