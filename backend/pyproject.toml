@@ -35,6 +35,7 @@ dev = [
     "import-linter>=2.0",
     # tests/unit/test_ci_pipeline.py 解析 workflow YAML 用
     "pyyaml>=6.0",
+    "factory-boy>=3.3",
 ]
 loadtest = [
     "locust>=2.32",
@@ -101,6 +102,20 @@ ignore_errors = true
 [[tool.mypy.overrides]]
 module = ["locust.*"]
 ignore_missing_imports = true
+
+# factory_boy 的 metaclass 沒有型別資訊，Factory 子類別的每次呼叫在 strict 之下
+# 都會被判為「呼叫未標型別的函式」。放寬範圍**只限工廠模組本身**：測試檔一律
+# 透過 tests/factories 的 make_* 包裝取得有回傳型別的物件，因此仍受完整檢查。
+# 直接放寬 tests.* 會讓所有測試少一層保護，範圍太大。
+[[tool.mypy.overrides]]
+module = ["tests.factories.*"]
+disallow_untyped_calls = false
+
+# factory 套件內部走隱式 re-export（`factory.Sequence` 實際定義在子模組），
+# 而 strict 的 no_implicit_reexport 會把每一個這種引用都判為未匯出。
+[[tool.mypy.overrides]]
+module = ["factory.*"]
+implicit_reexport = true
 
 # boto3 / botocore 不附型別（官方 stub 為獨立套件 boto3-stubs，體積大且需釘 service）。
 # 用量僅限 integration 測試中的物件儲存驗收，尚不值得引入。

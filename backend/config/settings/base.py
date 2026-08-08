@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     # extension 的 migration 落腳處（apps/platform/migrations/0001_extensions.py）；
     # 表定義隨 Phase 2 的 2A 工作包進來。
     "apps.platform",
+    "apps.identity",
     "apps.spike",
 ]
 
