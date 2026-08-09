@@ -22,7 +22,7 @@
 #
 # **一律綁 127.0.0.1**：`"16432:5432"` 的簡寫等同 0.0.0.0，四個服務會對整個區域網路開放，
 # 而開發憑證是 .env.example 的 change-me-locally。接上公用 wifi 時同網段任何人可直接
-# 讀寫全部租戶資料，且本機完全不會有徵兆。所有既有流程（pytest、psql、locust）都走
+# 讀寫全部租戶資料，且本機完全不會有徵兆。所有既有流程（pytest、psql、壓測）都走
 # localhost，加這個前綴不影響任何一項。tests/integration/test_infra_config.py 驗證。
 
 name: lumina

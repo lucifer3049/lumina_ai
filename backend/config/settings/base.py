@@ -1,10 +1,10 @@
-"""Django settings —— spike 範圍（ADR-001 橋接驗證）。
+"""Django settings。
 
 ADR-001：Django 在本專案只是 **ORM + Migration 引擎**，不對外提供 HTTP。
 所以此檔沒有 ROOT_URLCONF、沒有 MIDDLEWARE、沒有 TEMPLATES——那些是 FastAPI
 的職責。只設定「讓 ORM 跑起來」的最小集合。
 
-**B 組壓測的兩個旋鈕**（全部走環境變數，改設定不必改碼）：
+**橋接的兩個旋鈕**（全部走環境變數，改設定不必改碼）：
 
 - ``CONN_MAX_AGE``（秒）：連線重用時間。``0`` = 每次 ORM 呼叫重建連線。
   05 §5.5 定為 ``300``，依據是 spike B2 實測（單改此項吞吐 2.4 倍）。
@@ -62,7 +62,6 @@ INSTALLED_APPS = [
     # 表定義隨 Phase 2 的 2A 工作包進來。
     "apps.platform",
     "apps.identity",
-    "apps.spike",
 ]
 
 DATABASES = {
@@ -75,7 +74,7 @@ DATABASES = {
         "USER": os.environ.get("DB_USER", "lumina_app"),
         "PASSWORD": _required_env("DB_PASSWORD"),
         "HOST": os.environ.get("DB_HOST", "127.0.0.1"),
-        # 預設連 PgBouncer(16432)，不直連 PG(15432)——見 docker/compose.spike.yml
+        # 預設連 PgBouncer(16432)，不直連 PG(15432)——見 docker/compose.yml
         "PORT": os.environ.get("DB_PORT", "16432"),
         "CONN_MAX_AGE": int(os.environ.get("CONN_MAX_AGE", "300")),
         # 重用連線時必開：連線可能已被對端關閉，健康檢查避免拿到死連線。

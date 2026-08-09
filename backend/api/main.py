@@ -15,8 +15,8 @@ code → HTTP status 查 :data:`_HTTP_STATUS`（= 09 附錄 A）。
 而不是靠讀碼確認。
 
 02 §api 把 middleware 與 exception handler 分別放在 ``api/middleware/`` 與
-``api/exception_handlers.py``。spike 階段全部留在本檔，Phase 0 隨租戶認證改造
-一起拆——現在拆會讓 spike 的刪除範圍變得難以界定。
+``api/exception_handlers.py``。本檔目前兩者都收著——拆檔留給第一個真的需要
+第二條 middleware 的工作包，屆時一次搬過去（現在拆只是把同一段碼換個位置）。
 
 注意本檔**沒有** ``close_old_connections()`` 的 middleware。那是刻意的：
 Django connection 是 thread-local，從 event loop 執行緒呼叫關不到 threadpool
@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import time
 import uuid
-from contextvars import Token
 from http import HTTPStatus
 from typing import Any
 
@@ -40,9 +39,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from api.schemas.problem import PROBLEM_JSON, ProblemDetail
 from config.logging import bind_request_context, clear_request_context, get_logger
-from config.settings.app_settings import get_app_settings
 from core.exceptions import DomainError, ErrorCode
-from core.tenant import reset_current_tenant_id, set_current_tenant_id
+from core.tenant import clear_current_tenant_id
 
 logger = get_logger(__name__)
 
@@ -52,8 +50,8 @@ REQUEST_ID_HEADER = "X-Request-Id"
 _INTERNAL_ERROR_DETAIL = "內部錯誤，請提供 request_id 供追查"
 
 # 09 附錄 A 的 HTTP 欄。**新增 code 必須同步這張表**——那視同 API 契約變更。
-# SPIKE 範圍：只含 core/exceptions.py 已實作的 code；其餘於 Phase 0 隨 ErrorCode
-# enum 一起補（刻意不先寫半套 enum，見 core/exceptions.py docstring）。
+# 目前只含 core/exceptions.py 已實作的 code；其餘隨對應工作包補上
+# （刻意不先寫半套 enum，見 core/exceptions.py docstring）。
 _HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.RESOURCE_NOT_FOUND: 404,
     ErrorCode.VALIDATION_FAILED: 422,
@@ -179,67 +177,27 @@ def request_id_of(request: Request) -> str:
     return request_id
 
 
-# ── SPIKE ONLY：以下三個名字在工作包 1A 接上認證後整組刪除 ──────────────
-# （ADR-002 結案條件；改由 api/middleware/tenant_context.py 從已驗證的 JWT claim
-#   取租戶。刪除範圍 = 這個區塊 ＋ request_context_middleware 內標註的 5 行。）
-
-SPIKE_TENANT_HEADER = "X-Tenant-Id"
-
-
-class _InvalidTenantHeaderError(Exception):
-    """標頭存在但不是合法 UUID。
-
-    不用 ``DomainError``：那條路會經 exception handler，而本例外產生於
-    middleware——middleware 拋的例外到不了 handler（見 create_app 的
-    ``request_context_middleware``），所以這裡只當作內部訊號用。
-    """
-
-
-def _bind_spike_tenant(request: Request) -> Token[uuid.UUID] | None:
-    """從 ``X-Tenant-Id`` 標頭取租戶並綁定；回傳供還原用的 token。
-
-    ⚠️ **SPIKE ONLY —— 這違反 ADR-002「不接受 client 自報 tenant_id」。**
-
-    正式實作必須從已驗證的 JWT claim 取得租戶，client 送什麼都不採信。此處這樣
-    寫的唯一理由是壓測需要在無認證的情況下切換租戶；因此只在
-    ``enable_spike_endpoints`` 開啟時才會被呼叫，未開啟時客戶端自報的租戶標頭
-    完全不生效。
-    """
-    raw = request.headers.get(SPIKE_TENANT_HEADER)
-    if not raw:
-        return None
-    try:
-        return set_current_tenant_id(uuid.UUID(raw))
-    except ValueError as exc:
-        raise _InvalidTenantHeaderError from exc
-
-
-# ── SPIKE ONLY 區塊結束 ────────────────────────────────────────────
-
-
 class RequestContextMiddleware:
-    """請求層的追蹤 context、存取日誌、回應標頭，以及（spike）租戶綁定。
+    """請求層的追蹤 context、存取日誌、回應標頭，以及請求結束時的 context 收尾。
 
-    **四件事合成一條 middleware 是刻意的**，前一版是三條互相依賴的
+    **三件事合成一條 middleware 是刻意的**，前一版是三條互相依賴的
     ``BaseHTTPMiddleware``，代價是三個問題：短路的回應不會被記錄、順序約束只寫在
     註解裡沒有測試釘住、每條 middleware 每個請求都要建一組 anyio task group 加
-    兩個 memory object stream（落在 B 組壓測的熱路徑上）。
+    兩個 memory object stream（落在壓測的熱路徑上）。
 
     **為什麼是純 ASGI 而不是 ``@app.middleware("http")``**（1A-3 改）：
     ``BaseHTTPMiddleware`` 的 ``call_next`` 把下游丟到**另一個 task** 執行，而
-    contextvars 的修改不會從子 task 回流到父 task。1A 之前這不成問題——租戶由本層
-    自己（spike 標頭）設定；1A 之後租戶來自 route 層的認證 ``Depends``，那是下游，
-    於是這裡讀到的永遠是空的，**每一筆存取日誌的 tenant_id 都會靜靜消失**
-    （13 §3.2）。純 ASGI 的 ``await self.app(...)`` 就在同一個 task 裡，下游設定的
-    contextvar 在它回來之後讀得到。
+    contextvars 的修改不會從子 task 回流到父 task。租戶來自 route 層的認證
+    ``Depends``，那是下游，於是這裡讀到的永遠是空的，**每一筆存取日誌的
+    tenant_id 都會靜靜消失**（13 §3.2）。純 ASGI 的 ``await self.app(...)`` 就在
+    同一個 task 裡，下游設定的 contextvar 在它回來之後讀得到。
 
     ``path`` 刻意不含 query string：``?token=...`` 這類值會整串落地成明文
     （鐵則 9）。需要查參數時走 audit log，那裡有欄位級的遮罩政策。
     """
 
-    def __init__(self, app: ASGIApp, *, enable_spike_endpoints: bool) -> None:
+    def __init__(self, app: ASGIApp) -> None:
         self._app = app
-        self._enable_spike_endpoints = enable_spike_endpoints
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -249,15 +207,6 @@ class RequestContextMiddleware:
         request = Request(scope, receive)
         request_id = request_id_of(request)
         started = time.perf_counter()
-
-        # ── SPIKE ONLY：1A-5 刪除以下 5 行（見 _bind_spike_tenant）──
-        tenant_token: Token[uuid.UUID] | None = None
-        invalid_tenant_header = False
-        if self._enable_spike_endpoints:
-            try:
-                tenant_token = _bind_spike_tenant(request)
-            except _InvalidTenantHeaderError:
-                invalid_tenant_header = True
 
         bind_request_context(request_id=request_id)
 
@@ -290,18 +239,7 @@ class RequestContextMiddleware:
             )
 
         try:
-            if invalid_tenant_header:
-                response = problem_response(
-                    status=400,
-                    # 這個 code 不在 09 附錄 A 的字典裡：租戶標頭是 spike 專用且
-                    # 會在 1A-5 整段刪除，刻意不為它污染契約字典。
-                    code="INVALID_TENANT_ID",
-                    detail=f"{SPIKE_TENANT_HEADER} 不是合法 UUID",
-                    request_id=request_id,
-                )
-                await response(scope, receive, send_with_request_id)
-            else:
-                await self._app(scope, receive, send_with_request_id)
+            await self._app(scope, receive, send_with_request_id)
         except Exception:
             # 例外會往上冒到 ServerErrorMiddleware 才變成 500 回應，那已在本層之外。
             # 不在這裡補一筆就會出現「有錯誤 log、卻沒有對應的存取記錄」的缺口。
@@ -310,34 +248,25 @@ class RequestContextMiddleware:
         else:
             emit(status_seen)
         finally:
-            if tenant_token is not None:
-                reset_current_tenant_id(tenant_token)
+            # 兩個 context 都要收：租戶由 route 層的認證 Depends 設定，而那裡沒有
+            # 涵蓋整個請求的 finally——收尾只能在這一層。省略時前一個請求的租戶會
+            # 留在 context 裡給下一個請求用（見 core/tenant.py 的說明），症狀是
+            # log 標到別的租戶、查詢在 RLS 之下讀到那個租戶的資料。
+            clear_current_tenant_id()
             clear_request_context()
 
 
-def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
-    """建立 FastAPI app。
+def create_app() -> FastAPI:
+    """建立 FastAPI app —— 唯一對外 HTTP 入口（ADR-001）。
 
-    ``enable_spike_endpoints`` 控制 **spike 專用面**——``tenant_middleware``
-    （從 ``X-Tenant-Id`` 標頭取租戶）與 ``/spike`` 路由。兩者無認證且違反
-    ADR-002，未開啟時完全不掛：未認證的跨租戶讀取面不存在。
-
-    ``None``（預設）時讀 ``AppSettings.enable_spike_endpoints``（環境變數
-    ``ENABLE_SPIKE_ENDPOINTS``，預設 ``False``），所以正式部署一律關閉；
-    壓測與測試以顯式參數開啟。錯誤處理（exception handler）不受此旗標影響，
-    一律掛上——那段會活到正式版。
-
-    「省略即讀設定、給值就完全不碰設定」與 ``config/logging.py`` 的
-    ``configure_logging`` 是同一個約定，刻意保持一致：``AppSettings`` 有必填憑證
-    （Redis / S3），只要測試顯式傳值就不需要 ``.env``。**測試請一律顯式傳參**，
-    裸呼叫會讓結果隨本機環境變數而變（跑壓測時旗標正是開的）。
+    **沒有任何旗標參數是刻意的**（1A-5）。前一版有 ``enable_spike_endpoints``，
+    控制一組無認證、從 ``X-Tenant-Id`` 標頭取租戶的壓測路由（ADR-002 的已知偏離）。
+    那組東西連同旗標在本工作包整組刪除：租戶只有一個來源，就是已驗證的 JWT claim
+    （``api/dependencies/auth.py``）。回歸守門在 ``tests/api/test_spike_removal.py``。
     """
-    if enable_spike_endpoints is None:
-        enable_spike_endpoints = get_app_settings().enable_spike_endpoints
+    app = FastAPI(title="Lumina AI Knowledge Platform", version="0.1.0")
 
-    app = FastAPI(title="Lumina spike (ADR-001 bridge)", version="0.1.0")
-
-    app.add_middleware(RequestContextMiddleware, enable_spike_endpoints=enable_spike_endpoints)
+    app.add_middleware(RequestContextMiddleware)
 
     @app.exception_handler(DomainError)
     async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
@@ -353,7 +282,7 @@ def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
 
         if status >= 500:
             # core/exceptions.py 對 INTERNAL_ERROR 的契約是「不洩細節，附 request_id」。
-            # exc.details 會帶內部類別與方法名（如 SpikeItemRepository.get_queryset），
+            # exc.details 會帶內部類別與方法名（如 UserRepository.get_queryset），
             # 那是 client 不該看到的實作結構——只寫進 log，回應收斂成通用敘述。
             # code 本身不遮蔽：它屬於公開字典，遮掉只會讓 client 無從分辨。
             logger.error(
@@ -486,15 +415,6 @@ def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
             request_id=request_id,
         )
 
-    # spike 路由（未認證、暴露租戶資料）只在旗標開啟時掛載；關閉時 app 只剩
-    # 錯誤處理骨架，沒有任何可讀取租戶資料的端點。
-    if enable_spike_endpoints:
-        from api.v1.spike import router as spike_router
-
-        app.include_router(spike_router, prefix="/api/v1")
-
-    # 認證面永遠掛上（與 spike 旗標無關）：它是正式的租戶身分來源，
-    # 而 spike 面是 1A-5 就要刪掉的暫時物。
     from api.v1.auth import router as auth_router
     from api.v1.tenants import router as tenants_router
     from api.v1.users import router as users_router

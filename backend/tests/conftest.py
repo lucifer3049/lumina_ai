@@ -18,8 +18,8 @@ import pytest
 from django.db import connections
 from pytest_django import DjangoDbBlocker
 
-from apps.spike.models import SpikeItem
 from core.tenant import tenant_context
+from tests.factories.identity import make_tenant, make_user, tenant_scope
 
 # ── 環境守門（第二道；第一道在 Makefile 頂部）────────────────────────
 # 本專案統一在 WSL2 開發。從 Windows 側跑 `uv run pytest` 時，uv 在 pytest 啟動
@@ -121,16 +121,36 @@ def django_db_setup(
 
 
 @pytest.fixture
-def two_tenants(transactional_db: object) -> Iterator[tuple[uuid.UUID, uuid.UUID]]:
-    """建立兩個租戶各 3 筆資料。
+def two_empty_tenants(transactional_db: object) -> Iterator[tuple[uuid.UUID, uuid.UUID]]:
+    """只建兩個租戶列，不建任何使用者。
+
+    給「要自己寫入再驗證回滾/提交」的測試用（tests/integration/test_uow.py）：
+    那些測試的斷言是「事後應該一筆都沒有」，fixture 先塞資料會讓它們永遠失敗。
 
     用 ``transactional_db`` 而非 ``db``：run_orm 把查詢送到另一條執行緒，
     pytest-django 預設的交易包裹在那頭看不到，測試會以假失敗誤導人。
     """
-    SpikeItem.objects.bulk_create(
-        [SpikeItem(tenant_id=TENANT_A, title=f"a-{i}") for i in range(3)]
-        + [SpikeItem(tenant_id=TENANT_B, title=f"b-{i}") for i in range(3)]
-    )
+    for tenant_id, name in ((TENANT_A, "a"), (TENANT_B, "b")):
+        with tenant_scope(tenant_id):
+            make_tenant(id=tenant_id, slug=f"tenant-{name}")
+    yield TENANT_A, TENANT_B
+
+
+@pytest.fixture
+def two_tenants(
+    two_empty_tenants: tuple[uuid.UUID, uuid.UUID],
+) -> Iterator[tuple[uuid.UUID, uuid.UUID]]:
+    """兩個租戶各 3 個使用者——隔離斷言的標準載具。
+
+    1A-5 之前這裡用的是 ``apps.spike`` 的 ``SpikeItem``（一張沒有 RLS 的玩具表）。
+    改用 ``identity_user`` 之後，同一組測試順帶多驗一件事：**寫入路徑本身受 RLS
+    約束**（建立資料必須在租戶 context ＋ 交易內，見 factories 的 `tenant_scope`），
+    而玩具表驗不到那一半。
+    """
+    for tenant_id, name in ((TENANT_A, "a"), (TENANT_B, "b")):
+        with tenant_scope(tenant_id):
+            for i in range(3):
+                make_user(tenant_id=tenant_id, email=f"{name}-{i}@example.com")
     yield TENANT_A, TENANT_B
 
 

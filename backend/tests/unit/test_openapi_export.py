@@ -95,24 +95,25 @@ def test_rendering_is_deterministic(export_module: ModuleType) -> None:
     assert json.loads(first) == schema, "render 改變了 schema 的內容，不只是格式"
 
 
-def test_export_excludes_the_spike_surface(
+def test_export_does_not_depend_on_environment_variables(
     export_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """契約不得含 spike 面，且不隨環境變數而變。
+    """同一份程式碼在不同機器上必須匯出同一份契約。
 
-    `/api/v1/spike/*` 與 `X-Tenant-Id` 取租戶違反 ADR-002，只在壓測時開啟
-    （見 `api/main.py`）。匯出若讀 `AppSettings`，那在跑過壓測的機器上匯出，
-    未認證端點就會**進到公開契約與前端 client 裡**——而且 diff 看起來像是正常的
-    新端點。因此匯出一律顯式關閉旗標。
+    上一版這裡驗的是「契約不得含 spike 面」——那組未認證端點掛在
+    `ENABLE_SPIKE_ENDPOINTS` 下，若匯出讀了 `AppSettings`，在跑過壓測的機器上匯出
+    就會把它們寫進公開契約與前端 client，而 diff 看起來只像多了幾個正常端點。
+    spike 面已於 1A-5 刪除，但**風險的形狀會重演**：任何依環境而變的 app 組裝都會
+    讓「契約」變成一份隨機器而異的東西。因此改成驗更根本的那件事：設一組不相干的
+    環境變數，匯出結果必須逐字相同。
     """
-    monkeypatch.setenv("ENABLE_SPIKE_ENDPOINTS", "true")
+    baseline = export_module.render(export_module.build_schema())
 
-    paths = export_module.build_schema().get("paths", {})
+    monkeypatch.setenv("ENABLE_SPIKE_ENDPOINTS", "true")  # 已不存在的舊旗標
+    monkeypatch.setenv("ENVIRONMENT", "development")
 
-    spike_paths = [path for path in paths if "spike" in path]
-    assert not spike_paths, (
-        f"契約含 spike 端點 {spike_paths}——匯出必須顯式傳 enable_spike_endpoints=False，"
-        "不可讀環境設定（ADR-002）"
+    assert export_module.render(export_module.build_schema()) == baseline, (
+        "契約隨環境變數而變——create_app() 不該依環境決定掛哪些路由"
     )
 
 
@@ -124,15 +125,10 @@ def test_every_v1_router_is_mounted() -> None:
     那個端點、app 也沒有，於是 diff 乾淨、CI 全綠，只有前端拿到一個少了端點的
     typed client。``make openapi-check`` 同理，它比的是 export 與 codegen 兩份產物，
     共同的上游若整段缺失，兩份會一致地缺。
-
-    Phase 0 的契約 ``paths`` 目前確實是空的（唯一的 router 是 spike，而契約刻意
-    不收錄它，見 ``test_export_excludes_the_spike_surface``），所以這裡比對的是
-    **開啟旗標**的 app：驗的是「router 有被掛上」，與契約要不要收錄它是兩件事。
-    1A 加入第一個正式 router 後，這條會在忘記 ``include_router`` 時紅燈。
     """
     from api.main import create_app
 
-    paths = create_app(enable_spike_endpoints=True).openapi()["paths"]
+    paths = create_app().openapi()["paths"]
     modules = sorted(
         path.stem for path in (BACKEND_ROOT / "api" / "v1").glob("*.py") if path.stem != "__init__"
     )

@@ -42,10 +42,8 @@ def build_schema() -> dict[str, Any]:
     settings are not configured``——指向設定，看不出是匯出腳本少了初始化。
     設定模組用 test：它與 dev 的差別只在 DB 連線埠，而匯出根本不連 DB。
 
-    ``enable_spike_endpoints=False`` 是**顯式**傳入而非讓它讀設定：``/api/v1/spike/*``
-    與 ``X-Tenant-Id`` 取租戶違反 ADR-002，只在壓測時開啟。若這裡讀
-    ``AppSettings``，在跑過壓測的機器上匯出就會把未認證端點寫進公開契約與前端
-    client，而 diff 看起來只像是多了幾個正常端點。
+    契約內容因此**不隨環境變數而變**：``create_app()`` 已經沒有任何旗標參數
+    （1A-5 刪除 spike 面之後），app 掛什麼路由就匯出什麼。
     """
     import django
 
@@ -54,7 +52,7 @@ def build_schema() -> dict[str, Any]:
 
     from api.main import create_app
 
-    return create_app(enable_spike_endpoints=False).openapi()
+    return create_app().openapi()
 
 
 def render(schema: dict[str, Any]) -> str:

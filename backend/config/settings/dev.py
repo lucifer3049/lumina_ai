@@ -1,4 +1,4 @@
-"""開發 / spike 壓測用設定。"""
+"""開發 / 壓測用設定。"""
 
 from __future__ import annotations
 

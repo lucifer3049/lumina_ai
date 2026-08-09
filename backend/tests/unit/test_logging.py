@@ -155,15 +155,17 @@ class TestUvicornLogConfig:
         # uvicorn 的存取日誌與 api/main.py 的 middleware 重複，且不帶 request_id。
         assert "--no-access-log" in command
 
-    def test_dev_target_keeps_the_spike_surface_closed(self) -> None:
-        """``dev`` 不得開啟 spike 面——那是無認證的跨租戶讀取面（ADR-002 已知偏離）。
+    def test_no_target_enables_a_removed_feature_flag(self) -> None:
+        """Makefile 不得再提到 ``ENABLE_SPIKE_ENDPOINTS``（1A-5 已刪除該旗標）。
 
-        `api` 需要它（壓測目標打的就是那些路由），開發伺服器不需要。混進來的話
-        每個人的日常環境都會長期掛著一個未認證端點，而且不會有任何徵兆。
+        前一版這裡驗的是「``dev`` 不得開啟 spike 面」，因為 `api`（壓測目標）需要
+        它而開發伺服器不需要。旗標整個消失之後，剩下的風險換成另一種：Makefile 留
+        著一個指向不存在設定的環境變數前綴。那不會報錯——它只是無聲地沒有作用，
+        然後誤導下一個讀 Makefile 的人以為那個開關還在。
         """
         makefile = (_REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
-        assert "ENABLE_SPIKE_ENDPOINTS" not in self._launch_command(makefile, "dev")
+        assert "ENABLE_SPIKE_ENDPOINTS" not in makefile
 
     def test_dev_reload_dirs_cover_every_source_package(self) -> None:
         """``DEV_RELOAD_DIRS`` 必須涵蓋所有頂層原始碼套件。

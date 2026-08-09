@@ -1,7 +1,7 @@
 """A 組正確性測試 —— ADR-001 橋接的三個關鍵行為。
 
-這三條就是本 spike 的 DoD。壓測數字只在這些測試全過的前提下才有意義——
-一個會洩漏連線或串租戶的實作，跑得再快也沒有用。
+這三條是 ADR-001 穿刺驗證的 DoD，橋接還在用就得一直綠。壓測數字只在這些測試
+全過的前提下才有意義——一個會洩漏連線或串租戶的實作，跑得再快也沒有用。
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from django.db import close_old_connections, connection
 from core.db import run_orm
 from core.exceptions import TenantContextMissingError
 from core.tenant import get_current_tenant_id, tenant_context
-from repositories.spike import SpikeItemRepository
+from repositories.identity import UserRepository
 from tests.conftest import TENANT_A
 
 
@@ -138,10 +138,14 @@ class TestTenantContextCrossesThread:
         assert seen == TENANT_A
 
     async def test_missing_tenant_raises_inside_threadpool(self) -> None:
-        """缺 TenantContext 時必須 raise，不得默默回傳全部資料。"""
-        repo = SpikeItemRepository()
+        """缺 TenantContext 時必須 raise，不得默默回傳全部資料。
+
+        走真的 Repository（而不是自製的假物件）：要驗的是 contextvar 沒有跨進
+        threadpool 時，**實際會被呼叫的那條程式碼**確實 fail fast。
+        """
+        repo = UserRepository()
         with pytest.raises(TenantContextMissingError):
-            await run_orm(repo.latest, 10)
+            await run_orm(repo.get_by_email, "nobody@example.com")
 
 
 @pytest.mark.slow
@@ -180,10 +184,9 @@ class TestBridgeOverhead:
     async def test_wrapper_is_not_rebuilt_per_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``sync_to_async()`` 不得在每次 ``run_orm`` 呼叫時重建。
 
-        重建一次不貴，但它落在 B 組壓測正在量的那條路徑上：量出來的數字會含一筆
-        本來不該存在的成本，而且偏多少無從得知。locustfile.py 開頭記的教訓是
-        「環境雜訊會吃掉真實差異」，這裡是同一類問題的另一面——受測物本身混進了
-        不屬於它的成本。
+        重建一次不貴，但它落在壓測正在量的那條路徑上：量出來的數字會含一筆本來
+        不該存在的成本，而且偏多少無從得知。11 §1.4 記的教訓是「環境雜訊會吃掉
+        真實差異」，這裡是同一類問題的另一面——受測物本身混進了不屬於它的成本。
 
         包裝器應在 import 期建立一次；因此本測試期間 ``sync_to_async`` 的呼叫次數
         必須是 0。搬回函式內就會紅。

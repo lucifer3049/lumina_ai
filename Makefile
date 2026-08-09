@@ -1,13 +1,15 @@
 # AI 智庫平台 —— 開發指令入口
 # 執行環境：WSL2 Ubuntu（ADR-007 工具鏈：uv / pnpm）
 #
-# Phase 0 範圍：基礎設施全套（PG+pgvector+pgroonga、Redis、MinIO）、前端骨架與
-# OpenAPI codegen 管線。smoke suite 於 1A（E2E 骨架）補上。
-#
 # 典型流程：
-#   make up → make migrate → make verify-infra
+#   make up → make migrate → make gen-jwt-keys → make test → make smoke
 #   前端：make fe-install → make fe-test（後端 schema 改過就先 make openapi gen-api）
-#   壓測：make seed → make api（另開視窗）→ make loadtest
+#
+# **壓測鏈於 1A-5 隨 spike 面一起移除**：locustfile 打的是 /api/v1/spike/items、
+# 資料由 seed_spike 產生，兩者都是 ADR-002 已知偏離的一部分（未認證、client 自報
+# 租戶）。留著會得到一個必然 404 的壓測——比沒有壓測更糟，因為它跑得起來。
+# 重建時機是有了真的業務端點之後（Phase 1 之後），屆時 locustfile 要先登入拿 token。
+# 伺服器端延遲分析（loadtest/analyze_access_log.py）不受影響，它讀的是 access log。
 
 # ── 環境守門：擋掉 Windows 側執行 ────────────────────────────────────
 # 同一份 backend/.venv 被 WSL2 與 Windows 交替使用時，uv 每次都會偵測到
@@ -41,13 +43,13 @@ GENERATED := $(FRONTEND)/src/api/generated
 # CI 與本機用同一個 tag，重現問題時不必猜對方建的是哪個 image
 BACKEND_IMAGE ?= lumina/backend:dev
 
-# 壓測旋鈕（B 組）：改這幾個值重跑，比較 rps
+# 橋接旋鈕（ADR-001）：改這幾個值重跑，比較 rps
 CONN_MAX_AGE        ?= 300
 ORM_THREADPOOL_SIZE ?= 8
 UVICORN_WORKERS     ?= 4
 
 # ── 單機量測的補償措施（11 §1.4 已知偏離）────────────────────────────
-# 本專案為個人開發，無獨立負載產生機。locust 與 API 搶同一批核心時量到的是
+# 本專案為個人開發，無獨立負載產生機。負載產生器與 API 搶同一批核心時量到的是
 # 兩者競爭的結果——2026-08-05 實測 200 併發下 CPU 尚有 27.5% idle、DB 連線池
 # 零排隊（cl_waiting=0、sv_idle=20）、DB 查詢僅 0.715ms，p95 卻破 1 秒。
 # 綁核心讓兩邊各有專屬 CPU，前後比較才有意義。
@@ -56,11 +58,6 @@ UVICORN_WORKERS     ?= 4
 # 分機要求。用途是「同一台機器上的可重現基準線」，不是絕對值認證。
 # 核心編號依 nproc 調整；預設假設 6 核（API 4 顆、負載 2 顆）。
 API_CPUS   ?= 0-3
-LOAD_CPUS  ?= 4-5
-# 壓測參數集中在此，基準線才可重現（DoD 值見 13 Phase 0）
-LOAD_USERS ?= 200
-LOAD_RATE  ?= 50
-LOAD_TIME  ?= 60s
 # 伺服器端延遲分析的輸入：api-pinned 的 stdout 導向此檔
 API_LOG    ?= /tmp/lumina-api.log
 
@@ -80,11 +77,11 @@ APPLY_DB_TIMEOUTS = $(COMPOSE) exec -T postgres sh -c \
 	 -c "ALTER ROLE \"$$DB_USER\" SET statement_timeout = '"'"'$(DB_STATEMENT_TIMEOUT)'"'"'"'
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys migrate seed \
+.PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys migrate \
         dev api api-pinned \
-        test test-unit test-integration test-api verify-infra image lock-check lint \
+        test test-unit test-integration test-api smoke verify-infra image lock-check lint \
         fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
-        loadtest loadtest-headless loadtest-pinned loadtest-report clean
+        loadtest-report clean
 
 help: ## 顯示可用指令
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -147,27 +144,20 @@ gen-jwt-keys: ## 產生本機用的 ES256 金鑰對（已存在則不覆蓋）
 migrate: ## 執行 Django migration（以 owner 角色；含 pgvector / pgroonga extension）
 	$(UV_RUN) python manage.py migrate --database=admin
 
-seed: ## 產生壓測資料（預設 50 租戶 × 2000 筆）
-	$(UV_RUN) python manage.py seed_spike
-
 # --log-config：uvicorn 預設會給自己的 logger 掛 handler 且 propagate=False，
 # 於是啟動訊息與錯誤是純文字、應用日誌是 JSON——Loki 那頭只解析得了一半。
 # 這份設定把 handler 清空並改為 propagate，讓它們流進 config/logging.py 的 root handler。
 # --no-access-log：存取日誌由 api/main.py 的 middleware 產生（帶 request_id/tenant_id），
 # 留著 uvicorn 那份只會得到兩筆內容不同的記錄。
-# ENABLE_SPIKE_ENDPOINTS=true：本 target 是**壓測目標**，locustfile 打的
-# /api/v1/spike/* 與 X-Tenant-Id 取租戶都掛在這個旗標下（預設關，見 .env.example）。
-# 不在這裡開，make loadtest 會整片 404——而 locust 只顯示失敗率，看不出是旗標沒開。
-# 這裡用 shell 前綴而非寫進 .env：環境變數優先於 --env-file，容器部署照樣是關的。
 #
 # 指令拆成 API_ENV / API_ARGS 兩個變數，是為了讓 api 與 api-pinned 共用同一份
 # 定義——兩份會漂，而漂掉時症狀是「綁核心那組跑出不同數字」，看起來像 CPU
 # 綁定的效果，其實只是參數不同。
-API_ENV  = ENABLE_SPIKE_ENDPOINTS=true CONN_MAX_AGE=$(CONN_MAX_AGE) ORM_THREADPOOL_SIZE=$(ORM_THREADPOOL_SIZE)
+API_ENV  = CONN_MAX_AGE=$(CONN_MAX_AGE) ORM_THREADPOOL_SIZE=$(ORM_THREADPOOL_SIZE)
 API_ARGS = config.asgi:app --host 0.0.0.0 --port 8000 --workers $(UVICORN_WORKERS) \
 	--log-config config/uvicorn_logging.json --no-access-log
 
-api: ## 啟動 API（壓測目標，會開啟 spike 面）；可覆寫 CONN_MAX_AGE / ORM_THREADPOOL_SIZE / UVICORN_WORKERS
+api: ## 啟動 API（多 worker，量測用）；可覆寫 CONN_MAX_AGE / ORM_THREADPOOL_SIZE / UVICORN_WORKERS
 	$(API_ENV) $(UV_RUN) uvicorn $(API_ARGS)
 
 # taskset 放在 uv 之前：affinity 由子行程繼承，uvicorn 的 worker 全都會落在同一組核心。
@@ -175,17 +165,13 @@ api-pinned: ## 啟動 API 並綁定 CPU $(API_CPUS)（基準線用）。log 導�
 	$(API_ENV) taskset -c $(API_CPUS) $(UV_RUN) uvicorn $(API_ARGS) 2>&1 | tee $(API_LOG)
 
 # ── 日常開發伺服器 ──────────────────────────────────────────────
-# 與 api（壓測目標）刻意分開，三個場景三組值：
+# 與 api（量測用）刻意分開，三個場景三組值：
 #   dev  = 1 worker + --reload：斷點會停在你設的那行、改完自動重啟、log 是人看的
 #   api  = $(UVICORN_WORKERS) workers：要壓榨核心量吞吐，斷點與熱重載都不適用
 #   部署 = 每 replica 2（01 附錄 A 註 1）
 # uvicorn 的 --reload 與 --workers > 1 互斥，本來就不能兩者兼得；多行程下中斷點
 # 落在 fork 出去的子行程，IDE 接不到——這是「開發用單 worker」的真正理由，
 # 與效能無關（同 Odoo 本地 workers=0 走 threaded 模式的道理）。
-#
-# 不帶 ENABLE_SPIKE_ENDPOINTS：spike 面無認證且違反 ADR-002，開發環境沒有理由開。
-# 因此 Phase 0 現階段起來後只有 /docs 與 /openapi.json，沒有業務端點——這是預期
-# 的（業務端點自 Phase 1 起才出現），不是壞掉。要打 spike 端點請用 make api。
 #
 # --host 127.0.0.1（而非 api 的 0.0.0.0）：開發機不需要對區網開放。
 #
@@ -207,7 +193,7 @@ api-pinned: ## 啟動 API 並綁定 CPU $(API_CPUS)（基準線用）。log 導�
 # 若日後把 repo 搬進 WSL2 原生檔案系統（~/），兩項都可以拿掉。
 DEV_RELOAD_DIRS = api apps common config core repositories services
 
-dev: ## 開發伺服器：單 worker + 熱重載 + console log（不開 spike 面）
+dev: ## 開發伺服器：單 worker + 熱重載 + console log
 	LOG_FORMAT=console WATCHFILES_FORCE_POLLING=1 \
 	$(UV_RUN) uvicorn config.asgi:app --host 127.0.0.1 --port 8000 \
 		--reload $(addprefix --reload-dir ,$(DEV_RELOAD_DIRS)) \
@@ -225,6 +211,13 @@ test-integration: ## 只跑 integration（Repository / 基礎設施；需先 mak
 
 test-api: ## 只跑 api（權限矩陣、錯誤格式、SSE 協定；需先 make up）
 	$(UV_RUN) pytest tests/api
+
+# smoke **不在 make test 裡**（pyproject 的 testpaths 排除 tests/e2e）：它要起一個
+# 真的 uvicorn 子行程並連開發資料庫，前置條件比其他三層多（make up + make migrate
+# + make gen-jwt-keys）。混進去會讓「單元測試」在缺任一前置時整片紅，而紅燈的原因
+# 與被測的東西無關。13 §1.2：**每次任務結束必跑**，不過視同任務未完成。
+smoke: ## E2E smoke suite（登入→上傳→ready→問答→引用；需先 make up / migrate / gen-jwt-keys）
+	$(UV_RUN) pytest tests/e2e
 
 # 只挑 test_infra_*.py（-k 會比對 module 名，不用 shell glob——glob 會在 repo 根展開，
 # 而 pytest 的工作目錄是 backend/，路徑對不上）。與 test-integration 的差別在此：
@@ -297,39 +290,18 @@ lint: lock-check ## uv.lock 檢查 + ruff + mypy + import-linter（分層依賴�
 	$(UV_RUN) mypy .
 	$(UV) run lint-imports
 
-# PYTHONUTF8=1：locust 啟動時會自動探測設定檔，其中包含 backend/pyproject.toml
-# （找 [tool.locust] 區段），並以**該環境的預設編碼**開檔。該檔有中文與破折號，
-# 預設編碼不是 UTF-8 時 locust 會在壓測開始前就死在
-# 「Couldn't parse TOML file: 'cp950' codec can't decode byte 0xe2」——web UI 連開都開不了。
+# 負載產生端（locust）於 1A-5 隨 spike 面移除，理由見檔案開頭。留下的是**伺服器端**
+# 的延遲分析：它讀 access log 的 duration_ms（伺服器行程內量的），與用什麼工具打
+# 流量無關，換成 k6、ab、或手動打都適用。
 #
-# 誠實標註現況：實際咬到人的是 Windows 繁中的 cp950（2026-08-03），而上方的平台
-# 守門已經把 Windows 擋在門外，所以這行**目前是防禦性的，不是活的修復**。
-# 保留而非刪除的理由：locust 也可能被繞過 make 直接以 `uv run locust` 啟動。
-# 實測過 Linux 端不需要它——Ubuntu 24.04 + Python 3.12 即使 LC_ALL=C，
-# 因 PEP 538/540 的 C locale coercion，預設編碼仍是 utf-8（"LANG=C 會炸" 是誤解）。
-LOCUST_BIN := $(UV) run --group loadtest locust -f loadtest/locustfile.py
-LOCUST     := PYTHONUTF8=1 $(LOCUST_BIN)
-# 環境變數前綴在 taskset 之前：shell 先設環境，taskset 再 exec locust，env 照樣繼承。
-LOCUST_PIN  = PYTHONUTF8=1 taskset -c $(LOAD_CPUS) $(LOCUST_BIN)
-
-loadtest: ## B 組壓測：開 web UI（http://localhost:8089）
-	$(LOCUST) --host http://localhost:8000
-
-loadtest-headless: ## B 組壓測：無頭跑 60 秒直接吐數字
-	$(LOCUST) --host http://localhost:8000 --headless -u 50 -r 50 -t 60s
-
-# 基準線三步：make api-pinned（另一視窗）→ make loadtest-pinned → make loadtest-report
-loadtest-pinned: ## 基準線壓測：負載綁 CPU $(LOAD_CPUS)，參數走 LOAD_USERS/LOAD_RATE/LOAD_TIME
-	$(LOCUST_PIN) --host http://localhost:8000 --headless \
-		-u $(LOAD_USERS) -r $(LOAD_RATE) -t $(LOAD_TIME)
-
-# locust 的 p95 是**客戶端**量的，含它自己在同一台機器上排隊的時間；access log 的
-# duration_ms 是**伺服器內部**量的。兩者對照即可分辨「系統慢」與「壓測工具跟不上」。
-# --last-seconds 比 LOAD_TIME 多 10 秒：涵蓋整輪又不吃進上一輪（log 是持續附加的，
-# API 不重啟連跑多輪時不篩時間會拿到混合值）。
-loadtest-report: ## 從 $(API_LOG) 算伺服器端延遲分位數（只看最後一輪）
-	$(UV) run python loadtest/analyze_access_log.py $(API_LOG) \
-		--path /api/v1/spike/items --last-seconds $$(( $(LOAD_TIME:s=) + 10 ))
+# 為什麼伺服器端數字非有不可：客戶端量到的 p95 含負載產生器自己在同一台機器上排隊
+# 的時間。兩個數字對照才分得出「系統慢」與「壓測工具跟不上」——2026-08-05 就是靠
+# 這個對照才發現 200 併發下 CPU 還有 27.5% idle 而 p95 破秒（11 §1.4）。
+#
+# --path / --last-seconds 是必填參數：前者指定要分析哪條路徑（沒有預設值可言，端點
+# 隨工作包而變），後者篩出最後一輪（log 持續附加，不篩會拿到多輪的混合值）。
+loadtest-report: ## 從 $(API_LOG) 算伺服器端延遲分位數。用法：make loadtest-report ARGS="--path /api/v1/users --last-seconds 70"
+	$(UV) run python loadtest/analyze_access_log.py $(API_LOG) $(ARGS)
 
 clean: ## 停止並刪除資料卷（會清空資料庫、Redis、MinIO）
 	$(COMPOSE) down -v

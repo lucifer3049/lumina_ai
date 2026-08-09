@@ -66,9 +66,7 @@ def tenant_with_owner_and_member() -> dict[str, uuid.UUID]:
 @pytest.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(
-            app=create_app(enable_spike_endpoints=False), raise_app_exceptions=False
-        ),
+        transport=httpx.ASGITransport(app=create_app(), raise_app_exceptions=False),
         base_url="http://testserver",
     ) as c:
         yield c

@@ -46,7 +46,7 @@ PROBLEM_SCHEMA_REF = "#/components/schemas/ProblemDetail"
 # ``_install_problem_schema`` 補上。
 _PROBLEM_CONTENT: dict[str, Any] = {PROBLEM_JSON: {"schema": {"$ref": PROBLEM_SCHEMA_REF}}}
 
-# 掛在 APIRouter 上讓所有端點共用（見 api/v1/spike.py）。
+# 掛在 APIRouter 上讓所有端點共用（見 api/v1/*.py 的 router 宣告）。
 # 逐端點宣告必然會漏，而漏掉不會有任何徵兆——tests/test_api_errors.py 的
 # OpenAPI 測試會掃全部 operation 確認這四個狀態碼都在。
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {

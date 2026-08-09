@@ -91,7 +91,7 @@ gantt
 
 已在 Phase 0 先行落地、1A 不需重做的相關項：巢狀交易換租戶的守門（`core/uow.py` 的 `CrossTenantTransactionError`）。`set_config(..., true)` 是**交易**區域而非 savepoint 區域的，子交易內換租戶後不會還原，外層後續語句會在 RLS 之下被當成內層租戶。
 
-### 3.2 1A 同步改動：log 的租戶綁定
+### 3.2 1A 同步改動：log 的租戶綁定（✅ 1A-3 落地，1A-5 驗證）
 
 **換認證來源會讓每筆 log 的 `tenant_id` 靜默消失。** 這不是前置條件（不影響 1A 能否開工），但必須與認證改造**同一個工作包**完成，否則觀測能力會在沒有任何徵兆的情況下退化。
 
@@ -102,6 +102,8 @@ gantt
 **為什麼不會有紅燈**：唯一覆蓋這件事的測試（`tests/api/test_request_logging.py::test_tenant_id_is_bound_when_present`）是靠 spike 的 `X-Tenant-Id` middleware 驅動的，而那正是 1A 要刪掉的東西——測試會跟著改或刪，缺口不會浮現。而 12 §1.1 把 `tenant_id` 列為標準欄位，「單一租戶錯誤暴增」這類查詢全靠它。
 
 處置：把租戶改成**在 emit 時**讀 contextvar 的 structlog processor（掛進 `config/logging.py` 的 `_shared_processors`），這樣不論由哪一層、哪種機制設定租戶都一樣有效。同時補一條**不依賴 spike 標頭**的測試——以 route-level dependency 設定租戶，斷言 log 帶得到 `tenant_id`；那條測試在 spike 面刪除後仍然有效。
+
+**結果（2026-08-09）**：processor 於 1A-3 隨認證改造落地，middleware 同時從 `BaseHTTPMiddleware` 改為純 ASGI（`call_next` 會把下游丟到另一個 task，contextvar 回不到父 task）。1A-5 刪除 spike 面後，`tests/api/test_request_logging.py` 全檔的載具改為自掛路由，該處置的預測完全成立：靠 `X-Tenant-Id` 驅動的那幾條測試確實跟著消失，而 route-dependency 那條照樣綠。
 
 ## 4. Phase 2：多租戶營運能力（5 週，~13 pw）
 

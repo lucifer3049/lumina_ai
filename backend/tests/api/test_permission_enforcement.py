@@ -116,9 +116,7 @@ def _system_role(name: str) -> Role:
 @pytest.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(
-            app=create_app(enable_spike_endpoints=False), raise_app_exceptions=False
-        ),
+        transport=httpx.ASGITransport(app=create_app(), raise_app_exceptions=False),
         base_url="http://testserver",
     ) as c:
         yield c

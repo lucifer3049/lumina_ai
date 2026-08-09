@@ -57,8 +57,8 @@ backend/
   core/           TenantContext、業務例外階層、DB 設定
   apps/           Django models 與 migration（保持薄）
   config/         Django settings（base / dev / test）+ ASGI 掛載
-  tests/          unit / integration / api 測試
-  loadtest/       Locust 壓測腳本
+  tests/          unit / integration / api / e2e（smoke）測試
+  loadtest/       伺服器端延遲分析工具（負載產生腳本待 Phase 1 後重建）
   scripts/        建置與維運腳本（export_openapi.py…）
 frontend/
   src/api/        client.ts（fetch 封裝）+ generated/（OpenAPI codegen 產物，禁改）
@@ -93,8 +93,8 @@ cp .env.example .env   # 填入本機用的密碼；compose 與 backend 共用�
 make up                # 起 PG + PgBouncer + Redis + MinIO，套用 timeout、建立 bucket
 make migrate           # Django migration（含 pgvector / pgroonga extension）
 make verify-infra      # 基礎設施驗收測試（extension / collation / Redis / MinIO / secrets）
-make seed              # 產生壓測資料（50 租戶 × 2000 筆）
-make api               # 另開視窗：啟動 FastAPI（http://localhost:8000）
+make gen-jwt-keys      # 產生本機 ES256 簽章金鑰（缺檔時 API 起不來）
+make dev               # 另開視窗：啟動 FastAPI（http://localhost:8000）
 
 make fe-install        # 前端相依（照 pnpm-lock.yaml）
 make fe-dev            # 另開視窗：Vite（http://localhost:5173，/api 由 proxy 轉給後端）
@@ -104,7 +104,7 @@ make fe-dev            # 另開視窗：Vite（http://localhost:5173，/api 由 
 
 **埠位**（全部走 `.env`，刻意避開預設值以免撞上本機既有服務）：PostgreSQL `15432`（僅
 pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `16379`、MinIO `19000`
-（API）/ `19001`（console）、API `8000`、Locust web UI `8089`。
+（API）/ `19001`（console）、API `8000`。
 
 **secrets**：`.env` 已 gitignore，值不進版控；缺 `DJANGO_SECRET_KEY` / `DB_PASSWORD`
 等變數時 Django 會拒絕啟動（Fail Fast），不套用開發預設值。
@@ -123,8 +123,9 @@ pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `1637
 |------|------|
 | `make up` / `make down` | 啟動 / 停止基礎設施（`down` 保留資料卷） |
 | `make migrate` | 執行 Django migration |
-| `make test` | pytest（需先 `make up`） |
+| `make test` | pytest：unit + integration + api（需先 `make up`） |
 | `make test-unit` / `test-integration` / `test-api` | 分層跑測試（CI 依此分階段） |
+| `make smoke` | E2E smoke suite（**每次任務結束必跑**，見下方） |
 | `make verify-infra` | 只跑基礎設施驗收（`tests/integration`） |
 | `make image` | 建置 backend image（與 CI 同一份 Dockerfile） |
 | `make minio-init` | 重建 bucket / 版本化 / 關閉匿名存取（冪等） |
@@ -134,40 +135,35 @@ pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `1637
 | `make openapi` | 由 FastAPI 匯出 API 契約到 `openapi.json` |
 | `make gen-api` | 由契約重新產生前端 typed client（`frontend/src/api/generated/`） |
 | `make openapi-check` | 驗證契約與 generated client 未過期（CI 用） |
-| `make api` | 啟動 API（壓測目標，會開啟 spike 面——見下方說明） |
-| `make loadtest` | Locust 壓測（web UI） |
-| `make loadtest-headless` | 無頭跑 60 秒直接吐數字 |
-| `make api-pinned` / `loadtest-pinned` / `loadtest-report` | 基準線量測三步（見下方） |
+| `make api` / `make api-pinned` | 啟動 API（多 worker；`-pinned` 綁 CPU 供量測用） |
+| `make loadtest-report` | 從 access log 算伺服器端延遲分位數 |
 | `make psql` | 進 psql（直連 PG，繞過 PgBouncer） |
 | `make clean` | 停止並**刪除資料卷**（清空資料庫） |
 
-壓測旋鈕可覆寫：`make api CONN_MAX_AGE=300 ORM_THREADPOOL_SIZE=8 UVICORN_WORKERS=4`。
+橋接旋鈕可覆寫：`make api CONN_MAX_AGE=300 ORM_THREADPOOL_SIZE=8 UVICORN_WORKERS=4`。
 
 ### 基準線量測（單機）
 
-本專案為個人開發，沒有獨立負載產生機。locust 與 API 搶同一批 CPU 時，量到的是
+本專案為個人開發，沒有獨立負載產生機。負載產生器與 API 搶同一批 CPU 時，量到的是
 兩者競爭的結果——實測 200 併發下 CPU 尚有 27.5% idle、DB 連線池零排隊、查詢僅
-0.7ms，客戶端 p95 卻破 1 秒。因此基準線改用兩項補償措施（依據與邊界見
-[`docs/plan/11`](docs/plan/11_NFR_效能與可用性.md) §1.4「單機量測法」）：
+0.7ms，客戶端 p95 卻破 1 秒。因此基準線用兩項補償措施（依據與邊界見
+[`docs/plan/11`](docs/plan/11_NFR_效能與可用性.md) §1.4「單機量測法」）：API 綁核心
+（`make api-pinned`，log 導向 `/tmp/lumina-api.log`），以及**看伺服器端數字**：
 
 ```bash
-make api-pinned        # 視窗 A：API 綁 CPU 0-3，log 導向 /tmp/lumina-api.log
-make loadtest-pinned   # 視窗 B：locust 綁 CPU 4-5（LOAD_USERS 可覆寫，預設 200）
-make loadtest-report   # 讀 log 算「伺服器端」延遲分位數
+make loadtest-report ARGS="--path /api/v1/users --last-seconds 70"
 ```
 
-`loadtest-report` 讀的是 access log 的 `duration_ms`（伺服器行程內量的），不含
-locust 自己在同一台機器上排隊的時間。兩個數字對照即可分辨「系統慢」與「壓測
-工具跟不上」。核心數不是 6 的機器改 `API_CPUS` / `LOAD_CPUS`。
+它讀的是 access log 的 `duration_ms`（伺服器行程內量的），不含負載產生器自己在同一
+台機器上排隊的時間。兩個數字對照即可分辨「系統慢」與「壓測工具跟不上」。
 
-**`ENABLE_SPIKE_ENDPOINTS`**：`/api/v1/spike/*` 路由與「從 `X-Tenant-Id` 標頭取租戶」的
-middleware 皆掛在此旗標下，**預設關閉**。兩者無認證且違反 ADR-002（見
-`docs/plan/01` ADR-002 的「已知偏離」），只有壓測需要，因此由 `make api` 顯式開啟；
-`.env` 與正式部署一律不要設這個值。工作包 1A 接上 JWT 後整組移除（ADR-002 結案條件）。
+> **負載產生腳本目前不存在。** 原本的 locustfile 打的是 spike 期的未認證端點
+> `/api/v1/spike/*`，已隨那組端點在工作包 1A-5 一併刪除（ADR-002 結案）。重建的時機
+> 是有了穩定的業務端點之後，屆時腳本要先登入拿 token 再打。
 
 ## 測試
 
-四層：unit（Service / 純邏輯）、integration（Repository + RLS）、api（權限矩陣 + 錯誤格式）、e2e。
+四層：unit（Service / 純邏輯）、integration（Repository + RLS）、api（權限矩陣 + 錯誤格式）、e2e（smoke）。
 
 - **LLM 測試一律用 MockProvider，禁止呼叫真實 API。**
 - factory_boy 對映每個 Model；tenant fixture 一律雙租戶（隔離測試內建）。
@@ -177,6 +173,12 @@ middleware 皆掛在此旗標下，**預設關閉**。兩者無認證且違反 A
 ```bash
 make test
 ```
+
+**smoke suite**（`make smoke`）不在 `make test` 裡：它會起一個真的 uvicorn 子行程、
+連開發資料庫、經 `manage.py create_tenant` 建一個本輪專用租戶，前置是
+`make up` + `make migrate` + `make gen-jwt-keys`。走的是**部署形狀**的伺服器，驗的是
+「登入 → 上傳 → ready → 問答 → 引用」這條價值迴路仍然活著（13 §1.2：每次任務結束
+必跑，不過視同任務未完成）。目前只有登入那一步是活的，其餘隨 1B–1D 逐步接上。
 
 前端（03 §6.1）：vitest 跑 `frontend/tests/unit/`（API client 以 msw mock，不打真後端）
 與 `frontend/tests/types/`（型別層，由 vue-tsc 檢查）。

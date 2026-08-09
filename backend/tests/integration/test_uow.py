@@ -3,11 +3,10 @@
 UoW 是**交易邊界**（11 §4.3：交易邊界 = Service 方法）＋ **RLS 的前置設定**
 （05 §5.1：交易開始 ``SET LOCAL app.tenant_id``）。
 
-RLS policy 本身屬 Phase 1（13 §3 工作包 1A「隔離機制全量：filter+RLS」），
-本檔因此**不驗 policy 行為**，只驗 policy 建立後會依賴的那個交易區域參數有
-正確設定與正確作用域。B2 是本檔最關鍵的一條：它在 policy 還不存在的現在，
-就能擋住「用了 session 級 ``SET`` 而非 ``SET LOCAL``」——那個錯誤在 PgBouncer
-transaction mode 下會讓租戶 A 的設定殘留給下一個借到同一條連線的租戶。
+policy 行為本身由 ``test_rls_identity.py`` 驗；本檔只驗 policy 依賴的那個交易區域
+參數有正確設定與正確作用域。B2 是本檔最關鍵的一條：它擋住「用了 session 級
+``SET`` 而非 ``SET LOCAL``」——那個錯誤在 PgBouncer transaction mode 下會讓租戶 A
+的設定殘留給下一個借到同一條連線的租戶。
 
 全檔用 ``transactional_db`` 而非 ``db``：pytest-django 的 ``db`` 把整個測試包在
 一個交易裡，而本檔驗的正是 commit / rollback 本身——包在外層交易裡會看不到
@@ -23,7 +22,7 @@ import pytest
 from django.core.exceptions import SynchronousOnlyOperation
 from django.db import connection, transaction
 
-from apps.spike.models import SpikeItem
+from apps.identity.models import User
 from core.exceptions import CrossTenantTransactionError, TenantContextMissingError
 from core.tenant import tenant_context
 from core.uow import unit_of_work
@@ -56,43 +55,68 @@ def _current_setting() -> str | None:
     return value or None
 
 
-def _titles_of(tenant_id: uuid.UUID) -> set[str]:
-    """繞過 repository 直接查——本檔要驗的是交易，不是 tenant filter。"""
-    return set(SpikeItem.objects.filter(tenant_id=tenant_id).values_list("title", flat=True))
+def _make_user(tenant_id: uuid.UUID, email: str) -> None:
+    """在**當前交易內**寫一筆使用者。
+
+    繞過 repository 直接用 ORM——本檔要驗的是交易邊界，不是 tenant filter。
+    """
+    User.objects.create(
+        tenant_id=tenant_id,
+        email=email,
+        display_name=email,
+        password_hash="argon2id$placeholder-not-a-real-hash",
+    )
+
+
+def _emails_of(tenant_id: uuid.UUID) -> set[str]:
+    """讀該租戶的使用者 email。
+
+    **必須自己開一個 UoW**：`identity_user` 有 RLS，policy 讀的 ``app.tenant_id``
+    是交易區域參數。在交易外查會一筆都拿不到——而「一筆都沒有」正是本檔多數斷言
+    的期望值，那會讓 test_commit_on_success 之外的每一條都變成假綠燈。
+    """
+    with tenant_context(tenant_id), unit_of_work():
+        return set(User.objects.filter(tenant_id=tenant_id).values_list("email", flat=True))
 
 
 class TestTransactionBoundary:
-    """A 組：UoW 必須是真的交易邊界，不是只把例外吞掉。"""
+    """A 組：UoW 必須是真的交易邊界，不是只把例外吞掉。
 
-    def test_rollback_on_exception(self) -> None:
+    全組依賴 ``two_empty_tenants``：寫入 `identity_user` 需要租戶列先存在（FK），
+    但**不能有既有使用者**——本組多數斷言的期望值是「事後一筆都沒有」。
+    """
+
+    def test_rollback_on_exception(self, two_empty_tenants: tuple[uuid.UUID, uuid.UUID]) -> None:
         """A1：區塊內 raise → 該區塊的所有寫入都不存在。"""
         with pytest.raises(_BoomError), tenant_context(TENANT_A), unit_of_work():
-            SpikeItem.objects.create(tenant_id=TENANT_A, title="uow-rollback-1")
-            SpikeItem.objects.create(tenant_id=TENANT_A, title="uow-rollback-2")
+            _make_user(TENANT_A, "uow-rollback-1@example.com")
+            _make_user(TENANT_A, "uow-rollback-2@example.com")
             raise _BoomError
 
-        assert _titles_of(TENANT_A) == set(), "例外後仍有資料 → 沒有真的回滾"
+        assert _emails_of(TENANT_A) == set(), "例外後仍有資料 → 沒有真的回滾"
 
-    def test_commit_on_success(self) -> None:
+    def test_commit_on_success(self, two_empty_tenants: tuple[uuid.UUID, uuid.UUID]) -> None:
         """A2：正常離開 → 寫入可見。"""
         with tenant_context(TENANT_A), unit_of_work():
-            SpikeItem.objects.create(tenant_id=TENANT_A, title="uow-commit")
+            _make_user(TENANT_A, "uow-commit@example.com")
 
-        assert _titles_of(TENANT_A) == {"uow-commit"}
+        assert _emails_of(TENANT_A) == {"uow-commit@example.com"}
 
-    def test_nested_uow_shares_one_transaction(self) -> None:
+    def test_nested_uow_shares_one_transaction(
+        self, two_empty_tenants: tuple[uuid.UUID, uuid.UUID]
+    ) -> None:
         """A3：巢狀 UoW 不得各自獨立提交。
 
         「一個 Service 方法呼叫另一個」是必然會出現的形狀。若內層自成一個交易，
         外層失敗時內層已經提交 → 半套資料，而且沒有任何錯誤訊息。
         """
         with pytest.raises(_BoomError), tenant_context(TENANT_A), unit_of_work():
-            SpikeItem.objects.create(tenant_id=TENANT_A, title="outer")
+            _make_user(TENANT_A, "outer@example.com")
             with unit_of_work():
-                SpikeItem.objects.create(tenant_id=TENANT_A, title="inner")
+                _make_user(TENANT_A, "inner@example.com")
             raise _BoomError
 
-        assert _titles_of(TENANT_A) == set(), "內層已獨立提交 → 巢狀交易語意錯誤"
+        assert _emails_of(TENANT_A) == set(), "內層已獨立提交 → 巢狀交易語意錯誤"
 
 
 class TestTenantGuc:
@@ -115,9 +139,11 @@ class TestTenantGuc:
 
         assert _current_setting() is None, "設定外洩到交易外 → 用成 SET 而非 SET LOCAL"
 
-    def test_each_tenant_gets_its_own_value(self, two_tenants: tuple[uuid.UUID, uuid.UUID]) -> None:
+    def test_each_tenant_gets_its_own_value(
+        self, two_empty_tenants: tuple[uuid.UUID, uuid.UUID]
+    ) -> None:
         """B3：不同租戶的交易各自拿到自己的值，不互相污染。"""
-        tenant_a, tenant_b = two_tenants
+        tenant_a, tenant_b = two_empty_tenants
 
         with tenant_context(tenant_a), unit_of_work():
             assert _current_setting() == str(tenant_a)

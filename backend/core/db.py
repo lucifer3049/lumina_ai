@@ -46,9 +46,9 @@ def _call_with_cleanup[R](fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
 
 
 # **在 import 期建立一次，不要搬進 run_orm。**
-# 每次呼叫重建一個包裝器不貴，但它落在 B 組壓測正在量的那條路徑上——量出來的
-# 數字會含一筆不屬於受測對象的成本，而且偏多少無從得知（locustfile.py 開頭的
-# 教訓：環境雜訊已經會吃掉真實差異，受測物本身不該再自己加料）。
+# 每次呼叫重建一個包裝器不貴，但它落在壓測正在量的那條路徑上——量出來的數字會含
+# 一筆不屬於受測對象的成本，而且偏多少無從得知（11 §1.4 的教訓：環境雜訊已經會吃掉
+# 真實差異，受測物本身不該再自己加料）。
 # 由 tests/test_bridge.py::TestBridgeOverhead 釘住。
 _run_with_cleanup = sync_to_async(
     _call_with_cleanup,
@@ -69,14 +69,15 @@ async def run_orm[**P, R](fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs)
 
 
 def orm_runtime_knobs() -> dict[str, Any]:
-    """壓測旋鈕的診斷回報（供 ``/spike/healthz``）。
+    """橋接旋鈕的診斷回報（11 §4.2 的 ``/healthz`` 會用；spike 期的
+    ``/spike/healthz`` 已於 1A-5 刪除，但守門留在這一層，見 tests/unit/test_orm_knobs.py）。
 
     集中在本檔的理由：兩個旋鈕都在本檔生效（``_orm_executor`` 由
     ``ORM_THREADPOOL_SIZE`` 建立、連線重用由 ``CONN_MAX_AGE`` 決定），而 controller
     不該為了回報設定值去讀 ``django.conf``——鐵則 3 的 endpoint 不碰基礎設施。
 
-    **刻意不含 DB 主機與埠。** 那是內部拓撲，而這支端點無認證（spike 面），
-    回報等於公開基礎設施位置（鐵則 9）。
+    **刻意不含 DB 主機與埠。** 那是內部拓撲，而診斷端點通常無認證（存活探測要能
+    在沒有憑證的情況下打），回報等於公開基礎設施位置（鐵則 9）。
 
     回報的是**設定值**。「設定值 == 真正生效的值」目前靠 ``_orm_executor`` 在
     import 期由同一個 setting 建立來保證，本函式不另外去讀 executor 的實際寬度

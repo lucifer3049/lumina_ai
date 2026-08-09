@@ -24,12 +24,8 @@ dist/
 # 預設落在 repo 之外；這條是防止有人把 store-dir 改到 repo 內時整包被提交。
 .pnpm-store/
 
-# ── 壓測與 spike 產出 ──
+# ── 壓測產出 ──
 loadtest/results/
-# 由 make seed 產生，可重現，不進版控
-# （註：以下這行原本把說明寫在同一行。.gitignore 的 # 只有在**行首**才是註解，
-#   寫在後面會變成 pattern 的一部分，於是這條規則從來沒有生效過。）
-backend/loadtest/tenants.json
 *.log
 
 # ── 不進版控：個人設定與筆記 ──

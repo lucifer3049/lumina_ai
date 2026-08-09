@@ -15,9 +15,9 @@
 4. **登出真的讓 token 失效**：JWT 是自我驗證的，伺服器預設「不知道」誰登出過。
    沒有撤銷名單的話，登出只是前端把 token 丟掉，被竊取的那份照樣能用 15 分鐘。
 
-租戶來源在這裡從「client 自報」變成「JWT claim」（ADR-002）。因此本檔也驗
-``X-Tenant-Id`` 標頭**完全不影響**身分——那個標頭在 1A-5 會連同 spike 面一起
-刪掉，但在它還在的期間，這條測試確保它已經無效。
+租戶來源是「已驗證的 JWT claim」，而且是唯一來源（ADR-002）。因此本檔也驗
+``X-Tenant-Id`` 這類 client 自報的標頭**完全不影響**身分——1A-5 已把讀取那個
+標頭的程式碼整段刪除，這裡從**行為面**確認：帶著它打正式端點，身分不會改變。
 """
 
 from __future__ import annotations
@@ -90,8 +90,7 @@ def user_in_tenant_a() -> uuid.UUID:
 
 
 def _app() -> FastAPI:
-    """關掉 spike 面：本檔驗的是正式認證路徑，spike 的租戶標頭必須無關緊要。"""
-    app = create_app(enable_spike_endpoints=False)
+    app = create_app()
 
     @app.get("/probe")
     async def probe(
@@ -328,9 +327,9 @@ class TestTenantSource:
     ) -> None:
         """client 自報的租戶標頭一律無效（鐵則 4）。
 
-        spike 期間 ``X-Tenant-Id`` 是租戶來源；1A-5 會刪掉那條路徑，但在它還在的
-        期間，這條測試確保正式端點已經完全不理它——否則「刪除 spike」會變成一次
-        有安全影響的變更，而不是單純的清理。
+        ``X-Tenant-Id`` 曾經是 spike 期的租戶來源（1A-5 已刪）。這條測試留著的
+        理由不是那段歷史，而是**任何** client 送來的租戶宣稱都不該有效：日後若有人
+        「為了方便」重新接一條標頭取租戶的捷徑，這裡會紅。
         """
         token = (await _login(client)).json()["access_token"]
 

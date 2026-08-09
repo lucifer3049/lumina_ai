@@ -1,8 +1,8 @@
 """從 access log 算**伺服器端**延遲分位數 —— 單機壓測的校正工具。
 
-locust 報的 p95 是**客戶端**量的：從發出請求到收到回應，中間包含 locust 自己
-在同一台機器上等 CPU 的時間。個人開發沒有獨立負載機（11 §1.4 的已知偏離），
-那段等待會被算進延遲，讓系統看起來比實際慢。
+負載產生器（locust、k6、ab…）報的 p95 是**客戶端**量的：從發出請求到收到回應，
+中間包含那支工具自己在同一台機器上等 CPU 的時間。個人開發沒有獨立負載機
+（11 §1.4 的已知偏離），那段等待會被算進延遲，讓系統看起來比實際慢。
 
 ``api/main.py`` 的 access_log_middleware 記的 ``duration_ms`` 則是在**伺服器
 行程內**量的，不含客戶端排隊。兩個數字對照就能分辨：
@@ -15,8 +15,11 @@ locust 報的 p95 是**客戶端**量的：從發出請求到收到回應，中�
 用法::
 
     make api-pinned            # 另一個視窗，log 會導到 $(API_LOG)
-    make loadtest-pinned
-    make loadtest-report
+    <用任何工具打流量>
+    make loadtest-report ARGS="--path /api/v1/users --last-seconds 70"
+
+註（1A-5）：負載產生端（locustfile）已隨 spike 面刪除——它打的是 `/api/v1/spike/*`，
+那組端點不存在了。本檔不受影響：它只讀 log，與流量從哪來無關。
 """
 
 from __future__ import annotations
@@ -102,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("log", type=Path, help="access log（JSON Lines）路徑")
-    parser.add_argument("--path", default=None, help="只算這個路徑，例如 /api/v1/spike/items")
+    parser.add_argument("--path", default=None, help="只算這個路徑，例如 /api/v1/users")
     parser.add_argument(
         "--slo-ms",
         type=float,

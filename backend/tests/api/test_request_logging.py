@@ -47,12 +47,40 @@ def _client(app: FastAPI) -> httpx.AsyncClient:
     )
 
 
+def _app_with_tenant_probe() -> FastAPI:
+    """掛一條會在 route 內設定租戶的路由，模擬 1A-3 之後認證 ``Depends`` 的形狀。
+
+    ``/scoped`` 設租戶、``/plain`` 不設，兩者搭配即可驗「租戶綁得到」與「不跨請求
+    殘留」——而且完全不依賴任何業務端點。
+    """
+    app = create_app()
+
+    async def bind_tenant() -> None:
+        """**必須是 async**，與 `api/dependencies/auth.py` 的形狀一致。
+
+        同步 dependency 會被 FastAPI 丟到 threadpool 執行，contextvar 設在那條
+        執行緒的 context 副本上，回不到主 task——存取日誌因此讀不到租戶。這不是
+        測試的技術細節：真正的認證 dependency 若哪天被改成同步的，log 的
+        tenant_id 就會再次靜靜消失，而這條測試會抓到。
+        """
+        set_current_tenant_id(TENANT_A)
+
+    @app.get("/scoped", dependencies=[Depends(bind_tenant)])
+    async def scoped() -> dict[str, str]:
+        return {"ok": "true"}
+
+    @app.get("/plain")
+    async def plain() -> dict[str, str]:
+        return {"ok": "true"}
+
+    return app
+
+
 @pytest.fixture
 async def client(capsys: pytest.CaptureFixture[str]) -> AsyncIterator[httpx.AsyncClient]:
     """在 capsys 生效後才設定 logging——handler 綁的是當下的 sys.stdout。"""
     configure_logging(level="INFO", fmt="json")
-    # 存取日誌的租戶綁定以 X-Tenant-Id 為輸入，需 spike 的 tenant_middleware。
-    async with _client(create_app(enable_spike_endpoints=True)) as c:
+    async with _client(_app_with_tenant_probe()) as c:
         yield c
 
 
@@ -60,22 +88,39 @@ class TestAccessLog:
     async def test_every_request_emits_one_access_log(
         self, client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        response = await client.get("/api/v1/spike/does-not-exist")
+        response = await client.get("/api/v1/does-not-exist")
 
         logs = _access_logs(capsys.readouterr().out)
 
         assert len(logs) == 1
         event = logs[0]
         assert event["method"] == "GET"
-        assert event["path"] == "/api/v1/spike/does-not-exist"
+        assert event["path"] == "/api/v1/does-not-exist"
         assert event["status"] == response.status_code
         assert isinstance(event["duration_ms"], (int, float))
+
+    async def test_error_path_is_also_logged(
+        self, client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """404 這種**沒有走到 route 函式**的請求同樣要留下存取記錄。
+
+        本檔開頭第 1 條說的「存取日誌漏掉某條路徑」就是這類：回應 body 帶著
+        request_id，log 裡卻一筆都沒有——使用者回報 id 撈不到東西，而 4xx 的計數
+        與延遲分位數會系統性少算這一整類請求。
+        """
+        response = await client.get("/api/v1/does-not-exist")
+
+        logs = _access_logs(capsys.readouterr().out)
+
+        assert len(logs) == 1, "未進入 route 的回應沒有存取記錄"
+        assert logs[0]["status"] == 404
+        assert logs[0]["request_id"] == response.headers[REQUEST_ID_HEADER]
 
     async def test_request_id_matches_response_header(
         self, client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """對外可見的 id 與 log 內的 id 必須是同一個，否則 client 回報的 id 撈不到東西。"""
-        response = await client.get("/api/v1/spike/does-not-exist")
+        response = await client.get("/api/v1/does-not-exist")
 
         assert (
             _access_logs(capsys.readouterr().out)[0]["request_id"]
@@ -85,97 +130,48 @@ class TestAccessLog:
     async def test_query_string_is_not_logged(
         self, client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        await client.get("/api/v1/spike/items?limit=20&token=super-secret")
+        await client.get("/plain?limit=20&token=super-secret")
 
         out = capsys.readouterr().out
 
         assert "super-secret" not in out
-        assert _access_logs(out)[0]["path"] == "/api/v1/spike/items"
-
-    async def test_tenant_id_is_bound_when_present(
-        self, client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        await client.get(
-            "/api/v1/spike/does-not-exist",
-            headers={"X-Tenant-Id": str(TENANT_A)},
-        )
-
-        assert _access_logs(capsys.readouterr().out)[0]["tenant_id"] == str(TENANT_A)
-
-    async def test_short_circuited_400_is_still_logged(
-        self, client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """無效 ``X-Tenant-Id`` 的 400 也必須留下存取記錄。
-
-        這條 400 在呼叫下游**之前**就產生。前一版把租戶與存取日誌拆成兩條
-        BaseHTTPMiddleware（存取日誌在內層），短路的回應因此永遠跑不到日誌那層：
-        回應 body 帶著 request_id，log 裡卻一筆都沒有——使用者回報 id 撈不到東西，
-        而壓測的 4xx 計數與延遲分位數會系統性少算這一整類請求。這正是本檔開頭第 1
-        條「存取日誌漏掉某條路徑」的實例。
-        """
-        response = await client.get("/api/v1/spike/items", headers={"X-Tenant-Id": "not-a-uuid"})
-
-        assert response.status_code == 400
-        logs = _access_logs(capsys.readouterr().out)
-
-        assert len(logs) == 1, "短路的回應沒有存取記錄"
-        assert logs[0]["status"] == 400
-        assert logs[0]["request_id"] == response.headers[REQUEST_ID_HEADER]
+        assert _access_logs(out)[0]["path"] == "/plain"
 
     async def test_context_does_not_leak_between_requests(
         self, client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """第二個請求沒帶租戶，就不該看到第一個請求的 tenant_id。"""
-        await client.get("/api/v1/spike/x", headers={"X-Tenant-Id": str(TENANT_A)})
-        await client.get("/api/v1/spike/y")
+        """第二個請求沒設租戶，就不該看到第一個請求的 tenant_id。
+
+        contextvars 沒清乾淨時，A 請求的租戶會出現在 B 請求的 log 上——那比沒有
+        log 更糟，它會把追查方向指到無關的租戶去。
+        """
+        await client.get("/scoped")
+        await client.get("/plain")
 
         first, second = _access_logs(capsys.readouterr().out)
 
+        assert first["tenant_id"] == str(TENANT_A), "前提不成立：第一個請求沒綁到租戶"
         assert first["request_id"] != second["request_id"]
         assert second.get("tenant_id") is None
 
 
-class TestTenantBindingWithoutSpike:
+class TestTenantBinding:
     """租戶在 **route 層**被設定時，存取日誌仍然帶得到 tenant_id（13 §3.2）。
 
-    為什麼要另外寫一條：上面 `test_tenant_id_is_bound_when_present` 是靠 spike 的
-    ``X-Tenant-Id`` middleware 驅動的，而那整條路徑會在 1A-5 被刪掉——測試會跟著
-    消失，缺口不會浮現。
-
-    缺口長這樣：1A 之後租戶改從已驗證的 JWT claim 取得，而 FastAPI 的慣用形狀是
-    ``Depends``——那在 **route 函式內**執行，比所有 middleware 都晚。原本的做法是
-    middleware 進入時對 contextvar 取一次快照再綁進 log context，那個時間點租戶
+    缺口長這樣：租戶從已驗證的 JWT claim 取得，而 FastAPI 的慣用形狀是
+    ``Depends``——那在 **route 函式內**執行，比所有 middleware 都晚。1A 之前的做法
+    是 middleware 進入時對 contextvar 取一次快照再綁進 log context，那個時間點租戶
     還是空的，於是**每一筆 log 的 tenant_id 都會靜靜消失**，而 12 §1.1 把它列為
     標準欄位，「某個租戶錯誤暴增」這類查詢全靠它。
 
     處置是改成 emit 時才讀 contextvar 的 structlog processor：不管租戶是由
-    middleware、``Depends`` 還是背景任務設進去的，都一樣抓得到。本測試用一個
-    route-level dependency 模擬 1A-3 之後的真實形狀，因此 spike 刪除後仍然有效。
+    middleware、``Depends`` 還是背景任務設進去的，都一樣抓得到。
     """
 
     async def test_tenant_set_by_a_route_dependency_reaches_the_access_log(
-        self, capsys: pytest.CaptureFixture[str]
+        self, client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        configure_logging(level="INFO", fmt="json")
-        app = create_app(enable_spike_endpoints=False)
-
-        async def bind_tenant() -> None:
-            """模擬 1A-3 的認證 dependency：在 route 執行期間設定租戶。
-
-            **必須是 async**，與 `api/dependencies/auth.py` 的形狀一致。同步
-            dependency 會被 FastAPI 丟到 threadpool 執行，contextvar 設在那條
-            執行緒的 context 副本上，回不到主 task——存取日誌因此讀不到租戶。
-            這不是測試的技術細節：真正的認證 dependency 若哪天被改成同步的，
-            log 的 tenant_id 就會再次靜靜消失，而這條測試會抓到。
-            """
-            set_current_tenant_id(TENANT_A)
-
-        @app.get("/scoped", dependencies=[Depends(bind_tenant)])
-        async def scoped() -> dict[str, str]:
-            return {"ok": "true"}
-
-        async with _client(app) as client:
-            await client.get("/scoped")
+        await client.get("/scoped")
 
         assert _access_logs(capsys.readouterr().out)[0]["tenant_id"] == str(TENANT_A)
 
@@ -187,9 +183,7 @@ class TestErrorCorrelation:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         configure_logging(level="INFO", fmt="json")
-        # 顯式關閉：本測試只用自掛的 /boom，不需要 spike 面。裸 create_app() 會改讀
-        # AppSettings，測試結果就隨本機 .env 而變（跑壓測時 .env 可能是開的）。
-        app = create_app(enable_spike_endpoints=False)
+        app = create_app()
 
         @app.get("/boom")
         async def boom() -> None:
@@ -216,7 +210,7 @@ class TestErrorCorrelation:
         事件——告警不會響，而回應裡給使用者的 request_id 也撈不到任何細節。
         """
         configure_logging(level="INFO", fmt="json")
-        app = create_app(enable_spike_endpoints=False)
+        app = create_app()
 
         @app.get("/upstream")
         async def upstream() -> None:
@@ -239,7 +233,7 @@ class TestErrorCorrelation:
         把 404 記成 ERROR 會讓告警噪音淹掉真正需要人看的事件。
         """
         configure_logging(level="INFO", fmt="json")
-        app = create_app(enable_spike_endpoints=False)  # 理由同上：只用自掛的 /missing
+        app = create_app()
 
         @app.get("/missing")
         async def missing() -> None:

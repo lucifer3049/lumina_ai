@@ -42,9 +42,9 @@ dev = [
     "pyyaml>=6.0",
     "factory-boy>=3.3",
 ]
-loadtest = [
-    "locust>=2.32",
-]
+# 註（1A-5）：原有一個 `loadtest` group（locust）。負載產生腳本隨 spike 面刪除
+# （它打的是 /api/v1/spike/*），依賴跟著移除——留著一個沒有任何檔案 import 的
+# 套件，日後只會有人以為壓測還在。重建壓測時連同這個 group 一起加回來。
 
 [tool.uv]
 default-groups = ["dev"]
@@ -104,12 +104,6 @@ exclude = ["migrations/"]
 module = ["apps.*.migrations.*"]
 ignore_errors = true
 
-# locust 沒有型別 stub，且其 decorator/base class 全是 Any。
-# 壓測腳本不是產品程式碼，這裡放寬到「能跑就好」，不讓它拖著 strict 不放。
-[[tool.mypy.overrides]]
-module = ["locust.*"]
-ignore_missing_imports = true
-
 # factory_boy 的 metaclass 沒有型別資訊，Factory 子類別的每次呼叫在 strict 之下
 # 都會被判為「呼叫未標型別的函式」。放寬範圍**只限工廠模組本身**：測試檔一律
 # 透過 tests/factories 的 make_* 包裝取得有回傳型別的物件，因此仍受完整檢查。
@@ -130,10 +124,8 @@ implicit_reexport = true
 module = ["boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
-[[tool.mypy.overrides]]
-module = ["loadtest.*"]
-disallow_untyped_decorators = false
-disallow_subclassing_any = false
+# loadtest/ 現在只剩 access log 分析工具（純 stdlib），維持 strict 即可；
+# 重新引入負載腳本時再視需要放寬。
 
 [tool.django-stubs]
 django_settings_module = "config.settings.test"
@@ -144,7 +136,10 @@ django_settings_module = "config.settings.test"
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
 pythonpath = ["."]
-testpaths = ["tests"]
+# e2e 不在預設範圍內：它起真的 uvicorn 子行程並連開發資料庫（前置是 make up +
+# migrate + gen-jwt-keys），混進 `make test` 會讓缺前置的環境整片紅，而紅燈原因與
+# 被測的東西無關。走 `make smoke`，13 §1.2 要求每次任務結束跑一次。
+testpaths = ["tests/unit", "tests/integration", "tests/api"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
