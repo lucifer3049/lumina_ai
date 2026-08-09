@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     # 表定義隨 Phase 2 的 2A 工作包進來。
     "apps.platform",
     "apps.identity",
+    "apps.knowledge",
 ]
 
 DATABASES = {

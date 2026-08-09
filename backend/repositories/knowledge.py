@@ -1,0 +1,143 @@
+"""Knowledge 的 Repository —— 租戶隔離的第一道防線（鐵則 4）。
+
+第二道是 RLS policy（apps/knowledge/migrations/0002_rls.py）。兩道的條件必須一致；
+不一致時的症狀分兩種，而且都沒有錯誤訊息（程式比 policy 寬 → 回空集合；程式比
+policy 窄 → 使用者看不到本來該看到的資料）。
+
+本檔的方法全部是**同步**的：只會被 :func:`core.db.run_orm` 從 threadpool 呼叫，
+不得在 async 路徑直接 await（ADR-001）。
+
+**兩個查詢語意在這裡定案，錯了都不會報錯**：
+
+1. :meth:`ChunkRepository.for_retrieval` 預設排除 ``superseded``。混進舊版本的話，
+   LLM 會拿早已被取代的內容當依據，而引用指向的 chunk 確實存在——回應看起來完全
+   正常，事後沒有任何自動化手段能發現。
+2. :meth:`EtlJobRepository.find` 以 ``(document, doc_version, stage)`` 定位（08 §6）。
+   少了 ``doc_version``，re-ingest 會查到上一版已成功的 job 而跳過該階段，文件停在
+   舊內容、狀態卻是 ready。
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Sequence
+
+from django.db.models import QuerySet
+
+from apps.knowledge.models import Chunk, Document, EtlJob, KnowledgeBase
+from core.tenant import get_current_tenant_id
+from repositories.base import TenantScopedRepository
+
+
+class KnowledgeBaseRepository(TenantScopedRepository[KnowledgeBase]):
+    model = KnowledgeBase
+
+    def get_by_id(self, kb_id: uuid.UUID) -> KnowledgeBase | None:
+        return self.get_queryset().filter(id=kb_id).first()
+
+    def create(
+        self, *, name: str, description: str = "", config: dict[str, object] | None = None
+    ) -> KnowledgeBase:
+        return KnowledgeBase.objects.create(
+            tenant_id=get_current_tenant_id(operation="KnowledgeBaseRepository.create"),
+            name=name,
+            description=description,
+            config=config or {},
+        )
+
+
+class DocumentRepository(TenantScopedRepository[Document]):
+    model = Document
+
+    def get_by_id(self, document_id: uuid.UUID) -> Document | None:
+        """租戶內以 id 找文件；不存在或屬於別的租戶都回 ``None``。
+
+        回 None 而不是 raise 是刻意的：API 層要把它轉成 **404**（09 §2.3 的資源類
+        規則）。回 403 等於承認「這個 id 存在，只是你不能碰」，那讓人可以拿 id 掃出
+        別的租戶有哪些文件。
+        """
+        return self.get_queryset().filter(id=document_id).first()
+
+    def for_kb(self, kb_id: uuid.UUID) -> QuerySet[Document]:
+        return self.get_queryset().filter(kb_id=kb_id).order_by("-created_at")
+
+    def find_by_content_hash(self, *, kb_id: uuid.UUID, content_hash: str) -> Document | None:
+        """上傳前的去重查詢。
+
+        查詢範圍必須與 ``uq_document_tenant_kb_hash`` 逐字對應（租戶 + KB + hash）。
+        查得比約束寬的話，上傳會回報「重複」但 INSERT 其實過得了；窄的話則是回報
+        可以上傳、然後被 DB 擋下並冒出 IntegrityError。兩種不一致都很難從症狀反推。
+        """
+        return self.get_queryset().filter(kb_id=kb_id, content_hash=content_hash).first()
+
+    def create(
+        self,
+        *,
+        kb_id: uuid.UUID,
+        filename: str,
+        mime_type: str,
+        storage_key: str,
+        content_hash: str,
+        size_bytes: int,
+        source_type: str = "upload",
+    ) -> Document:
+        return Document.objects.create(
+            tenant_id=get_current_tenant_id(operation="DocumentRepository.create"),
+            kb_id=kb_id,
+            filename=filename,
+            mime_type=mime_type,
+            storage_key=storage_key,
+            content_hash=content_hash,
+            size_bytes=size_bytes,
+            source_type=source_type,
+        )
+
+
+class ChunkRepository(TenantScopedRepository[Chunk]):
+    model = Chunk
+
+    def for_document(self, document_id: uuid.UUID) -> list[Chunk]:
+        """一份文件的全部 chunk，**按 ``seq`` 排序**。
+
+        沒有明確 ORDER BY 時 PostgreSQL 不保證順序——小表通常剛好是插入順序，於是
+        開發環境看起來正常，而重寫過的表（VACUUM、re-ingest）會突然變亂序。後果是
+        文件預覽語意錯亂、相鄰 chunk 拼接時接錯段落。
+        """
+        return list(self.get_queryset().filter(document_id=document_id).order_by("seq"))
+
+    def for_retrieval(self, *, kb_id: uuid.UUID) -> list[Chunk]:
+        """檢索候選集：該 KB 底下**未 superseded** 的 chunk。
+
+        條件與 ``ix_chunk_tenant_kb_active``（partial index）逐字對應，查詢才吃得到
+        那個索引。
+        """
+        return list(self.get_queryset().filter(kb_id=kb_id, superseded=False).order_by("seq"))
+
+    def mark_superseded(self, *, chunk_ids: Sequence[uuid.UUID]) -> int:
+        """標記舊版本；回傳實際影響的列數。
+
+        走 ``get_queryset()`` 出發（而非 ``Chunk.objects``）：這條 UPDATE 在 re-ingest
+        時會以「整批」的形狀執行，漏了 tenant filter 就是把別的租戶的 chunk 一起標成
+        superseded——受害租戶的檢索會突然回空集合，而沒有任何錯誤訊息。
+        """
+        return self.get_queryset().filter(id__in=list(chunk_ids)).update(superseded=True)
+
+
+class EtlJobRepository(TenantScopedRepository[EtlJob]):
+    model = EtlJob
+
+    def find(self, *, doc_id: uuid.UUID, doc_version: int, stage: str) -> EtlJob | None:
+        """依冪等鍵定位（08 §6）。三個欄位缺一不可，理由見本檔 docstring。"""
+        return (
+            self.get_queryset()
+            .filter(document_id=doc_id, doc_version=doc_version, stage=stage)
+            .first()
+        )
+
+    def create(self, *, doc_id: uuid.UUID, doc_version: int, stage: str) -> EtlJob:
+        return EtlJob.objects.create(
+            tenant_id=get_current_tenant_id(operation="EtlJobRepository.create"),
+            document_id=doc_id,
+            doc_version=doc_version,
+            stage=stage,
+        )
