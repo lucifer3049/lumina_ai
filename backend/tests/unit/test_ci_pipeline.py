@@ -327,6 +327,33 @@ def test_jobs_that_build_the_app_generate_jwt_keys(workflow: dict[str, Any]) -> 
         )
 
 
+def test_pnpm_is_invoked_from_inside_the_frontend_directory() -> None:
+    """Makefile 不得用 ``pnpm --dir frontend``——必須 ``cd`` 進去再呼叫。
+
+    ``--dir`` 只改變 pnpm 自己的工作目錄，而**版本是在 pnpm 啟動之前由 corepack
+    決定的**：corepack 從 cwd 往上找帶 ``packageManager`` 的 package.json，repo 根
+    沒有那個檔案，於是它改抓 registry 的 latest。抓到的版本與 frontend 釘的版本不同
+    時，pnpm 一啟動就拒跑。
+
+    **這個錯誤只在 pnpm 發新版的那一天出現**：latest 恰好等於釘的版本時 corepack
+    猜對了，什麼事都沒有。2026-08-09 pnpm 發 11.21.0，CI 四個 job 之一當場全紅，
+    而前一次 CI 全綠——中間沒有任何程式碼改動。這條測試把它釘住，否則下次有人
+    「順手」改回 --dir，一樣要等下一次 pnpm 發版才會知道。
+    """
+    # 去註解：Makefile 的註解裡就寫著「不得用 pnpm --dir」這句說明，直接對原始
+    # 文字斷言會被自己的文件釣中。展開變數：定義寫的是 `cd $(FRONTEND) && pnpm`。
+    makefile = _strip_shell_comments(
+        _expand(MAKEFILE.read_text(encoding="utf-8"), _makefile_variables())
+    )
+
+    assert "pnpm --dir" not in makefile, (
+        "Makefile 用了 `pnpm --dir`——corepack 會從 repo 根解析版本（那裡沒有 "
+        "package.json）而抓 latest，與 frontend 釘的版本不符時 pnpm 拒跑。改成 "
+        "`cd frontend && pnpm ...`"
+    )
+    assert "cd frontend && pnpm" in makefile, "找不到從 frontend 目錄呼叫 pnpm 的定義"
+
+
 def test_image_runs_as_non_root(workflow: dict[str, Any]) -> None:
     """ADR-007「non-root user」不是靠人記得，要在 CI 驗（image 以 root 跑不會有症狀）。"""
     assert "id -u" in _workflow_run_text(workflow), (

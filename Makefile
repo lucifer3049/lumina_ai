@@ -34,9 +34,23 @@ BACKEND := backend
 UV      := uv --directory $(BACKEND)
 UV_RUN  := $(UV) run --env-file ../.env
 FRONTEND := frontend
-# --dir：與 UV 的 --directory 同理，讓 pnpm 的工作目錄落在 frontend/，
-# 在 repo 根下指令才找得到 package.json。
-PNPM    := pnpm --dir $(FRONTEND)
+# **必須 cd 進去，不能用 `pnpm --dir frontend`**（2026-08-09 修）。
+#
+# `--dir` 只改變 pnpm 自己的工作目錄，而版本是**在 pnpm 啟動之前**由 corepack 決定的：
+# corepack 從 **cwd** 往上找帶 `packageManager` 欄位的 package.json，repo 根沒有這個
+# 檔案（前端的它看不到），於是它改抓 registry 上的 latest。抓到的版本與
+# frontend/package.json 釘的版本一旦不同，pnpm 一啟動就拒跑：
+#
+#   [ERROR] This project is configured to use 11.20.0 of pnpm. Your current pnpm is v11.21.0
+#
+# 這個錯誤在 pnpm 發下一版之前**完全不會出現**——latest 恰好等於我們釘的版本時，
+# corepack 猜對了。也就是說 packageManager 這個釘子從第一天起就沒有生效，只是碰巧
+# 沒露餡（2026-08-09 pnpm 發 11.21.0 當天 CI 全紅，而前一次 CI 全綠）。
+# 本機不一定重現得出來：本機的 corepack 有備妥的版本，不會每次去抓 latest。
+#
+# 不在 repo 根補一個只有 packageManager 的 package.json：那讓版本號變成兩份，
+# 而兩份漂掉時的症狀就是上面這個錯誤。
+PNPM    := cd $(FRONTEND) && pnpm
 # 前端 codegen 的輸入與輸出（09 §4、03 §3.1）。兩者都進版控，漂移由 openapi-check 擋。
 CONTRACT  := openapi.json
 GENERATED := $(FRONTEND)/src/api/generated
