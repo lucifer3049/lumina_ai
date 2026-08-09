@@ -7,7 +7,7 @@ policy 窄 → 使用者看不到本來該看到的資料）。
 本檔的方法全部是**同步**的：只會被 :func:`core.db.run_orm` 從 threadpool 呼叫，
 不得在 async 路徑直接 await（ADR-001）。
 
-**兩個查詢語意在這裡定案，錯了都不會報錯**：
+**三個查詢語意在這裡定案，錯了都不會報錯**：
 
 1. :meth:`ChunkRepository.for_retrieval` 預設排除 ``superseded``。混進舊版本的話，
    LLM 會拿早已被取代的內容當依據，而引用指向的 chunk 確實存在——回應看起來完全
@@ -15,6 +15,10 @@ policy 窄 → 使用者看不到本來該看到的資料）。
 2. :meth:`EtlJobRepository.find` 以 ``(document, doc_version, stage)`` 定位（08 §6）。
    少了 ``doc_version``，re-ingest 會查到上一版已成功的 job 而跳過該階段，文件停在
    舊內容、狀態卻是 ready。
+3. **軟刪除的實體預設不可見**（1B-2）：`KnowledgeBase` 與 `Document` 的
+   ``get_queryset`` 排除 ``deleted_at IS NOT NULL``。05 §5.4 的軟刪除是為了「使用者
+   可能後悔」（30 天後由清理 job 硬刪），不是為了讓資料繼續出現——只寫 ``deleted_at``
+   卻沒從查詢排除的話，使用者會看到自己剛刪掉的東西還在列表上，而刪除 API 回了 204。
 """
 
 from __future__ import annotations
@@ -22,18 +26,46 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 
-from django.db.models import QuerySet
+from django.db.models import Model, QuerySet
+from django.utils import timezone
 
 from apps.knowledge.models import Chunk, Document, EtlJob, KnowledgeBase
 from core.tenant import get_current_tenant_id
 from repositories.base import TenantScopedRepository
 
 
-class KnowledgeBaseRepository(TenantScopedRepository[KnowledgeBase]):
+class SoftDeletableRepository[M: Model](TenantScopedRepository[M]):
+    """軟刪除的實體：預設查詢排除已刪除的列。
+
+    覆寫 ``get_queryset`` 而不是要求每個查詢自己加條件——後者只要有一處漏掉，
+    使用者就會看到已刪除的資料，而那一處不會有任何症狀。要撈已刪除的列（清理
+    worker、還原功能）走 :meth:`including_deleted`，讓那個意圖在呼叫端顯式可見。
+    """
+
+    def get_queryset(self) -> QuerySet[M]:
+        return super().get_queryset().filter(deleted_at__isnull=True)
+
+    def including_deleted(self) -> QuerySet[M]:
+        """含已刪除的列——只給清理 worker 與還原流程用。"""
+        return super().get_queryset()
+
+    def soft_delete(self, entity_id: uuid.UUID) -> int:
+        """標記刪除；回傳影響的列數（0 = 不存在或已刪除）。
+
+        不硬刪（05 §5.4）：硬刪要級聯 embeddings → chunks → documents，那是清理
+        worker 分批做的事，在請求路徑上做會鎖表。
+        """
+        return self.get_queryset().filter(id=entity_id).update(deleted_at=timezone.now())
+
+
+class KnowledgeBaseRepository(SoftDeletableRepository[KnowledgeBase]):
     model = KnowledgeBase
 
     def get_by_id(self, kb_id: uuid.UUID) -> KnowledgeBase | None:
         return self.get_queryset().filter(id=kb_id).first()
+
+    def list_all(self) -> list[KnowledgeBase]:
+        return list(self.get_queryset().order_by("-created_at"))
 
     def create(
         self, *, name: str, description: str = "", config: dict[str, object] | None = None
@@ -45,8 +77,16 @@ class KnowledgeBaseRepository(TenantScopedRepository[KnowledgeBase]):
             config=config or {},
         )
 
+    def update(self, kb_id: uuid.UUID, **fields: object) -> int:
+        """部分更新——只寫呼叫端明確給的欄位。
 
-class DocumentRepository(TenantScopedRepository[Document]):
+        ``**fields`` 由 Service 過濾成「使用者真的有給的那幾個」；把 ``None`` 當成
+        「設為空」寫進來的話，使用者改一次名稱、描述就不見了。
+        """
+        return self.get_queryset().filter(id=kb_id).update(**fields)
+
+
+class DocumentRepository(SoftDeletableRepository[Document]):
     model = Document
 
     def get_by_id(self, document_id: uuid.UUID) -> Document | None:
@@ -58,8 +98,16 @@ class DocumentRepository(TenantScopedRepository[Document]):
         """
         return self.get_queryset().filter(id=document_id).first()
 
-    def for_kb(self, kb_id: uuid.UUID) -> QuerySet[Document]:
-        return self.get_queryset().filter(kb_id=kb_id).order_by("-created_at")
+    def for_kb(self, kb_id: uuid.UUID) -> list[Document]:
+        """某個 KB 底下的文件——**不是**整個租戶的文件。
+
+        漏了 kb 條件的話，回傳的每一筆都是呼叫者有權看的資料（同租戶），所以不會有
+        錯誤也不會有紅燈；使用者只會覺得「這個知識庫怎麼有別的知識庫的文件」。
+        """
+        return list(self.get_queryset().filter(kb_id=kb_id).order_by("-created_at"))
+
+    def count_for_kb(self, kb_id: uuid.UUID) -> int:
+        return self.get_queryset().filter(kb_id=kb_id).count()
 
     def find_by_content_hash(self, *, kb_id: uuid.UUID, content_hash: str) -> Document | None:
         """上傳前的去重查詢。

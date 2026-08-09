@@ -106,25 +106,36 @@ class EtlJobFactory(factory.django.DjangoModelFactory[EtlJob]):
 # ── 對外介面：有回傳型別的薄包裝 ────────────────────────────────
 
 
-def _with_tenant(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """把 ``tenant_id=<uuid>`` 換成 ``tenant=<Tenant 實例>``（理由見 identity 的同名函式）。"""
-    tenant_id = kwargs.pop("tenant_id", None)
-    if tenant_id is not None:
-        kwargs["tenant"] = Tenant.objects.get(id=tenant_id)
+def _resolve(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """把 ``*_id=<uuid>`` 換成對應的實例（理由見 identity 的 `_with_tenant`）。
+
+    ``kb_id`` / ``document_id`` 也要處理，不只 ``tenant_id``：factory 不認得的關鍵字
+    會被當成未指定，於是 `SubFactory` **另外造一個** KB（連帶一個新租戶）——而建立
+    租戶會被 RLS 擋下，錯誤訊息是 ``new row violates row-level security policy for
+    table "identity_tenant"``，完全看不出根因是參數名寫成了 ``kb_id``。
+    """
+    for keyword, model in (
+        ("tenant_id", Tenant),
+        ("kb_id", KnowledgeBase),
+        ("document_id", Document),
+    ):
+        value = kwargs.pop(keyword, None)
+        if value is not None:
+            kwargs[keyword.removesuffix("_id")] = model.objects.get(id=value)
     return kwargs
 
 
 def make_knowledge_base(**kwargs: Any) -> KnowledgeBase:
-    return cast(KnowledgeBase, KnowledgeBaseFactory(**_with_tenant(kwargs)))
+    return cast(KnowledgeBase, KnowledgeBaseFactory(**_resolve(kwargs)))
 
 
 def make_document(**kwargs: Any) -> Document:
-    return cast(Document, DocumentFactory(**_with_tenant(kwargs)))
+    return cast(Document, DocumentFactory(**_resolve(kwargs)))
 
 
 def make_chunk(**kwargs: Any) -> Chunk:
-    return cast(Chunk, ChunkFactory(**_with_tenant(kwargs)))
+    return cast(Chunk, ChunkFactory(**_resolve(kwargs)))
 
 
 def make_etl_job(**kwargs: Any) -> EtlJob:
-    return cast(EtlJob, EtlJobFactory(**_with_tenant(kwargs)))
+    return cast(EtlJob, EtlJobFactory(**_resolve(kwargs)))

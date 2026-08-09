@@ -27,9 +27,20 @@ from services.identity.permissions import (
     SystemRole,
 )
 
-# 1A-4 的範圍：只有 users 與 tenant 兩組資源有端點。
-# knowledge:* / chat:* / tool:* 等隨各自的工作包進來（09 §2.3 起）。
-EXPECTED_CODES_IN_SCOPE = {"user:read", "user:write", "tenant:read", "tenant:admin"}
+# 目前有端點的資源：users / tenant（1A-4）、knowledge（1B-2）。
+# chat:* / tool:* 等隨各自的工作包進來（09 §2.3 起）。
+#
+# 這份清單刻意手寫而不是從各 context 的宣告推導：推導的話它就變成「重述程式碼」，
+# 對「多種了一個沒有端點的碼」永遠是綠的——而那正是本檔要擋的事。
+EXPECTED_CODES_IN_SCOPE = {
+    "user:read",
+    "user:write",
+    "tenant:read",
+    "tenant:admin",
+    "knowledge:read",
+    "knowledge:write",
+    "knowledge:admin",
+}
 
 # 由寬到窄。單調包含的順序也就是這個。
 ROLES_WIDEST_FIRST = (
