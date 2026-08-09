@@ -38,7 +38,7 @@ from core.redis import get_redis, tenant_key
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.identity import RoleRepository, TenantDirectoryRepository, UserRepository
-from services.identity.tokens import AccessClaims, TokenCodec, get_token_codec
+from services.identity.tokens import ACCESS_TTL, AccessClaims, TokenCodec, get_token_codec
 
 # 密碼比對的假雜湊：帳號不存在時照樣跑一次驗證，讓兩種失敗的**耗時**也一致。
 # 只比對回應內容是不夠的——不存在的帳號若快 100 毫秒回來，時間差本身就是
@@ -97,7 +97,9 @@ class AuthService:
             stored_hash = user.password_hash if user is not None else _DUMMY_HASH
             password_ok = verify_password(password, stored_hash)
 
-            if user is None or not password_ok:
+            if user is None or not password_ok or user.status != "active":
+                # 停用的帳號與錯誤的密碼回同一件事：告訴對方「這個帳號被停用了」
+                # 等於確認帳號存在，那是帳號列舉的另一個入口。
                 self._record_failure(attempts_key)
                 raise InvalidCredentialsError
 
@@ -188,9 +190,35 @@ class AuthService:
         )
 
     def bump_token_version(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
-        """全域撤銷：改密碼 / 停用帳號時呼叫（10 §2.1）。"""
+        """全域撤銷（DB 側）：改密碼 / 停用帳號時呼叫（10 §2.1）。
+
+        單獨呼叫只會讓**換發**失效；要讓現有 access token 立刻失效請用
+        :meth:`revoke_all_sessions`。
+        """
         with tenant_context(tenant_id), unit_of_work():
             self._users.bump_token_version(user_id)
+
+    def revoke_all_sessions(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        """讓這個帳號**現有的 access token 立刻失效**，不是等 15 分鐘過期。
+
+        1A-3 只把 `token_version` 寫進 DB，而每個請求的驗證不查 DB（那是熱路徑，
+        一次查詢會乘上全部流量），所以拉高版本要等下次換發才生效。對「員工離職、
+        當場停用」來說，那 15 分鐘的空窗不能接受，而且完全沒有徵兆。
+
+        修法是把新版本號寫一份到 Redis，驗證時順便讀——反正那裡本來就要查一次
+        撤銷名單，多讀一個 key 幾乎不花錢。TTL 設成 access token 的壽命：超過
+        那個時間之後，舊 token 本來就過期了，這個標記再留著只是佔記憶體。
+        """
+        with tenant_context(tenant_id), unit_of_work():
+            self._users.bump_token_version(user_id)
+            user = self._users.get_by_id(user_id)
+            minimum = user.token_version if user is not None else 1
+
+        get_redis().set(
+            tenant_key(tenant_id, "min-token-version", str(user_id)),
+            str(minimum),
+            ex=int(ACCESS_TTL.total_seconds()),
+        )
 
     # ── 驗證（給 API 層的 dependency 用）──────────────────────────
 
@@ -205,6 +233,11 @@ class AuthService:
         redis = get_redis()
         if redis.exists(tenant_key(claims.tenant_id, "jti-denied", str(claims.jti))):
             raise TokenRevokedError("憑證已登出")
+
+        minimum = redis.get(tenant_key(claims.tenant_id, "min-token-version", str(claims.sub)))
+        if minimum is not None and claims.token_version < int(minimum):
+            # 改密碼或帳號停用之後簽發前的舊 token。
+            raise TokenRevokedError("憑證已失效，請重新登入")
         return claims
 
     # ── 內部 ────────────────────────────────────────────────────

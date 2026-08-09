@@ -16,13 +16,16 @@ from fastapi import APIRouter, Cookie, Depends, Response, status
 from api.dependencies.auth import Principal, require_authenticated
 from api.schemas.auth import LoginIn, TokenPairOut
 from api.schemas.problem import ERROR_RESPONSES
+from api.schemas.users import PasswordChangeIn
 from config.settings.app_settings import get_app_settings
 from core.db import run_orm
 from services.identity.auth import AuthService, TokenPair
 from services.identity.tokens import REFRESH_TTL
+from services.identity.users import UserService
 
 router = APIRouter(prefix="/auth", tags=["auth"], responses=ERROR_RESPONSES)
 _service = AuthService()
+_users = UserService()
 
 REFRESH_COOKIE = "refresh_token"
 
@@ -80,6 +83,33 @@ async def logout(
         access_expires_at=principal.access_expires_at,
         refresh_token=refresh_token,
     )
+    response.delete_cookie(REFRESH_COOKIE, path="/api/v1/auth")
+
+
+@router.post(
+    "/password/change",
+    operation_id="auth_change_password",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def change_password(
+    payload: PasswordChangeIn,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    response: Response,
+) -> None:
+    """改密碼並撤銷**全部**session（10 §2.1）。
+
+    改密碼的典型情境就是「我懷疑帳號被盜」——只更新雜湊而不撤銷的話，攻擊者
+    手上的 token 完全不受影響，而使用者以為自己已經處理完了。
+    """
+    await run_orm(
+        _users.change_password,
+        principal.tenant_id,
+        principal.user_id,
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+    )
+    # 自己這台裝置也一起登出：refresh 家族已隨撤銷失效，留著 cookie 只會讓
+    # 下一次 refresh 得到一個看起來莫名其妙的 401。
     response.delete_cookie(REFRESH_COOKIE, path="/api/v1/auth")
 
 

@@ -32,6 +32,9 @@ class ErrorCode(StrEnum):
     AUTH_TOKEN_EXPIRED = "AUTH_TOKEN_EXPIRED"  # noqa: S105 —— 401：過期 → client 走 refresh
     AUTH_TOKEN_REVOKED = "AUTH_TOKEN_REVOKED"  # noqa: S105 —— 401：已撤銷（denylist / token_version）
     ACCOUNT_LOCKED = "ACCOUNT_LOCKED"  # 423：連續失敗達上限，暫時鎖定
+    # 授權與資料衝突（1A-4）
+    PERMISSION_DENIED = "PERMISSION_DENIED"  # 403：功能類權限不足（資源類回 404）
+    RESOURCE_CONFLICT = "RESOURCE_CONFLICT"  # 409：唯一性或狀態機衝突
 
 
 class DomainError(Exception):
@@ -134,6 +137,31 @@ class AccountLockedError(AuthenticationError):
             "帳號已暫時鎖定，請稍後再試",
             details={"retry_after_seconds": retry_after_seconds},
         )
+
+
+class PermissionDeniedError(DomainError):
+    """→ 403。**功能類**權限不足（10 §3）。
+
+    與資源類的分野很重要：「你不能建立使用者」回 403，因為這個功能的存在本身
+    不是秘密，告訴你要去要權限是合理的。而「那份文件屬於別的租戶」回 404
+    （:class:`NotFoundError`）——回 403 等於承認那個 id 存在，讓人可以拿 id 掃出
+    別的租戶有哪些資源。
+    """
+
+    code = ErrorCode.PERMISSION_DENIED
+
+    def __init__(self, *, required: str) -> None:
+        super().__init__("權限不足", details={"required_permission": required})
+
+
+class ConflictError(DomainError):
+    """→ 409。唯一性或狀態機衝突（例如同租戶內 email 重複）。
+
+    這類情況是**使用者可以自己修正**的（換一個信箱），所以不能讓 DB 的唯一約束
+    直接冒成 500——那會把可預期的衝突記成系統故障，淹掉真正需要人看的告警。
+    """
+
+    code = ErrorCode.RESOURCE_CONFLICT
 
 
 class CrossTenantTransactionError(DomainError):

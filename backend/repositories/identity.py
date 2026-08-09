@@ -17,7 +17,7 @@ import uuid
 from django.db.models import F, Q, QuerySet
 from django.utils import timezone
 
-from apps.identity.models import Role, TenantDirectory, User
+from apps.identity.models import Role, Tenant, TenantDirectory, User, UserRole
 from core.tenant import get_current_tenant_id
 from repositories.base import TenantScopedRepository
 
@@ -51,6 +51,59 @@ class UserRepository(TenantScopedRepository[User]):
     def upgrade_password_hash(self, user_id: uuid.UUID, encoded_hash: str) -> None:
         """雜湊參數調強之後的就地升級（只有登入當下手上有明文密碼）。"""
         self.get_queryset().filter(id=user_id).update(password_hash=encoded_hash)
+
+    def set_password_hash(self, user_id: uuid.UUID, encoded_hash: str) -> None:
+        self.get_queryset().filter(id=user_id).update(password_hash=encoded_hash)
+
+    def set_display_name(self, user_id: uuid.UUID, display_name: str) -> None:
+        self.get_queryset().filter(id=user_id).update(display_name=display_name)
+
+    def set_status(self, user_id: uuid.UUID, status: str) -> None:
+        self.get_queryset().filter(id=user_id).update(status=status)
+
+    def create(
+        self,
+        *,
+        email: str,
+        display_name: str,
+        password_hash: str,
+        tenant_id: uuid.UUID | None = None,
+    ) -> User:
+        """建立使用者。
+
+        ``tenant_id`` 平常不必給——它由 TenantContext 決定（鐵則 4）。只有租戶
+        開通那一刻例外：那時 context 裡的租戶就是正在建立的這一個，顯式帶上讓
+        意圖清楚，也避免有人以為那裡漏了什麼。
+        """
+        return User.objects.create(
+            tenant_id=tenant_id or get_current_tenant_id(operation="UserRepository.create"),
+            email=email,
+            display_name=display_name,
+            password_hash=password_hash,
+        )
+
+
+class TenantRepository(TenantScopedRepository[Tenant]):
+    """租戶自己也是 tenant-scoped 的——只是比對欄位是 ``id`` 而不是 ``tenant_id``。
+
+    因此本類別覆寫查詢起點：基底的 ``filter(tenant_id=...)`` 在這張表上根本沒有
+    那個欄位。條件與 `identity_tenant` 的 RLS policy 逐字對應（1A-2）。
+    """
+
+    model = Tenant
+
+    def get_queryset(self) -> QuerySet[Tenant]:
+        tenant_id = get_current_tenant_id(operation="TenantRepository.get_queryset")
+        return self.model._default_manager.filter(id=tenant_id)
+
+    def create(self, *, tenant_id: uuid.UUID, name: str, slug: str) -> Tenant:
+        return Tenant.objects.create(id=tenant_id, name=name, slug=slug)
+
+    def current(self) -> Tenant | None:
+        return self.get_queryset().first()
+
+    def rename(self, name: str) -> None:
+        self.get_queryset().update(name=name)
 
 
 class TenantDirectoryRepository:
@@ -86,6 +139,15 @@ class RoleRepository(TenantScopedRepository[Role]):
     def get_queryset(self) -> QuerySet[Role]:
         tenant_id = get_current_tenant_id(operation="RoleRepository.get_queryset")
         return self.model._default_manager.filter(Q(tenant__isnull=True) | Q(tenant_id=tenant_id))
+
+    def assign(self, *, user_id: uuid.UUID, role_name: str, tenant_id: uuid.UUID) -> None:
+        """指派角色。指到的是**系統角色那一份**（``tenant_id`` 為 NULL）。
+
+        不複製一份到租戶底下：系統角色的保證就是「所有租戶共用同一份、不可修改」，
+        複本會讓權限判定時而拿到這份、時而拿到那份。
+        """
+        role = self.get_queryset().get(name=role_name, tenant__isnull=True)
+        UserRole.objects.get_or_create(user_id=user_id, role_id=role.id, tenant_id=tenant_id)
 
     def names_for_user(self, user_id: uuid.UUID) -> tuple[str, ...]:
         """這個使用者實際被指派的角色名稱，供 JWT 的 ``roles`` claim 使用。

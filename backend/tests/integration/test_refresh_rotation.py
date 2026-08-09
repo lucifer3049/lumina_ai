@@ -27,11 +27,11 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
+
 from common.passwords import hash_password
+from core.exceptions import TokenRevokedError
 from core.redis import get_redis, tenant_key
 from services.identity.auth import AuthService
-
-from core.exceptions import TokenRevokedError
 from tests.conftest import TENANT_A
 from tests.factories.identity import make_tenant, make_user, tenant_scope
 

@@ -63,6 +63,8 @@ _HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.AUTH_TOKEN_EXPIRED: 401,
     ErrorCode.AUTH_TOKEN_REVOKED: 401,
     ErrorCode.ACCOUNT_LOCKED: 423,
+    ErrorCode.PERMISSION_DENIED: 403,
+    ErrorCode.RESOURCE_CONFLICT: 409,
 }
 
 # HTTPException（路由不存在、方法不允許…）的 status → 契約 code。
@@ -494,7 +496,11 @@ def create_app(*, enable_spike_endpoints: bool | None = None) -> FastAPI:
     # 認證面永遠掛上（與 spike 旗標無關）：它是正式的租戶身分來源，
     # 而 spike 面是 1A-5 就要刪掉的暫時物。
     from api.v1.auth import router as auth_router
+    from api.v1.tenants import router as tenants_router
+    from api.v1.users import router as users_router
 
     app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(users_router, prefix="/api/v1")
+    app.include_router(tenants_router, prefix="/api/v1")
     _install_problem_schema(app)
     return app

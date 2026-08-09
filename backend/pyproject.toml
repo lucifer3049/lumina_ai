@@ -85,8 +85,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106"]        # 測試用假憑證
-# Django 產生的 migration 不手改，行長交給 Django（mypy 亦已 exclude）
-"**/migrations/*.py" = ["E501"]
+# Django 產生的 migration 不手改，行長交給 Django（mypy 亦已 exclude）。
+# S608：data migration 的 SQL 是由本檔常數靜態拼出來的，沒有外部輸入——
+# 而 VALUES 清單這個位置也無法用 psycopg 的參數化取代。
+"**/migrations/*.py" = ["E501", "S608"]
 
 # ──────────────────────────────────────────────────────────────
 # Type check（CLAUDE.md：mypy strict）
