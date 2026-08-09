@@ -240,16 +240,19 @@ def _pnpm_scripts(recipes: str) -> str:
     return "\n".join(str(command) for name, command in scripts.items() if name in invoked | nested)
 
 
-def _effective_commands(workflow: dict[str, Any]) -> str:
-    """CI 實際會執行到的指令文字。
+def _effective_commands_of(run_text: str) -> str:
+    """一段 `run` 文字實際會執行到的指令。
 
-    沿三段鏈展開：workflow 的 `run` → 它呼叫的 make target 的 recipe →
-    recipe 呼叫的 pnpm script 的定義。
+    沿三段鏈展開：`run` → 它呼叫的 make target 的 recipe → recipe 呼叫的
+    pnpm script 的定義。
     """
-    recipes = _makefile_recipes(_invoked_make_targets(workflow))
-    return "\n".join(
-        [_workflow_run_text(workflow), recipes, _strip_shell_comments(_pnpm_scripts(recipes))]
-    )
+    recipes = _makefile_recipes(set(_MAKE_INVOCATION.findall(run_text)))
+    return "\n".join([run_text, recipes, _strip_shell_comments(_pnpm_scripts(recipes))])
+
+
+def _effective_commands(workflow: dict[str, Any]) -> str:
+    """整份 workflow 實際會執行到的指令文字。"""
+    return _effective_commands_of(_workflow_run_text(workflow))
 
 
 def test_triggers_on_pull_request_and_main(workflow: dict[str, Any]) -> None:
@@ -277,6 +280,51 @@ def test_migration_drift_check_still_exists(workflow: dict[str, Any]) -> None:
     assert MIGRATION_DRIFT_TEST.exists(), (
         f"{MIGRATION_DRIFT_TEST.name} 不見了——model/migration 漂移將無人把關（05 §5.6）"
     )
+
+
+# 會建立 FastAPI app 或跑測試的指令——兩者都會 import 到 `get_token_codec`，
+# 而它在缺金鑰時 Fail Fast（services/identity/tokens.py：不自動產生暫時金鑰，
+# 否則「忘了掛金鑰」的部署會照樣起得來，症狀是使用者隨機被登出）。
+_NEEDS_JWT_KEYS = ("pytest", "export_openapi.py")
+_JWT_KEY_TARGET = "gen-jwt-keys"
+
+
+def test_jobs_that_build_the_app_generate_jwt_keys(workflow: dict[str, Any]) -> None:
+    """凡是會建 app 或跑測試的 job，都必須先產生 JWT 金鑰——而且要在那之前。
+
+    **這條是補一個真的踩過的洞**：1A-3 把 JWT 認證接上去之後，CI 的三個 job 同時
+    紅了整整三次推送，根因只有一個——workflow 從來沒有 `make gen-jwt-keys`。本機看
+    不出來，因為金鑰是第一次開發時產生的、之後一直躺在 `backend/.secrets/`（gitignore
+    之內，CI 拿不到）。而 12 §6.1 的階段清單只管「指令在不在」，不管「跑得起來嗎」。
+
+    連 unit 層也需要：契約漂移檢查（test_openapi_export.py）會建 app，那條路徑一路
+    走到 dependency 的 import 期讀檔。順序也要驗——步驟放在後面等於沒放。
+    """
+    for name, job in _jobs(workflow).items():
+        steps = job.get("steps", [])
+        runs = [_strip_shell_comments(str(step.get("run", ""))) for step in steps]
+
+        needs_at = next(
+            (
+                index
+                for index, run in enumerate(runs)
+                if any(marker in _effective_commands_of(run) for marker in _NEEDS_JWT_KEYS)
+            ),
+            None,
+        )
+        if needs_at is None:
+            continue
+
+        keys_at = next((index for index, run in enumerate(runs) if _JWT_KEY_TARGET in run), None)
+
+        assert keys_at is not None, (
+            f"job `{name}` 會建立 app 或跑測試，但沒有 `make {_JWT_KEY_TARGET}`——"
+            "金鑰缺檔是 Fail Fast，整個 job 會在 import 期就死"
+        )
+        assert keys_at < needs_at, (
+            f"job `{name}` 的 `make {_JWT_KEY_TARGET}` 排在需要金鑰的步驟之後（"
+            f"第 {keys_at + 1} 步 vs 第 {needs_at + 1} 步）"
+        )
 
 
 def test_image_runs_as_non_root(workflow: dict[str, Any]) -> None:
