@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 13 |
-| 版本 | v1.8 |
+| 版本 | v1.9 |
 | 日期 | 2026-07-30 |
 | 狀態 | Draft — 待審閱 |
 | 估算基準 | **1 位工程師 + AI（Claude Code）結對開發**；AI 加速 coding 與測試撰寫，但 review、整合、除錯與決策仍以人為瓶頸——時程按此重估；pw 數字保留作為工作量參考；不含需求變更緩衝（建議整體 +20%） |
-| 變更紀錄 | v1.1：估算基準改為 1 人 + AI；時程重估（27→29 週）；2C 裁切（Django Admin 頂替、自訂角色延後）；新增人機協作開發規則；R4 改寫。v1.2：§9.1 補非開發 lead time（F-10）。v1.3：人機協作規則重編為 §1.2（原誤植 §2.1，編號順序錯誤）。v1.4：新增 §3.1「1A 前置條件」（RLS 有三個漏做即靜默失效的前置項）與 §3.2「1A 同步改動：log 的租戶綁定」，兩者皆出自 Phase 0 結案程式審查（見 15 §8）；版本欄同步更正（原停在 v1.1 而變更紀錄已到 v1.3）。v1.5：Phase 0 DoD 的認證併發數改為「待分機環境判定」——單機量測法的絕對值跨 session 漂移 34–48%，無法裁決 150（08-05）與 100（08-07）孰為真（依據見 11 §1.4）。v1.6：§2 新增 Phase 0 結案紀錄（2026-08-07 通過閘門，含依據與三項不阻塞的未結項）。v1.7：§3.1 末段兩項處置在 1A-1 實作時被推翻並改寫——PgBouncer 佔位符不新增（owner 一律不經連線池）、不預先建立 bypass 角色（owner 受 FORCE RLS 管，跨租戶作業延到 2A）；兩項都有強制測試。v1.8：§2 Phase 0 未結項①（CI 真實跑一次）結案並記下它兌現的方式——CI 自 1A-3 起連三次全紅無人察覺，根因是 workflow 缺 `make gen-jwt-keys`；§3.2 補上 1A-3/1A-5 的落地結果 |
+| 變更紀錄 | v1.1：估算基準改為 1 人 + AI；時程重估（27→29 週）；2C 裁切（Django Admin 頂替、自訂角色延後）；新增人機協作開發規則；R4 改寫。v1.2：§9.1 補非開發 lead time（F-10）。v1.3：人機協作規則重編為 §1.2（原誤植 §2.1，編號順序錯誤）。v1.4：新增 §3.1「1A 前置條件」（RLS 有三個漏做即靜默失效的前置項）與 §3.2「1A 同步改動：log 的租戶綁定」，兩者皆出自 Phase 0 結案程式審查（見 15 §8）；版本欄同步更正（原停在 v1.1 而變更紀錄已到 v1.3）。v1.5：Phase 0 DoD 的認證併發數改為「待分機環境判定」——單機量測法的絕對值跨 session 漂移 34–48%，無法裁決 150（08-05）與 100（08-07）孰為真（依據見 11 §1.4）。v1.6：§2 新增 Phase 0 結案紀錄（2026-08-07 通過閘門，含依據與三項不阻塞的未結項）。v1.7：§3.1 末段兩項處置在 1A-1 實作時被推翻並改寫——PgBouncer 佔位符不新增（owner 一律不經連線池）、不預先建立 bypass 角色（owner 受 FORCE RLS 管，跨租戶作業延到 2A）；兩項都有強制測試。v1.8：§2 Phase 0 未結項①（CI 真實跑一次）結案並記下它兌現的方式——CI 自 1A-3 起連三次全紅無人察覺，根因是 workflow 缺 `make gen-jwt-keys`；§3.2 補上 1A-3/1A-5 的落地結果。v1.9：§3 新增「1A 結案」小節（**暫行**——Phase 1 的 DoD 是整期的，1A 單獨驗不了，1B–1D 完成後回頭修訂），含子項、驗收依據、帶進 1B 的四個已知缺口，以及過程中發現的兩個非原訂範圍問題 |
 
 ---
 
@@ -71,6 +71,18 @@ gantt
 - 相依：1A → 全部；1B → 1C → 1D → 1E 可部分並行。
 - 技術重點：SSE 協定完整度（不留技術債，resume day-1 做齊）；tenant 隔離測試矩陣即使單租戶也先行（之後不補）。
 - DoD：E2E 通過「上傳 50 頁 PDF → 5 分鐘內 ready → 提問 → 串流回答含正確引用」；TTFT p95 < 3.5s（純向量版）；隔離矩陣綠燈。
+
+#### 1A 結案（2026-08-09）
+
+> ⚠️ **暫行紀錄，1B–1D 完成後回頭修訂。** Phase 1 的 DoD 是**整期**的（上傳 → ready → 問答 → 引用），1A 單獨驗不了它——smoke suite 的第 2–5 步現在還是 skip。所以下表記的是「1A 的內容做完了、且沒有把後面幾包的地基弄壞」，不是「Phase 1 的 DoD 達成」。
+
+| 面向 | 內容 |
+|------|------|
+| 子項 | 1A-P1~P3 DB 角色拆分（§3.1 的三個前置條件）／1A-2 Identity 資料層與 RLS／1A-3 JWT 登入、refresh rotation 與租戶身分來源／1A-4 權限判定與使用者管理／1A-5 spike 面移除與 E2E smoke 骨架 |
+| 驗收依據 | `make test` 295 passed（unit + integration + api）；`make lint` 全綠（ruff + format + mypy strict 98 files + import-linter 5/5）；`make smoke` 1 passed / 4 skipped（skip 皆為 1B–1D 的功能）；前端 28 passed 含 typecheck；`make openapi-check` 無漂移；**CI run `31311098166` 四個 job 全綠**（首次完整跑完，含 trivy） |
+| 對照工作包內容 | JWT 登入 + refresh rotation ✅／User CRUD ✅／系統角色 RBAC ✅（自訂角色依原訂延後）／tenant 建立 ✅（`manage.py create_tenant`，與 API 走同一條 Service）／隔離機制全量 ✅（Repository filter + RLS policy + 雙租戶矩陣）／E2E smoke 骨架 ✅／spike 面移除 ✅（ADR-002 結案，見 01） |
+| 帶進 1B 的已知缺口 | ① smoke 第 2–5 步是 `skip`，reason 標明等哪個工作包——**1B 起每包要把對應那步換成實作**，不是等最後一起補。② 11 §4.2 的正式 `/healthz` 尚未建；`orm_runtime_knobs()` 目前沒有 HTTP 呼叫端，unit 層守門仍在，建端點時要把「不洩 DB 拓撲」的 API 層測試補回來（`tests/api/test_api_errors.py` 有註記）。③ 負載產生腳本隨 spike 面刪除，重建時機見 §2 未結項③。④ 15 §8 的 C-09、C-19 因檔案刪除自動失效，C-03 已於 1A-2 落實，表格狀態待下次 living-document 更新 |
+| 過程中發現並修掉（非原訂範圍） | ① **租戶 contextvar 不會被還原**：原本由 spike middleware 的 `finally` 負責，刪除後沒有接手者——而新的設定點在 route 層 `Depends`，那裡拿不到涵蓋整個請求的 `finally`。同一個 context 連續處理兩個請求時前者的租戶會留給後者，在 RLS 之下是跨租戶讀取。改由請求層 middleware 收尾（`clear_current_tenant_id()`）。② **CI 自 1A-3 起連三次全紅無人察覺**（workflow 缺 `make gen-jwt-keys`），詳見 §2 未結項① |
 
 ### 3.1 1A 前置條件：RLS 生效的三件事
 
