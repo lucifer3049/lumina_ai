@@ -4,12 +4,16 @@ Multi-tenant SaaS 的 Enterprise AI Knowledge Platform。核心能力：LLM Chat
 
 架構風格：**Modular Monolith + Clean Architecture + DDD**，保留未來拆分 Microservices 的能力。
 
-> **目前狀態：Phase 0 已結案（2026-08-07），下一步為工作包 1A（Identity 基礎）。**
-> 已完成：ADR-001 橋接驗證（Django ORM 在 FastAPI async context 下的共存方式）、
-> 開發環境基礎設施全套、CI 全管線、結構化日誌與請求追蹤、前端 Vite 骨架與 OpenAPI codegen 管線。
-> **尚未有任何業務功能，非可用產品**——現階段起來後只有 `/docs` 與 `/openapi.json`。
-> 完整設計見 [`docs/plan/`](docs/plan/)（00–15），開發順序與 1A 的前置條件見
-> [`13_開發Roadmap.md`](docs/plan/13_開發Roadmap.md)（§2 結案紀錄、§3.1–3.2）。
+> **目前狀態：Phase 0 已結案（2026-08-07），Phase 1 的工作包 1A（Identity 基礎）子項已全數落地，閘門待 review。**
+> Phase 0：ADR-001 橋接驗證（Django ORM 在 FastAPI async context 下的共存方式）、
+> 開發環境基礎設施全套、CI 全管線（2026-08-09 首次四個 job 全綠）、結構化日誌與請求追蹤、
+> 前端 Vite 骨架與 OpenAPI codegen 管線。
+> 1A：DB 角色拆分（RLS 的前提）、Identity 資料層與 RLS、JWT 登入與 refresh rotation、
+> 權限判定與使用者管理、spike 面移除（ADR-002 結案）與 E2E smoke 骨架。
+> **業務功能僅到 Identity 為止，非可用產品**——目前的端點是 `/api/v1/auth`、`/users`、`/tenants`；
+> 知識庫、RAG 與 Chat 分屬 1B–1D。
+> 完整設計見 [`docs/plan/`](docs/plan/)（00–15），開發順序與各工作包的 DoD 見
+> [`13_開發Roadmap.md`](docs/plan/13_開發Roadmap.md)（§2 Phase 0 結案紀錄、§3 Phase 1）。
 
 ---
 
