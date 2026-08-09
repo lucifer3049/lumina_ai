@@ -21,7 +21,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
 
 from api.dependencies.auth import Principal
 from api.dependencies.permissions import RequireScope
@@ -137,6 +137,35 @@ async def delete_knowledge_base(
 
 
 # ── 文件 ────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/documents",
+    operation_id="documents_upload",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_document(
+    kb_id: uuid.UUID,
+    file: Annotated[UploadFile, File(description="單請求上傳上限 32MB，超過走分塊直傳")],
+    principal: Annotated[Principal, Depends(RequireScope("knowledge:write"))],
+) -> DocumentOut:
+    """單請求 multipart 上傳（09 §3.1 的小檔路徑）。
+
+    **讀檔在這裡、判定在 service**：讀取 request body 屬於「解析請求」（鐵則 3 允許），
+    而「這份內容能不能收」是業務規則。
+
+    ``file.content_type`` 刻意不使用——那是 client 自報的字串（見
+    `services/knowledge/uploads.py`）。檔名同理只當顯示用，實際型別由內容決定。
+    """
+    content = await file.read()
+    view = await run_orm(
+        _documents.upload,
+        principal.tenant_id,
+        kb_id,
+        filename=file.filename or "untitled",
+        content=content,
+    )
+    return _document_out(view)
 
 
 @router.get("/knowledge-bases/{kb_id}/documents", operation_id="documents_list")

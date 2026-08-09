@@ -1,6 +1,21 @@
 {
   "components": {
     "schemas": {
+      "Body_documents_upload": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "description": "單請求上傳上限 32MB，超過走分塊直傳",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_documents_upload",
+        "type": "object"
+      },
       "DocumentListOut": {
         "properties": {
           "items": {
@@ -1371,6 +1386,88 @@
           }
         },
         "summary": "List Documents",
+        "tags": [
+          "knowledge"
+        ]
+      },
+      "post": {
+        "description": "單請求 multipart 上傳（09 §3.1 的小檔路徑）。\n\n**讀檔在這裡、判定在 service**：讀取 request body 屬於「解析請求」（鐵則 3 允許），\n而「這份內容能不能收」是業務規則。\n\n``file.content_type`` 刻意不使用——那是 client 自報的字串（見\n`services/knowledge/uploads.py`）。檔名同理只當顯示用，實際型別由內容決定。",
+        "operationId": "documents_upload",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kb_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Kb Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_documents_upload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "請求格式錯誤"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "不存在或無權可見"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "語意驗證失敗"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "內部錯誤"
+          }
+        },
+        "summary": "Upload Document",
         "tags": [
           "knowledge"
         ]

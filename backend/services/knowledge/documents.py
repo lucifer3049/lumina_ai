@@ -1,9 +1,11 @@
-"""DocumentService —— 文件的讀取與刪除（09 §2.3）。
+"""DocumentService —— 文件的上傳、讀取與刪除（09 §2.3、§3.1）。
 
-上傳（`POST /knowledge-bases/{id}/documents`）屬 1B-3，不在本模組；ETL 的重跑
-（reingest）屬 1B-6。本階段的文件只可能由測試 factory 產生。
+大檔（>32MB）的 presigned 分塊直傳與 ETL 重跑（reingest）屬後續工作包。
 
 交易邊界與回傳型別的規則同 `knowledge_bases.py`，不重述。
+
+**上傳是這個系統第一個同時寫 DB 與物件儲存的路徑**，兩者無法放進同一個交易，
+所以順序與失敗處理要明講（見 :meth:`DocumentService.upload`）。
 """
 
 from __future__ import annotations
@@ -12,10 +14,17 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from core.exceptions import NotFoundError
+from django.db import IntegrityError
+
+from config.logging import get_logger
+from core.exceptions import ConflictError, NotFoundError
+from core.object_storage import build_document_key, delete_object, put_object
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.knowledge import DocumentRepository, KnowledgeBaseRepository
+from services.knowledge.uploads import detect_media_type, ensure_within_limit, sha256_of
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,76 @@ class DocumentService:
             if self._knowledge_bases.get_by_id(kb_id) is None:
                 raise NotFoundError("知識庫不存在")
             return [self._view(document) for document in self._documents.for_kb(kb_id)]
+
+    def upload(
+        self, tenant_id: uuid.UUID, kb_id: uuid.UUID, *, filename: str, content: bytes
+    ) -> DocumentView:
+        """單請求上傳（09 §3.1 的小檔路徑）。
+
+        **順序是刻意的**，四步各自對應一種失敗：
+
+        1. **先驗內容**（大小、magic bytes）——在碰物件儲存**之前**。反過來寫比較
+           方便（拿得到完整檔案再判斷），但那等於任何人都能把任意內容寫進我們的
+           bucket，白名單形同虛設。
+        2. **再查 KB 與重複**——都是便宜的 DB 查詢，能在上傳之前擋掉的就不要先寫。
+        3. **PUT 物件**。
+        4. **寫 DB；失敗就把物件刪回去。**
+
+        步驟 3、4 的順序是「先物件再 DB」，代價是 DB 失敗時可能留下孤兒物件，因此
+        有第 4 步的回收。反過來（先寫 DB 再 PUT）的代價是「卡在 uploading 狀態的
+        列」，而那會出現在使用者的文件列表上——**看得到的壞狀態比看不到的垃圾更糟**。
+
+        回收是 best-effort：刪不掉就記 log 讓清理流程處理，不能因為回收失敗而把
+        原本的錯誤蓋掉（使用者要看到的是「上傳失敗」，不是「刪除暫存檔失敗」）。
+        """
+        ensure_within_limit(len(content))
+        media_type = detect_media_type(content, filename=filename)
+        content_hash = sha256_of(content)
+        document_id = uuid.uuid4()
+
+        with tenant_context(tenant_id), unit_of_work():
+            if self._knowledge_bases.get_by_id(kb_id) is None:
+                raise NotFoundError("知識庫不存在")
+            if self._documents.find_by_content_hash(kb_id=kb_id, content_hash=content_hash):
+                raise ConflictError("這份文件已經在這個知識庫裡")
+            storage_key = build_document_key(kb_id=kb_id, document_id=document_id)
+
+        put_object(storage_key, content, content_type=media_type)
+
+        try:
+            with tenant_context(tenant_id), unit_of_work():
+                document = self._documents.create(
+                    document_id=document_id,
+                    kb_id=kb_id,
+                    filename=filename,
+                    mime_type=media_type,
+                    storage_key=storage_key,
+                    content_hash=content_hash,
+                    size_bytes=len(content),
+                )
+        except Exception as exc:
+            self._discard(storage_key)
+            if isinstance(exc, IntegrityError):
+                # 上面的重複檢查與這裡之間有競態：兩個併發請求送同一份內容時，
+                # 兩邊都會通過檢查，而唯一約束只會讓其中一個成功。對使用者來說
+                # 結果與循序上傳完全相同（409），所以不必特別處理，只要別讓
+                # IntegrityError 冒成 500。
+                raise ConflictError("這份文件已經在這個知識庫裡") from exc
+            raise
+
+        return self._view(document)
+
+    def _discard(self, storage_key: str) -> None:
+        """回收剛上傳的物件；失敗只記 log。
+
+        不讓回收的錯誤覆蓋原本的錯誤：使用者要看到的是「上傳失敗」，不是「刪除
+        暫存檔失敗」。留下的孤兒物件不影響正確性（沒有任何 DB 列指向它），由清理
+        流程處理。
+        """
+        try:
+            delete_object(storage_key)
+        except Exception:
+            logger.warning("orphan_object_left_behind", storage_key=storage_key, exc_info=True)
 
     def get(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> DocumentView:
         with tenant_context(tenant_id), unit_of_work():

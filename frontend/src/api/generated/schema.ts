@@ -149,7 +149,17 @@ export interface paths {
         /** List Documents */
         get: operations["documents_list"];
         put?: never;
-        post?: never;
+        /**
+         * Upload Document
+         * @description 單請求 multipart 上傳（09 §3.1 的小檔路徑）。
+         *
+         *     **讀檔在這裡、判定在 service**：讀取 request body 屬於「解析請求」（鐵則 3 允許），
+         *     而「這份內容能不能收」是業務規則。
+         *
+         *     ``file.content_type`` 刻意不使用——那是 client 自報的字串（見
+         *     `services/knowledge/uploads.py`）。檔名同理只當顯示用，實際型別由內容決定。
+         */
+        post: operations["documents_upload"];
         delete?: never;
         options?: never;
         head?: never;
@@ -249,6 +259,14 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Body_documents_upload */
+        Body_documents_upload: {
+            /**
+             * File
+             * @description 單請求上傳上限 32MB，超過走分塊直傳
+             */
+            file: string;
+        };
         /** DocumentListOut */
         DocumentListOut: {
             /** Items */
@@ -1165,6 +1183,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DocumentListOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    documents_upload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kb_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_documents_upload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentOut"];
                 };
             };
             /** @description 請求格式錯誤 */

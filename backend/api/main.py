@@ -63,6 +63,8 @@ _HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.ACCOUNT_LOCKED: 423,
     ErrorCode.PERMISSION_DENIED: 403,
     ErrorCode.RESOURCE_CONFLICT: 409,
+    ErrorCode.UPLOAD_TOO_LARGE: 413,
+    ErrorCode.UNSUPPORTED_MEDIA_TYPE: 415,
 }
 
 # HTTPException（路由不存在、方法不允許…）的 status → 契約 code。

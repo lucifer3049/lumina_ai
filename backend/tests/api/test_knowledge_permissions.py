@@ -38,6 +38,17 @@ CREATED = 201
 NO_CONTENT = 204
 FORBIDDEN = 403
 
+# 上傳那一列的 body 不是 JSON。用一個哨兵值標記，由 test_permission_matrix 轉成
+# multipart——把 multipart 的細節塞進矩陣會讓那張表變得難讀，而表的可讀性正是
+# 它存在的理由。
+UPLOAD = "<multipart-upload>"
+# 每個角色各自上傳一份不同內容：同內容第二次會被去重擋成 409（05 §3.2），那會讓
+# 這一列的預期狀態碼隨執行順序而變。
+#
+# 用串接而不是 %-格式化：PDF 的魔術字本身就是 `%PDF`，那個 `%P` 會被當成格式指示字
+# 而 ValueError（實際踩過）。
+PDF_PREFIX = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\nrole="
+
 # 端點 × 角色 → 預期狀態碼。路徑中的 ``{kb}`` / ``{doc}`` 由 fixture 填入。
 #
 # 只列狀態碼、不驗回應內容：這張表回答的是「擋不擋得住」，內容正確性由
@@ -74,6 +85,14 @@ PERMISSION_MATRIX = [
         "/api/v1/knowledge-bases/{kb}/documents",
         None,
         {"owner": ALLOWED, "admin": ALLOWED, "editor": ALLOWED, "viewer": ALLOWED},
+    ),
+    # 上傳（1B-3）。這一列的 body 是 multipart 而不是 JSON，由下方的 test 特別處理
+    # ——放進矩陣是為了讓「新端點必須進矩陣」的反查測試涵蓋得到它。
+    (
+        "POST",
+        "/api/v1/knowledge-bases/{kb}/documents",
+        UPLOAD,
+        {"owner": CREATED, "admin": CREATED, "editor": CREATED, "viewer": FORBIDDEN},
     ),
     (
         "GET",
@@ -155,17 +174,24 @@ async def test_permission_matrix(
     role: str,
     method: str,
     path: str,
-    body: dict[str, object] | None,
+    # str 是 UPLOAD 哨兵（multipart 那一列）；dict 是 JSON body；None 是無 body。
+    body: dict[str, object] | str | None,
     expectations: dict[str, int],
 ) -> None:
     emails = scenario["emails"]
     assert isinstance(emails, dict)
     token = await _token_for(client, emails[role])
     url = path.format(kb=scenario["kb"], doc=scenario["document"])
+    auth = {"Authorization": f"Bearer {token}"}
 
-    response = await client.request(
-        method, url, json=body, headers={"Authorization": f"Bearer {token}"}
-    )
+    if body == UPLOAD:
+        response = await client.post(
+            url,
+            files={"file": (f"{role}.pdf", PDF_PREFIX + role.encode(), "application/pdf")},
+            headers=auth,
+        )
+    else:
+        response = await client.request(method, url, json=body, headers=auth)
 
     assert response.status_code == expectations[role], (
         f"{role} 對 {method} {path} 得到 {response.status_code}，"

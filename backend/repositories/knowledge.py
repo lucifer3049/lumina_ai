@@ -128,8 +128,16 @@ class DocumentRepository(SoftDeletableRepository[Document]):
         content_hash: str,
         size_bytes: int,
         source_type: str = "upload",
+        document_id: uuid.UUID | None = None,
     ) -> Document:
+        """建立文件列。
+
+        ``document_id`` 由呼叫端指定是上傳流程的需求：物件 key 含 doc id，而物件必須
+        在 DB 寫入**之前**就上傳完（見 DocumentService.upload 的順序說明）。不給時
+        由 model 的 default 產生。
+        """
         return Document.objects.create(
+            id=document_id or uuid.uuid4(),
             tenant_id=get_current_tenant_id(operation="DocumentRepository.create"),
             kb_id=kb_id,
             filename=filename,

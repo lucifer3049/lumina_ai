@@ -35,6 +35,9 @@ class ErrorCode(StrEnum):
     # 授權與資料衝突（1A-4）
     PERMISSION_DENIED = "PERMISSION_DENIED"  # 403：功能類權限不足（資源類回 404）
     RESOURCE_CONFLICT = "RESOURCE_CONFLICT"  # 409：唯一性或狀態機衝突
+    # 上傳（1B-3）
+    UPLOAD_TOO_LARGE = "UPLOAD_TOO_LARGE"  # 413：超過單請求大小上限
+    UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"  # 415：MIME 白名單外（magic bytes 判定）
 
 
 class DomainError(Exception):
@@ -162,6 +165,49 @@ class ConflictError(DomainError):
     """
 
     code = ErrorCode.RESOURCE_CONFLICT
+
+
+class UnsupportedMediaTypeError(DomainError):
+    """→ 415。內容型別不在白名單內（10 §99：以 magic bytes 判定，不看副檔名）。
+
+    **訊息裡帶「我們接受什麼」而不是「你送了什麼」**：後者要把偵測結果回吐給
+    client，而偵測結果來自使用者送的位元組——那是一條把內部判定邏輯回聲出去的路。
+    使用者需要的資訊也確實是前者。
+    """
+
+    code = ErrorCode.UNSUPPORTED_MEDIA_TYPE
+
+    def __init__(self, *, accepted: tuple[str, ...]) -> None:
+        super().__init__(
+            f"檔案格式不支援，目前接受：{'、'.join(accepted)}",
+            details={"accepted_media_types": list(accepted)},
+        )
+
+
+class UploadTooLargeError(DomainError):
+    """→ 413。超過單請求上限（09 §3.1：>32MB 走分塊直傳）。
+
+    ``details`` 帶上限值：client 才能在送出前先擋，而不是每次都靠伺服器回絕。
+    """
+
+    code = ErrorCode.UPLOAD_TOO_LARGE
+
+    def __init__(self, *, limit_bytes: int) -> None:
+        super().__init__(
+            f"檔案超過單請求上限 {limit_bytes // (1024 * 1024)}MB",
+            details={"limit_bytes": limit_bytes},
+        )
+
+
+class ObjectNotFoundError(DomainError):
+    """→ 500。物件儲存裡找不到 DB 說存在的物件。
+
+    這**不是** 404：使用者要的文件在 DB 裡確實存在，是我們這邊的兩份狀態不一致
+    （物件被誤刪、bucket 換了、key 寫錯）。回 404 會讓使用者以為東西不見了而去
+    重新上傳，真正的問題則沒有人知道。
+    """
+
+    code = ErrorCode.INTERNAL_ERROR
 
 
 class CrossTenantTransactionError(DomainError):

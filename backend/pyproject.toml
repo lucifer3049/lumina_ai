@@ -25,6 +25,11 @@ dependencies = [
     # 10 §2.1：JWT ES256。選 PyJWT 而非 python-jose——維護活躍、API 面小，
     # 且 ES256 走 cryptography（Django 相依本來就會帶進來）。
     "pyjwt[crypto]>=2.10",
+    # FastAPI 解析 multipart/form-data 的必要相依（1B-3 單請求上傳）。沒有它時
+    # `UploadFile` 參數會在**建立 app 的當下**就 RuntimeError，而不是在請求進來時
+    # ——所以它不是可選的：09 §2.3 的上傳端點是 multipart。
+    # Starlette 官方使用的解析器，無其他相依，維護活躍。
+    "python-multipart>=0.0.20",
 ]
 
 [dependency-groups]
