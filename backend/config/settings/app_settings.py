@@ -61,6 +61,25 @@ class AppSettings(BaseSettings):
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
 
+    # ── 執行環境 ──
+    # 只影響「為了本機方便而放寬」的設定（目前僅 refresh cookie 的 Secure 旗標）。
+    # 預設是 production：漏設環境變數時要落在**嚴格**的那一邊，反過來的話一次
+    # 忘記設定就會讓正式環境用開發設定跑，而且完全沒有症狀。
+    environment: Literal["development", "test", "production"] = "production"
+
+    # ── JWT（10 §2.1）──
+    # 金鑰以檔案路徑注入而非直接放 .env：PEM 是多行的，塞進 .env 要跳脫，貼壞時
+    # 的錯誤訊息（"Could not deserialize key data"）完全看不出是格式問題。
+    # 本機用 `make gen-jwt-keys` 產生；正式環境由 Secrets Manager 掛檔案進來。
+    jwt_private_key_path: Path = REPO_ROOT / "backend" / ".secrets" / "jwt-es256.key"
+    jwt_public_key_path: Path = REPO_ROOT / "backend" / ".secrets" / "jwt-es256.pub"
+    # 目前只有一把金鑰，但 token 一律帶 kid（見 services/identity/tokens.py）。
+    jwt_active_kid: str = "dev-1"
+
+    # ── 登入防護（10 §2.1）──
+    login_max_attempts: int = 5
+    login_lockout_seconds: int = 900  # 15 分鐘
+
     # ── 物件儲存（MinIO，S3 相容）──
     s3_host: str = "127.0.0.1"
     s3_port: int = 19000
@@ -75,6 +94,19 @@ class AppSettings(BaseSettings):
         """`redis://:pw@host:port/db`；密碼經 percent-encoding，特殊字元不會拆壞 URL。"""
         password = quote(self.redis_password.get_secret_value(), safe="")
         return SecretStr(f"redis://:{password}@{self.redis_host}:{self.redis_port}/{self.redis_db}")
+
+    @property
+    def refresh_cookie_secure(self) -> bool:
+        """`Secure` 只在本機開發關掉。
+
+        `Secure` 的意思是「只在 HTTPS 送出」，而本機跑的是 http://localhost——
+        開著的話瀏覽器直接丟掉 cookie，症狀是「登入成功、一重新整理就登出」，
+        而 devtools 裡看不到那個 cookie，很難聯想到旗標。
+
+        反過來在正式環境少了它，任何一次降級到 http 的請求都會把 refresh token
+        明文送上網路。所以放寬的條件寫在這裡、由測試釘住，不留給呼叫端判斷。
+        """
+        return self.environment != "development"
 
     @property
     def s3_endpoint(self) -> str:

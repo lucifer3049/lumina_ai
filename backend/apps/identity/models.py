@@ -62,6 +62,39 @@ class Tenant(TimestampedModel):
         return f"Tenant({self.slug})"
 
 
+class TenantDirectory(models.Model):
+    """登入用的 slug → tenant_id 對照表。**刻意不開 RLS**（1A-3）。
+
+    **為什麼需要它**：登入發生在拿到 token 之前，那時還沒有租戶身分；而
+    `identity_tenant` 與 `identity_user` 都有 RLS，沒有 ``app.tenant_id`` 就一筆
+    都查不到。於是「先查出這個人屬於哪個租戶」在 RLS 之下是不可能的——死結。
+
+    **為什麼這樣安全**：本表只有 slug、tenant_id、status 三個值。slug 本來就是
+    公開資訊（出現在網址與物件儲存路徑），完全不含客戶資料或 PII。相較之下，
+    另外兩條路——把 email 對照表攤開、或建一個 BYPASSRLS 角色——暴露的都是
+    整個平台的使用者資料。
+
+    **內容由 trigger 維護**（見 migration 0004）而非應用程式：應用程式維護的話，
+    任何一條沒走 TenantService 的租戶建立（測試 factory、data migration、日後的
+    匯入腳本）都會漏掉一列，症狀是「這個租戶就是登不進去」，而查詢租戶表時
+    資料明明都在。
+
+    未來改成子網域登入（``acme.lumina.app``）時，這張表原封不動沿用，只是 slug
+    的來源從請求 body 換成 Host 標頭。
+    """
+
+    tenant_id = models.UUIDField(primary_key=True)
+    slug = models.TextField(unique=True)
+    status = models.TextField()
+
+    class Meta:
+        db_table = "identity_tenant_directory"
+        # 名稱刻意帶 directory：讓「這張表沒有租戶隔離」在每個查詢裡都看得見。
+
+    def __str__(self) -> str:
+        return f"TenantDirectory({self.slug})"
+
+
 class User(TimestampedModel):
     """租戶內的使用者。密碼雜湊為 argon2id（10 §）；本層只存欄位。"""
 
@@ -74,6 +107,10 @@ class User(TimestampedModel):
     email_verified_at = models.DateTimeField(null=True, blank=True)
     last_login_at = models.DateTimeField(null=True, blank=True)
     preferences = models.JSONField(default=dict, blank=True)
+    # 10 §2.1 的全域撤銷開關：改密碼或停用帳號時 +1，該使用者手上所有尚未過期的
+    # token 一次失效。這是唯一不需要「知道有哪些 session 存在」的撤銷手段——
+    # 帳號被盜時，你根本不知道攻擊者建立了幾個。
+    token_version = models.IntegerField(default=1)
 
     class Meta:
         db_table = "identity_user"

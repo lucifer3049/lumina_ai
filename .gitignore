@@ -46,3 +46,6 @@ CLAUDE.md
 .vscode/
 .DS_Store
 Thumbs.db
+
+# JWT 簽章金鑰（本機以 `make gen-jwt-keys` 產生；正式環境走 Secrets Manager）
+backend/.secrets/

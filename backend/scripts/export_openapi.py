@@ -18,6 +18,7 @@ API，而且沒有「上一版契約」可比——09 §4 要求的 breaking cha
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -35,11 +36,22 @@ if str(BACKEND_ROOT) not in sys.path:
 def build_schema() -> dict[str, Any]:
     """產生對外契約的 schema。
 
+    先 ``django.setup()``：建立 app 會 import router → dependency → ``core/db.py``，
+    而後者在 import 期就讀 ``settings.ORM_THREADPOOL_SIZE``（ADR-001 的 threadpool
+    大小）。少了這一步，錯誤是 ``Requested setting ORM_THREADPOOL_SIZE, but
+    settings are not configured``——指向設定，看不出是匯出腳本少了初始化。
+    設定模組用 test：它與 dev 的差別只在 DB 連線埠，而匯出根本不連 DB。
+
     ``enable_spike_endpoints=False`` 是**顯式**傳入而非讓它讀設定：``/api/v1/spike/*``
     與 ``X-Tenant-Id`` 取租戶違反 ADR-002，只在壓測時開啟。若這裡讀
     ``AppSettings``，在跑過壓測的機器上匯出就會把未認證端點寫進公開契約與前端
     client，而 diff 看起來只像是多了幾個正常端點。
     """
+    import django
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.test")
+    django.setup()
+
     from api.main import create_app
 
     return create_app(enable_spike_endpoints=False).openapi()

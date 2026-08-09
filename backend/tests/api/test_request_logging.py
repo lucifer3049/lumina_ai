@@ -20,12 +20,13 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.main import REQUEST_ID_HEADER, create_app
 from config.logging import configure_logging
 from core.exceptions import NotFoundError
+from core.tenant import set_current_tenant_id
 from tests.conftest import TENANT_A
 
 ACCESS_EVENT = "http_request"
@@ -132,6 +133,51 @@ class TestAccessLog:
 
         assert first["request_id"] != second["request_id"]
         assert second.get("tenant_id") is None
+
+
+class TestTenantBindingWithoutSpike:
+    """租戶在 **route 層**被設定時，存取日誌仍然帶得到 tenant_id（13 §3.2）。
+
+    為什麼要另外寫一條：上面 `test_tenant_id_is_bound_when_present` 是靠 spike 的
+    ``X-Tenant-Id`` middleware 驅動的，而那整條路徑會在 1A-5 被刪掉——測試會跟著
+    消失，缺口不會浮現。
+
+    缺口長這樣：1A 之後租戶改從已驗證的 JWT claim 取得，而 FastAPI 的慣用形狀是
+    ``Depends``——那在 **route 函式內**執行，比所有 middleware 都晚。原本的做法是
+    middleware 進入時對 contextvar 取一次快照再綁進 log context，那個時間點租戶
+    還是空的，於是**每一筆 log 的 tenant_id 都會靜靜消失**，而 12 §1.1 把它列為
+    標準欄位，「某個租戶錯誤暴增」這類查詢全靠它。
+
+    處置是改成 emit 時才讀 contextvar 的 structlog processor：不管租戶是由
+    middleware、``Depends`` 還是背景任務設進去的，都一樣抓得到。本測試用一個
+    route-level dependency 模擬 1A-3 之後的真實形狀，因此 spike 刪除後仍然有效。
+    """
+
+    async def test_tenant_set_by_a_route_dependency_reaches_the_access_log(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        configure_logging(level="INFO", fmt="json")
+        app = create_app(enable_spike_endpoints=False)
+
+        async def bind_tenant() -> None:
+            """模擬 1A-3 的認證 dependency：在 route 執行期間設定租戶。
+
+            **必須是 async**，與 `api/dependencies/auth.py` 的形狀一致。同步
+            dependency 會被 FastAPI 丟到 threadpool 執行，contextvar 設在那條
+            執行緒的 context 副本上，回不到主 task——存取日誌因此讀不到租戶。
+            這不是測試的技術細節：真正的認證 dependency 若哪天被改成同步的，
+            log 的 tenant_id 就會再次靜靜消失，而這條測試會抓到。
+            """
+            set_current_tenant_id(TENANT_A)
+
+        @app.get("/scoped", dependencies=[Depends(bind_tenant)])
+        async def scoped() -> dict[str, str]:
+            return {"ok": "true"}
+
+        async with _client(app) as client:
+            await client.get("/scoped")
+
+        assert _access_logs(capsys.readouterr().out)[0]["tenant_id"] == str(TENANT_A)
 
 
 class TestErrorCorrelation:

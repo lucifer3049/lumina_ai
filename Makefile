@@ -80,7 +80,8 @@ APPLY_DB_TIMEOUTS = $(COMPOSE) exec -T postgres sh -c \
 	 -c "ALTER ROLE \"$$DB_USER\" SET statement_timeout = '"'"'$(DB_STATEMENT_TIMEOUT)'"'"'"'
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs psql psql-app db-timeouts minio-init migrate seed dev api api-pinned \
+.PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys migrate seed \
+        dev api api-pinned \
         test test-unit test-integration test-api verify-infra image lock-check lint \
         fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
         loadtest loadtest-headless loadtest-pinned loadtest-report clean
@@ -121,6 +122,23 @@ db-timeouts: ## 套用 role 層級 statement_timeout（冪等；既有資料卷�
 
 minio-init: ## 建立 bucket、開啟版本化、關閉匿名存取（冪等）
 	$(COMPOSE) run --rm minio-init
+
+# JWT 簽章金鑰（10 §2.1 的 ES256）。私鑰不進版控——backend/.secrets/ 已 gitignore。
+# 為什麼不讓程式在啟動時自動產生：那會讓「忘了掛金鑰」的部署照樣起得來，而每次
+# 重啟金鑰就換一組，症狀是使用者隨機被登出，根因極難查。缺檔時 Fail Fast 比較好。
+JWT_KEY_DIR ?= $(BACKEND)/.secrets
+
+gen-jwt-keys: ## 產生本機用的 ES256 金鑰對（已存在則不覆蓋）
+	@mkdir -p $(JWT_KEY_DIR)
+	@if [ -f $(JWT_KEY_DIR)/jwt-es256.key ]; then \
+		echo "已存在 $(JWT_KEY_DIR)/jwt-es256.key，未覆蓋（要重產請先手動刪除）"; \
+	else \
+		openssl ecparam -name prime256v1 -genkey -noout \
+			| openssl pkcs8 -topk8 -nocrypt -out $(JWT_KEY_DIR)/jwt-es256.key; \
+		openssl ec -in $(JWT_KEY_DIR)/jwt-es256.key -pubout -out $(JWT_KEY_DIR)/jwt-es256.pub; \
+		chmod 600 $(JWT_KEY_DIR)/jwt-es256.key; \
+		echo "已產生 $(JWT_KEY_DIR)/jwt-es256.{key,pub}"; \
+	fi
 
 # --database=admin：migration 必須以 schema owner 執行（13 §3.1）。
 # 走 default（應用角色）會直接因缺 DDL 權限而失敗——那是好的；危險的是有人為了
@@ -187,7 +205,7 @@ api-pinned: ## 啟動 API 並綁定 CPU $(API_CPUS)（基準線用）。log 導�
 # 新增頂層套件（common/、ai/、rag/…）時必須同步加進來，否則那個目錄的改動不會
 # 觸發重載——由 tests/unit/test_logging.py 的 DEV_RELOAD_DIRS 對帳測試擋住。
 # 若日後把 repo 搬進 WSL2 原生檔案系統（~/），兩項都可以拿掉。
-DEV_RELOAD_DIRS = api apps config core repositories services
+DEV_RELOAD_DIRS = api apps common config core repositories services
 
 dev: ## 開發伺服器：單 worker + 熱重載 + console log（不開 spike 面）
 	LOG_FORMAT=console WATCHFILES_FORCE_POLLING=1 \

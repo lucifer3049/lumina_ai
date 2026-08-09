@@ -34,9 +34,12 @@ from __future__ import annotations
 import logging
 import re
 import sys
+from collections.abc import MutableMapping
 from typing import Any, cast
 
 import structlog
+
+from core.tenant import try_get_current_tenant_id
 
 _HANDLER_MARK = "_lumina_logging_handler"
 
@@ -192,11 +195,36 @@ class _StdoutHandler(logging.StreamHandler):  # type: ignore[type-arg]
         """吞掉 ``StreamHandler.__init__`` 的賦值；串流一律由 property 決定。"""
 
 
+def tenant_processor(
+    _logger: Any, _method: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
+    """在**寫出這一筆 log 的當下**補上 ``tenant_id``（13 §3.2、12 §1.1）。
+
+    為什麼不是在 middleware 進入時綁一次：1A 之後租戶來自已驗證的 JWT claim，
+    而那是 route 層的 ``Depends``——比所有 middleware 都晚執行。middleware 進入
+    時取的快照那時還是空的，於是**每一筆 log 的 tenant_id 都會靜靜消失**，
+    沒有任何錯誤，只有查詢「某個租戶的錯誤」時發現撈不到東西。
+
+    改成 emit 時讀 contextvar 之後，不論租戶是由 middleware、route dependency
+    還是背景任務設定的，都一樣抓得到。
+
+    已經有值時不覆蓋：呼叫端顯式綁定的租戶（例如跨租戶維運任務逐一處理時）
+    比 contextvar 更精確。
+    """
+    if event_dict.get("tenant_id") is None:
+        tenant_id = try_get_current_tenant_id()
+        if tenant_id is not None:
+            event_dict["tenant_id"] = str(tenant_id)
+    return event_dict
+
+
 def _shared_processors() -> list[Any]:
     """structlog 與 stdlib 兩條路徑共用的 chain（順序有意義）。"""
     return [
         # contextvars 先合併：request_id / tenant_id 之後才進得了遮罩與 renderer。
         structlog.contextvars.merge_contextvars,
+        # 合併之後、遮罩之前補租戶：這樣它同樣會經過下游所有 processor。
+        tenant_processor,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.PositionalArgumentsFormatter(),
