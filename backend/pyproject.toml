@@ -88,6 +88,12 @@ ignore = [
     "RUF012",   # class 層級 mutable 屬性需標 ClassVar
 ]
 
+# 驗收測試先行（CLAUDE.md 開發流程）會出現「測試已進 repo、模組還沒建」的狀態；
+# isort 靠目錄存在與否推斷 first-party，模組缺席時會被排進第三方區、實作落地後
+# 又要排回來。02 §1 規劃的頂層套件在此宣告死，排序不隨實作進度漂移。
+[tool.ruff.lint.isort]
+known-first-party = ["ai", "etl", "rag", "tool"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106"]        # 測試用假憑證
 # Django 產生的 migration 不手改，行長交給 Django（mypy 亦已 exclude）。

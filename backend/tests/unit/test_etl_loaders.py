@@ -238,7 +238,7 @@ class TestUnsupportedAndBroken:
         的例外型別——而那會隨版本改變。轉成自家例外，重試與 DLQ 的規則才有穩定依據。
         """
         with pytest.raises(ExtractionFailedError):
-            extract(b"%PDF-1.7\n這不是一個真的 PDF", media_type=PDF)
+            extract("%PDF-1.7\n這不是一個真的 PDF".encode(), media_type=PDF)
 
     def test_docx_without_document_xml_raises(self) -> None:
         buffer = io.BytesIO()
