@@ -90,9 +90,24 @@ APPLY_DB_TIMEOUTS = $(COMPOSE) exec -T postgres sh -c \
 	'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -v ON_ERROR_STOP=1 \
 	 -c "ALTER ROLE \"$$DB_USER\" SET statement_timeout = '"'"'$(DB_STATEMENT_TIMEOUT)'"'"'"'
 
+# ── 一鍵啟停（make start / stop / status）────────────────────────
+# pid/log 的實際路徑由 scripts/dev.sh 決定（repo 根的 .run/，已 gitignore）；
+# process group 的處理（setsid）也在那裡，recipe 本身不需要 bash 或 set -m。
+DEV_PORT ?= 8000
+FE_PORT  ?= 5173
+
+# 開發帳號（只給本機實測用；正式開通走 make demo-tenant 之外的正常流程）
+DEMO_SLUG     ?= demo
+DEMO_EMAIL    ?= owner@demo.local
+DEMO_PASSWORD ?= demo-password-1234
+
 .DEFAULT_GOAL := help
+# start 的前置鏈（容器 → migration → 金鑰）依賴序列執行；-j 下 make 會把同一目標
+# 的前置們平行跑，migrate 會在 postgres 就緒前連線、API 會在金鑰落地前啟動。
+# 本檔是指令選單，平行化沒有收益，整份關掉最直接。
+.NOTPARALLEL:
 .PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys migrate \
-        dev api api-pinned \
+        dev api api-pinned start stop restart status demo-tenant app-logs \
         test test-unit test-integration test-api smoke verify-infra image lock-check lint \
         fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
         loadtest-report clean
@@ -207,11 +222,58 @@ api-pinned: ## 啟動 API 並綁定 CPU $(API_CPUS)（基準線用）。log 導�
 # 若日後把 repo 搬進 WSL2 原生檔案系統（~/），兩項都可以拿掉。
 DEV_RELOAD_DIRS = api apps common config core repositories services
 
-dev: ## 開發伺服器：單 worker + 熱重載 + console log
-	LOG_FORMAT=console WATCHFILES_FORCE_POLLING=1 \
-	$(UV_RUN) uvicorn config.asgi:app --host 127.0.0.1 --port 8000 \
+DEV_CMD = LOG_FORMAT=console WATCHFILES_FORCE_POLLING=1 \
+	$(UV_RUN) uvicorn config.asgi:app --host 127.0.0.1 --port $(DEV_PORT) \
 		--reload $(addprefix --reload-dir ,$(DEV_RELOAD_DIRS)) \
 		--log-config config/uvicorn_logging.json --no-access-log
+
+dev: ## 開發伺服器：單 worker + 熱重載 + console log（前景，Ctrl-C 停止）
+	$(DEV_CMD)
+
+# ── 一鍵啟停 ────────────────────────────────────────────────────
+# 實作在 scripts/dev.sh：背景行程要處理 process group、重導向與 pid 檔，寫成 make
+# recipe 會是一串跳脫過的 shell，改一次得重讀一次（第一版正是如此，且踩了兩個坑：
+# pid 檔寫錯目錄、make 因為背景行程握著 stdout 而不退出）。理由詳見該檔開頭。
+#
+# **啟動指令由這裡傳入，dev.sh 不自帶**：API 用與 make dev 同一份 DEV_CMD，
+# 前端用同一份 PNPM——單一來源，test_logging.py 的 DEV_RELOAD_DIRS 對帳測試
+# 因此同時涵蓋前景（dev）與背景（start）兩條路，不會只守到其中一份。
+#
+# 前置目標的順序有意義：容器 → migration → JWT 金鑰（.NOTPARALLEL 保證序列執行）。
+# 金鑰缺檔時 API 是 Fail Fast（services/identity/tokens.py），先起 API 只會拿到
+# 一個看不懂的 RuntimeError。
+DEV_SH = DEV_PORT=$(DEV_PORT) FE_PORT=$(FE_PORT) \
+	API_CMD='$(DEV_CMD)' FE_CMD='$(PNPM) run dev --port $(FE_PORT)' \
+	bash scripts/dev.sh
+
+start: up migrate gen-jwt-keys ## 一鍵啟動：容器 + API + 前端（背景執行，log 在 .run/）
+	@$(DEV_SH) start
+
+restart: ## 只重啟 API 與前端（跳過容器/migration/金鑰，日常快速迭代用）
+	@$(DEV_SH) stop
+	@$(DEV_SH) start
+
+stop: ## 停掉 API 與前端，並關閉容器（資料卷保留）
+	-@$(DEV_SH) stop
+	$(COMPOSE) down
+
+status: ## 看目前起了什麼
+	@$(DEV_SH) status
+	@$(COMPOSE) ps
+
+app-logs: ## 追蹤 API 與前端的 log（背景執行時）
+	@$(DEV_SH) logs
+
+# 密碼可覆寫：`make demo-tenant DEMO_PASSWORD=...`。預設值只適用本機開發環境，
+# 而那裡的 .env 本來就是 change-me-locally 等級的憑證。
+# recipe 必須加 @：make 預設回顯整條指令——含密碼——正是「secrets 不進 log」要防的。
+# --exist-ok：重跑視為成功，`make start && make demo-tenant` 可無腦重複執行。
+demo-tenant: ## 建立本機實測用的租戶與 Owner（slug=$(DEMO_SLUG)；可重複執行）
+	@$(UV_RUN) python manage.py create_tenant \
+		--name "Demo" --slug "$(DEMO_SLUG)" \
+		--owner-email "$(DEMO_EMAIL)" --owner-password "$(DEMO_PASSWORD)" \
+		--exist-ok
+	@echo "登入用：tenant_slug=$(DEMO_SLUG)  email=$(DEMO_EMAIL)"
 
 test: ## 執行全部測試（需先 make up）
 	$(UV_RUN) pytest

@@ -14,7 +14,7 @@ from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError
 
-from core.exceptions import DomainError
+from core.exceptions import ConflictError, DomainError
 from services.identity.tenants import TenantService
 
 
@@ -26,6 +26,11 @@ class Command(BaseCommand):
         parser.add_argument("--slug", required=True, help="登入用的公司代號（唯一）")
         parser.add_argument("--owner-email", required=True)
         parser.add_argument("--owner-password", required=True)
+        parser.add_argument(
+            "--exist-ok",
+            action="store_true",
+            help="slug 已存在時視為成功（給可重複執行的腳本用，如 make demo-tenant）",
+        )
 
     def handle(self, *args: Any, **options: Any) -> None:
         try:
@@ -35,6 +40,13 @@ class Command(BaseCommand):
                 owner_email=options["owner_email"],
                 owner_password=options["owner_password"],
             )
+        except ConflictError as exc:
+            # --exist-ok：開通腳本要能無腦重跑。「已存在」與「真正的衝突」在這裡
+            # 無法再細分（slug 唯一鍵就是存在的定義），所以整類視為成功即可。
+            if options["exist_ok"]:
+                self.stdout.write(f"租戶 {options['slug']} 已存在，略過（--exist-ok）")
+                return
+            raise CommandError(str(exc)) from exc
         except DomainError as exc:
             # 轉成 CommandError：Django 會印成一行錯誤並回非零離開碼，
             # 而不是吐一整串 traceback（那在 CI log 裡沒有任何額外資訊）。

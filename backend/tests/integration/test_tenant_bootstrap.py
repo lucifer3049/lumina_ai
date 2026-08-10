@@ -22,6 +22,7 @@ from io import StringIO
 
 import pytest
 from django.core.management import call_command
+from django.core.management.base import CommandError
 
 from common.passwords import verify_password
 from core.exceptions import DomainError
@@ -216,3 +217,40 @@ def test_management_command_does_not_print_the_password() -> None:
     )
 
     assert PASSWORD not in out.getvalue()
+
+
+_CLI_ARGS = (
+    "--name",
+    "Acme Inc.",
+    "--slug",
+    SLUG,
+    "--owner-email",
+    OWNER_EMAIL,
+    "--owner-password",
+    PASSWORD,
+)
+
+
+def test_management_command_with_exist_ok_is_rerunnable() -> None:
+    """``--exist-ok``：重複開通視為成功。
+
+    `make demo-tenant` 是「隨時可以再跑一次」的本機 bring-up 步驟；沒有這個旗標，
+    第一次之後每次都以非零離開碼收場，腳本把它接在 start 後面就永遠是紅的。
+    """
+    ensure_identity_seed()
+    out = StringIO()
+
+    call_command("create_tenant", *_CLI_ARGS, stdout=out)
+    call_command("create_tenant", *_CLI_ARGS, "--exist-ok", stdout=out)
+
+    assert "已存在" in out.getvalue()
+
+
+def test_management_command_without_exist_ok_still_fails_on_duplicate() -> None:
+    """預設行為不變：重複 slug 仍是錯誤——靜默吞掉會蓋掉真正的衝突。"""
+    ensure_identity_seed()
+
+    call_command("create_tenant", *_CLI_ARGS, stdout=StringIO())
+
+    with pytest.raises(CommandError):
+        call_command("create_tenant", *_CLI_ARGS, stdout=StringIO())

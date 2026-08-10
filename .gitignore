@@ -28,6 +28,9 @@ dist/
 loadtest/results/
 *.log
 
+# make start 的背景行程 pid 與 log
+.run/
+
 # ── 不進版控：個人設定與筆記 ──
 # ⚠️ 以下內容**沒有任何版本保護**，誤刪即永久遺失，請自行備份。
 CLAUDE.md
