@@ -20,10 +20,20 @@ import io
 import zipfile
 
 from core.exceptions import UnsupportedMediaTypeError, UploadTooLargeError
+from core.media_types import DOCX, PDF, TEXT
 
-PDF = "application/pdf"
-DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-TEXT = "text/plain"
+# 常數本身移到 `core/media_types.py`（1B-4）：抽取端要用同一組鍵挑 loader，而
+# `etl/` 不得 import `services/`。這裡沿用原本的名字再匯出，呼叫端與測試不受影響。
+__all__ = [
+    "ACCEPTED_MEDIA_TYPES",
+    "DOCX",
+    "MAX_UPLOAD_BYTES",
+    "PDF",
+    "TEXT",
+    "detect_media_type",
+    "ensure_within_limit",
+    "sha256_of",
+]
 
 ACCEPTED_MEDIA_TYPES = (PDF, DOCX, TEXT)
 

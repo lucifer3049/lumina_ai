@@ -38,6 +38,10 @@ class ErrorCode(StrEnum):
     # 上傳（1B-3）
     UPLOAD_TOO_LARGE = "UPLOAD_TOO_LARGE"  # 413：超過單請求大小上限
     UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"  # 415：MIME 白名單外（magic bytes 判定）
+    # ETL（1B-4）。09 附錄 A 標明它**不對映 HTTP**：抽取跑在 worker 裡，失敗會落到
+    # `etl_jobs.error` 與通知，沒有一個等在旁邊的請求可以回。因此 api/main.py 的
+    # `_HTTP_STATUS` 刻意不收這一條——真的漏到 HTTP 時走 500，那是程式錯誤。
+    ETL_FAILED = "ETL_FAILED"
 
 
 class DomainError(Exception):
@@ -197,6 +201,30 @@ class UploadTooLargeError(DomainError):
             f"檔案超過單請求上限 {limit_bytes // (1024 * 1024)}MB",
             details={"limit_bytes": limit_bytes},
         )
+
+
+class ExtractionFailedError(DomainError):
+    """抽取階段失敗（08 §6）——不支援的型別、壞檔、毒檔、子行程異常。
+
+    **第三方例外一律在 loader 邊界轉成這一個。** pymupdf / python-docx 的例外型別
+    會隨版本改變，而 08 §6 的重試判定（暫時性錯誤才重試，毒檔與 OOM 直接 failed）
+    必須有穩定的依據。
+
+    ``details["cause"]`` 是那個依據：``timeout`` / ``MemoryError`` / 原始例外的類別
+    名 / ``unsupported_media_type``…。判定讀 ``cause``，訊息只給人看——措辭改動不該
+    讓重試策略跟著變。
+    """
+
+    code = ErrorCode.ETL_FAILED
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        cause: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message, details={"cause": cause, **(details or {})})
 
 
 class ObjectNotFoundError(DomainError):

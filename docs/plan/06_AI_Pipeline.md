@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 06 |
-| 版本 | v1.1 |
-| 日期 | 2026-07-30 |
+| 版本 | v1.2 |
+| 日期 | 2026-08-11 |
 | 狀態 | Draft — 待審閱 |
 | 相依文件 | 01（ADR-003/004）、04（RAG / Embedding / Memory / Gateway 模組）、05（chunks / embeddings 表） |
-| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08） |
+| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08）。v1.2：新增 §3.5 Prompt Engineering 策略分級表；§4 增補 reasoning 模式與 structured output 的介面預留 |
 
 ---
 
@@ -123,6 +123,22 @@ flowchart TB
 | 語言偵測資料流 | 文件語言：ETL 寫入 `doc_meta.language`（08）；查詢語言：condense 階段偵測；兩者不一致即為跨語言配對，記入 rag_trace（觀測跨語言查詢佔比與品質） |
 | 回答語言 | 與文件語言無關，**一律跟隨使用者問句語言**（system prompt 固定規則） |
 
+### 3.5 Prompt Engineering 策略（PromptBuilder 指引）
+
+前提不變：所有技術一律落在**版本化 prompt template**（CLAUDE.md 鐵則 5），不散落 Python 字串；模板變更走 review，行為變化可追溯。技術分三級——**預設**（主 pipeline 內建）、**選配**（KB config 開關，模式同 `cross_lingual_boost`）、**backlog**（需 Phase 2 golden set 評測數據才升級，與 §9 YAGNI 一致）。
+
+| 技術 | 定位 | 說明 |
+|------|------|------|
+| Zero-shot 指令式 | 預設 | RAG 主 prompt 即此形態（§3.1 Generation 規則：僅依 context 回答、`[c:id]` 引用、無據需聲明）。指令放 system、外部資料只進 context 區塊——這個邊界同時是 injection 防護的前提（10_安全設計） |
+| CoT——提示層 | 選配 | 模板加入「先推理再作答」指示；對多跳、比較、彙總型問題有效。代價：output token 增加、TTFT 變差（吃 11_NFR latency budget）。推理段**不回傳前端**，僅入 rag_trace 供除錯與評測 |
+| CoT——模型原生 reasoning | backlog | 新一代推理模型（OpenAI o 系列、Claude extended thinking、DeepSeek-R1、Qwen3 等）由 API 參數開關，非提示詞技巧。需 Gateway 介面預留（§4 reasoning 條目）；RAG 已提供證據上下文，CoT 邊際效益需實測——golden set 過關才啟用 |
+| Few-shot——靜態 | 選配 | 範例固定寫入 prompt template，隨 prompt_version 審查與回溯。佈局規則：放 system 之後、RAG context 之前的**穩定前綴**（維持 §4 prompt cache 命中） |
+| Few-shot——動態 | backlog | 以 query embedding 從範例庫檢索 top-k 相似範例注入。可複用現有 embedding Gateway＋cache（DRY），範例庫本質上是一個小型 KB。代價：範例隨查詢變動會**破壞前綴穩定性、打掉 prompt cache**——採用時 token 佈局需重排（動態範例移至後綴段）並重估 cache 命中損失 |
+| Self-consistency | 不採用（線上） | 同題多次取樣、多數決。成本與延遲 ×N，線上路徑不用；僅 Evaluation 模組離線評測可選用（提升 judge 穩定性） |
+| ReAct | 已內建 | §3 的 Tool Call 迴圈（推理 → 呼叫工具 → 觀察結果 → 續推理，上限 5 輪）即 ReAct 模式；數學/精確計算類問題依 07_Tool架構 走 tool，不叫 LLM 心算。不另引入 agent framework |
+| Structured Output | 選配 | provider 端 JSON schema 約束解碼，比「請輸出 JSON」的提示可靠。優先用於**內部呼叫**（condense 改寫、評測評分、meta 抽取）；`ChatRequest` 需帶 `response_format` 欄位（§4） |
+| Query 擴寫強化：HyDE / Step-back / Multi-query fusion | backlog | condense 之上的檢索增強（假設性答案檢索／抽象化改寫／多重改寫各自檢索後 RRF 融合）。每項多至少一次 LLM 呼叫（延遲＋成本）；僅在 golden set 證明特定 KB recall 不足時**逐項**驗證引入，不預先實作 |
+
 ## 4. Generation：AI Gateway 細節
 
 ```mermaid
@@ -140,6 +156,8 @@ flowchart LR
 - **Retry**：只 retry 可安全重試的錯誤（429/5xx 且未開始輸出），退避 1s/2s/4s，最多 3 次。
 - **Prompt Caching**：system + RAG context 放前綴、對話輪次放後綴，最大化 provider 端 cache 命中；Ollama 等無 cache 的 provider 自動忽略。
 - **中斷處理（G-06）**：client 斷線 → server 繼續收完該回應（成本已發生）→ 完整持久化 → resume buffer（Redis, TTL 5min）供 `Last-Event-ID` 續傳。
+- **Reasoning 模式（介面預留，功能屬 backlog，見 §3.5）**：`ChatRequest` 增 provider 無關欄位 `reasoning_effort: off|low|medium|high`（預設 off），Adapter 各自翻譯為該家參數，不支援的 provider 靜默忽略（同 prompt cache 的降級模式）。**Delta 契約定案：Adapter 丟棄 reasoning 內容，不新增 Delta 型別**（避免各 adapter 各行其是；除錯需要時再開 trace-only 通道）。計費：reasoning token **必須併入 output tokens metering**——漏計即租戶成本低估（multi-tenant 直接影響）。Timeout：reasoning 模型 TTFT 天然變長，啟用時 TTFT 上限隨 model_config 覆寫，不吃預設 30s。
+- **Structured Output（選配，見 §3.5）**：`ChatRequest` 增 `response_format`（none / json_schema）欄位，Adapter 轉換為各 provider 的約束解碼參數；不支援的 provider 降級為提示詞指示＋後處理驗證。
 
 ## 5. Memory Pipeline
 
@@ -186,7 +204,7 @@ flowchart LR
 3. **Clean Architecture**：pipeline 不依賴 FastAPI/Celery，兩者皆可驅動。
 4. **DRY**：embedding 與 query embedding 共用 Gateway 與 cache。
 5. **KISS**：Hybrid 用 RRF 而非可調權重融合（少一個要調的參數）。
-6. **YAGNI**：GraphRAG、multi-hop、semantic cache、vector memory 皆列為未來項不先建。
+6. **YAGNI**：GraphRAG、multi-hop、semantic cache、vector memory、動態 few-shot、HyDE/Step-back/Multi-query、原生 reasoning 模式皆列為未來項不先建（§3.5 有分級與升級條件）。
 7. **可測試性**：每階段可用固定輸入單測；評測資料集對整條 Query pipeline 做迴歸（Evaluation 模組）。
 8. **Technical Debt**：condense 與摘要用小模型，其品質影響全鏈路——列入評測固定監控項。
 9. **Over Engineering 檢查**：compression 預設 extractive 而非 LLM 摘要，是刻意的簡化。

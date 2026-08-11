@@ -30,6 +30,17 @@ dependencies = [
     # ——所以它不是可選的：09 §2.3 的上傳端點是 multipart。
     # Starlette 官方使用的解析器，無其他相依，維護活躍。
     "python-multipart>=0.0.20",
+    # 08 §3 指名的 PDF 文字層抽取。選它是因為它同時給得出**字級**，而 PDF 沒有語意
+    # 標記、標題只能靠視覺屬性判定（見 etl/extract/loaders/pdf.py）。
+    # ⚠️ 過渡性相依，1B-4c 移除：PyMuPDF 是 AGPL-3.0／商業雙授權，而 AGPL §13 的
+    # 網路使用條款對多租戶 SaaS 會實際觸發（租戶透過網路操作即需提供整份原始碼）。
+    # 08 §3 選型時未評估這一點。**已決定（2026-08-12）改用 pdfplumber（MIT）**，
+    # 在那之前不要把它的用法擴散到 loader 以外——目前只有一處 import
+    # （etl/extract/loaders/pdf.py），換掉的成本因此仍然很低。
+    "pymupdf>=1.24",
+    # 08 §3 指名的 docx 解析。標題來自**樣式**而非啟發式，是三種 loader 中結構
+    # 保真度最高的一種。
+    "python-docx>=1.1",
 ]
 
 [dependency-groups]
@@ -135,6 +146,14 @@ implicit_reexport = true
 module = ["boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
+# pymupdf 只附了**部分**型別：`open()` / `load_page()` / `close()` 這些 C 綁定入口
+# 沒有標註，strict 的 disallow_untyped_calls 於是對每一次呼叫都報錯。放寬範圍限於
+# 直接碰 pymupdf 的兩個模組——擴大到整個 etl 會讓其餘 loader 少一層保護，而它們
+# 用的是有完整型別的 python-docx。
+[[tool.mypy.overrides]]
+module = ["etl.extract.loaders.pdf", "tests.unit.test_etl_loaders"]
+disallow_untyped_calls = false
+
 # loadtest/ 現在只剩 access log 分析工具（純 stdlib），維持 strict 即可；
 # 重新引入負載腳本時再視需要放寬。
 
@@ -173,7 +192,7 @@ markers = [
 # 違反，等於禁止分層本身。
 # ──────────────────────────────────────────────────────────────
 [tool.importlinter]
-root_packages = ["api", "apps", "common", "core", "repositories", "services"]
+root_packages = ["api", "apps", "common", "core", "etl", "repositories", "services"]
 
 [[tool.importlinter.contracts]]
 name = "api 不碰 ORM（Controller 三行原則）"
@@ -201,7 +220,17 @@ name = "common 是純工具，不認識任何層"
 type = "forbidden"
 allow_indirect_imports = true
 source_modules = ["common"]
-forbidden_modules = ["api", "services", "repositories", "apps", "core"]
+forbidden_modules = ["api", "services", "repositories", "apps", "core", "etl"]
+
+[[tool.importlinter.contracts]]
+# etl 是內層（02 §2）：它只認得 core 的型別與例外。禁 repositories/apps 而不只是
+# 禁 api/services——ETL 讀寫資料一律經 services，loader 自己碰 ORM 就繞過了租戶
+# filter，而那條路徑上沒有任何東西會報錯。
+name = "etl 不知道上層，也不碰 ORM"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["etl"]
+forbidden_modules = ["api", "services", "repositories", "apps"]
 
 [[tool.importlinter.contracts]]
 name = "repositories 不反向依賴上層"

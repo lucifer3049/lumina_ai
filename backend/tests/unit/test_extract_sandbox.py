@@ -21,6 +21,7 @@ worker 掛掉的後果是那台機器上**所有租戶**的 ETL 一起停擺，�
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -28,6 +29,21 @@ import pytest
 
 from core.exceptions import ExtractionFailedError
 from etl.extract.sandbox import run_isolated
+
+# 父行程持有這把鎖時去 fork，子行程會繼承「已上鎖」的狀態，而持有它的執行緒不存在
+# 於子行程——那把鎖永遠不會被釋放。見 TestCleanChildState。
+_INHERITED_LOCK = threading.Lock()
+
+
+def _try_lock(_: bytes) -> object:
+    acquired = _INHERITED_LOCK.acquire(timeout=3)
+    if acquired:
+        _INHERITED_LOCK.release()
+    return {"acquired": acquired}
+
+
+def _report_parent_pid(_: bytes) -> object:
+    return {"ppid": os.getppid()}
 
 
 def _sleep_forever(_: bytes) -> object:
@@ -154,3 +170,34 @@ class TestErrorPropagation:
             run_isolated(_raise_value_error, b"", timeout_seconds=10)
 
         assert caught.value.details.get("cause") == "ValueError"
+
+
+class TestCleanChildState:
+    """子行程不得繼承父行程的執行期狀態（1B-4 收尾，改用 ``forkserver`` 的理由）。
+
+    ``fork`` 的複製對象是**呼叫它的那個執行緒以外全部消失、但記憶體照抄**：父行程
+    在 fork 當下被別人持有的鎖，在子行程裡是「已上鎖，而持有者不存在」——沒有人會
+    釋放它。Celery worker、psycopg pool、structlog 都在背景執行緒裡拿鎖，因此那不是
+    理論風險：症狀是某些文件的抽取毫無理由地卡到逾時，重跑又好了。
+
+    這裡驗的是 fork 與 forkserver 的**行為差異**，不是實作細節（不斷言 start method
+    字串）：換成別的乾淨隔離方式（獨立 subprocess）時，這兩條測試同樣成立。
+    """
+
+    def test_child_does_not_inherit_a_held_lock(self) -> None:
+        """父行程持有的鎖，不該在子行程裡是鎖著的。"""
+        with _INHERITED_LOCK:
+            result = run_isolated(_try_lock, b"", timeout_seconds=15)
+
+        assert result == {"acquired": True}
+
+    def test_child_is_not_a_direct_descendant_of_the_caller(self) -> None:
+        """子行程不是呼叫端直接 fork 出來的。
+
+        直接 fork 的話 ``getppid()`` 就是呼叫端本身；經由乾淨的中介行程產生時不是。
+        這條是上一條的機制面佐證——鎖那條驗後果，這條說明後果為什麼消失。
+        """
+        result = run_isolated(_report_parent_pid, b"", timeout_seconds=15)
+
+        assert isinstance(result, dict)
+        assert result["ppid"] != os.getpid()

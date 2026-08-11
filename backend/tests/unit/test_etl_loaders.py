@@ -33,7 +33,13 @@ from services.knowledge.uploads import DOCX, PDF, TEXT
 
 
 def _pdf(pages: list[list[tuple[str, int]]]) -> bytes:
-    """產生 PDF：每頁一串 (文字, 字級)。字級大的視為標題（見 loader 的判定說明）。"""
+    """產生 PDF：每頁一串 (文字, 字級)。字級大的視為標題（見 loader 的判定說明）。
+
+    ``fontname`` 必須指定 CJK 字型（1B-4 實作時發現）：預設的 base-14 ``helv``
+    沒有中文字形，寫進去的字會變成 ``·``——抽出來的文字因此對不上，而**那是樣本
+    產不出中文，不是 loader 抽不到**。用內建的 ``china-t``（繁體）讓樣本真的含有
+    它宣稱的內容。
+    """
     import pymupdf
 
     document = pymupdf.open()
@@ -41,7 +47,7 @@ def _pdf(pages: list[list[tuple[str, int]]]) -> bytes:
         page = document.new_page()
         y = 72.0
         for text, size in lines:
-            page.insert_text((72, y), text, fontsize=size)
+            page.insert_text((72, y), text, fontsize=size, fontname="china-t")
             y += size * 2
     data: bytes = document.tobytes()
     document.close()
