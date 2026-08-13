@@ -184,14 +184,34 @@ class TestLanguage:
 
         assert cleaned.doc_meta["language"] == "ja"
 
-    def test_latin_script_is_reported_as_undetermined(self) -> None:
-        """拉丁字母只判得出「不是 CJK」。
-
-        英文、德文、法文的字母集合幾乎相同，靠字元判不出來——**寫一個假的答案比
-        寫「不知道」更糟**：06 §3.4 的跨語言統計會據此分組，錯的標籤會讓那份數據
-        整份失效。真正的語言辨識需要模型，留到 Phase 2 有 golden set 時決定。
-        """
+    def test_english_is_detected(self) -> None:
+        """拉丁字母的語言靠字元判不出來（英、德、法的字母集合幾乎相同），因此走模型。"""
         doc = _doc(_paragraph("This document is written in English prose.", order=0))
+
+        cleaned, _ = clean(doc)
+
+        assert cleaned.doc_meta["language"] == "en"
+
+    def test_german_is_not_mistaken_for_english(self) -> None:
+        doc = _doc(
+            _paragraph(
+                "Dieses Dokument ist auf Deutsch geschrieben und enthält mehrere Sätze.",
+                order=0,
+            )
+        )
+
+        cleaned, _ = clean(doc)
+
+        assert cleaned.doc_meta["language"] == "de"
+
+    def test_low_confidence_falls_back_to_undetermined(self) -> None:
+        """判不準時回 ``und``，不採用模型的首選。
+
+        py3langid 對任何輸入都會給一個答案——只有一個字母的封面頁也會得到 `en`。
+        06 §3.4 的跨語言統計依這個欄位分組，隨機的標籤會讓那份數據失效，而
+        「不知道」是誠實且**可分辨**的值：查詢時看得出來這份文件沒有可信的語言。
+        """
+        doc = _doc(_paragraph("a", order=0))
 
         cleaned, _ = clean(doc)
 

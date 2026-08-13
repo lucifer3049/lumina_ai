@@ -7,7 +7,9 @@
 2. **亂碼 block**。編碼壞掉或抽取失敗的殘骸照樣會被嵌入，佔用向量空間卻永遠不該被
    檢索到。丟棄率同時是**來源品質的訊號**——08 §4 要求 > 20% 示警，因為那通常代表
    這份來源需要人看一眼（掃描件、錯誤的編碼、加密的內文）。
-3. **語言**。寫進 doc_meta 供 embedding 模型選擇與跨語言檢索觀測（06 §3.4）。
+3. **語言**。寫進 doc_meta 供 embedding 模型選擇與跨語言檢索觀測（06 §3.4）。判定用
+   py3langid（BSD，離線模型），但**假名與諺文的字元證據排在模型之前**——漢字為主的
+   日文在位元組 n-gram 模型下容易被判成中文，而有假名就一定是日文。
 
 **不做的事同樣重要：不改寫使用者的文字。** 正規化只處理空白與零寬字元。全形轉半形、
 標點統一這類「聰明」的處理會讓 1D 的引用對不回原文，而那種偏差小到不會有人發現。
@@ -21,6 +23,9 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import cache
+
+from py3langid.langid import MODEL_FILE, LanguageIdentifier
 
 from etl.extract.model import Block, BlockMeta, BlockType, ExtractedDoc
 from etl.tokens import estimate_tokens
@@ -53,10 +58,19 @@ _TRAILING_SPACE = re.compile(r"[ \t]+$", re.MULTILINE)
 # 三個以上的連續換行壓成兩個（= 一個空行）。更多的空行是排版產物，不是段落界線。
 _EXCESS_BLANK_LINES = re.compile(r"\n{3,}")
 
-# 假名與諺文是決定性證據：只看漢字的話，日文會被判成中文而選錯 embedding 模型。
+# 假名與諺文是決定性證據，走在統計模型之前：漢字為主的日文（標題、法規條文）在
+# 位元組 n-gram 模型下容易被判成中文，而那會讓 06 §3.4 的跨語言統計與 embedding
+# 模型選擇一起錯。有假名就一定是日文，這種判斷不需要模型。
 _KANA = re.compile(r"[぀-ヿ]")
 _HANGUL = re.compile(r"[가-힯]")
-_HAN = re.compile(r"[㐀-䶿一-鿿]")
+
+# 低於這個信心度就回 und。py3langid 對任何輸入都會給一個答案——一行 "a" 也會得到
+# 'en'（實測信心 0.17）。沒有門檻的話，封面頁或只有編號的文件會被貼上隨機語言標籤。
+_MIN_CONFIDENCE = 0.5
+
+# 語言判定的取樣上限。整份文件送進模型只是浪費 CPU——語言在前幾段就決定了，
+# 而 ETL 的每一份文件都會走這一步。
+_SAMPLE_CHARS = 2000
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,20 +188,31 @@ def _is_garbled(text: str) -> bool:
     return bad / len(text) > _GARBLED_RATIO
 
 
-def _detect_language(blocks: list[Block]) -> str:
-    """粗粒度語言判定：只在**書寫系統足以決定**時給答案。
+@cache
+def _identifier() -> LanguageIdentifier:
+    """py3langid 的模型（惰性載入）。
 
-    拉丁字母判不出語言（英、德、法的字母集合幾乎相同），因此回 ``und`` 而不是猜一個
-    ``en``——06 §3.4 的跨語言統計會依這個欄位分組，錯的標籤會讓整份數據失效。真正的
-    語言辨識需要模型，留到 Phase 2 有 golden set 時連同 embedding 選型一起決定。
+    模型是一組 numpy 陣列，載入要時間也佔記憶體。放在模組載入時做的話，**每一個**
+    import 到 `etl.clean` 的行程都要付這筆成本——包括只做抽取、根本不會呼叫這裡的
+    子行程（見 `etl.extract.sandbox`），而那個行程還有記憶體上限。
     """
-    sample = " ".join(block.text for block in blocks[:20])
+    return LanguageIdentifier.from_pickled_model(MODEL_FILE, norm_probs=True)
+
+
+def _detect_language(blocks: list[Block]) -> str:
+    """語言判定：書寫系統決定得了的先判，其餘交給統計模型。
+
+    信心不足時回 ``und`` 而不是模型的首選。py3langid 對任何輸入都會給答案——只有
+    一個字母的封面頁也會得到 `en`。06 §3.4 的跨語言統計依這個欄位分組，隨機的標籤
+    會讓那份數據失效，而「不知道」是誠實且可分辨的值。
+    """
+    sample = " ".join(block.text for block in blocks)[:_SAMPLE_CHARS]
     if not sample.strip():
         return "und"
     if _KANA.search(sample):
         return "ja"
     if _HANGUL.search(sample):
         return "ko"
-    if _HAN.search(sample):
-        return "zh"
-    return "und"
+
+    language, confidence = _identifier().classify(sample)
+    return str(language) if float(confidence) >= _MIN_CONFIDENCE else "und"

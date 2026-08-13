@@ -48,6 +48,11 @@ dependencies = [
     # Markdown 解析（MIT）。不自己切行：setext 標題、fence 內的井字號、表格對齊列、
     # 巢狀清單——每一項都是「看起來簡單、實際上是解析器」的陷阱。
     "markdown-it-py>=3.0",
+    # 語言偵測（BSD-3；langid.py 的維護分支）。06 §2.1 要求 Clean 寫入語言，而 §3.4
+    # 的跨語言檢索統計依它分組。**離線模型**（隨套件內附，無外部呼叫）是硬條件：
+    # 語言偵測跑在每一份文件上，走 API 會把 ETL 的延遲與成本綁到第三方可用性上。
+    # 帶進 numpy（模型是矩陣運算）——1C 的向量處理本來就會需要它。
+    "py3langid>=0.3",
 ]
 
 [dependency-groups]
@@ -167,7 +172,7 @@ ignore_missing_imports = true
 # 仍受完整 strict 檢查，pdfplumber 回傳的東西因此要在 loader 內顯式轉型別，
 # 那正是我們想要的邊界（第三方的 dict 不會直接流進 ExtractedDoc）。
 [[tool.mypy.overrides]]
-module = ["pdfplumber.*", "pdfminer.*", "reportlab.*"]
+module = ["pdfplumber.*", "pdfminer.*", "reportlab.*", "py3langid.*"]
 ignore_missing_imports = true
 
 # loadtest/ 現在只剩 access log 分析工具（純 stdlib），維持 strict 即可；
