@@ -206,7 +206,7 @@ class UploadTooLargeError(DomainError):
 class ExtractionFailedError(DomainError):
     """抽取階段失敗（08 §6）——不支援的型別、壞檔、毒檔、子行程異常。
 
-    **第三方例外一律在 loader 邊界轉成這一個。** pymupdf / python-docx 的例外型別
+    **第三方例外一律在 loader 邊界轉成這一個。** pdfplumber / python-docx 的例外型別
     會隨版本改變，而 08 §6 的重試判定（暫時性錯誤才重試，毒檔與 OOM 直接 failed）
     必須有穩定的依據。
 

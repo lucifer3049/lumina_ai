@@ -32,26 +32,74 @@ from etl.extract.model import BlockType, ExtractedDoc
 from services.knowledge.uploads import DOCX, PDF, TEXT
 
 
-def _pdf(pages: list[list[tuple[str, int]]]) -> bytes:
-    """產生 PDF：每頁一串 (文字, 字級)。字級大的視為標題（見 loader 的判定說明）。
+def _pdf(
+    pages: list[list[tuple[str, int]]],
+    *,
+    outline: list[tuple[int, str, int]] | None = None,
+    tables: dict[int, list[list[str]]] | None = None,
+) -> bytes:
+    """產生 PDF。
 
-    ``fontname`` 必須指定 CJK 字型（1B-4 實作時發現）：預設的 base-14 ``helv``
-    沒有中文字形，寫進去的字會變成 ``·``——抽出來的文字因此對不上，而**那是樣本
-    產不出中文，不是 loader 抽不到**。用內建的 ``china-t``（繁體）讓樣本真的含有
-    它宣稱的內容。
+    ``pages``：每頁一串 (文字, 字級)。字級大的視為標題（loader 的啟發式）。
+    ``outline``：(層級, 標題, 頁碼) 的 PDF 大綱項；有大綱時 loader 應優先採信它。
+    ``tables``：頁碼 → 列資料；畫出**有框線**的表格供 loader 偵測。
+
+    用 reportlab（BSD）而不是解析用的那個函式庫產生樣本，除了授權，還有一個測試上的
+    理由：產生與解析若共用同一套實作，兩邊的偏差會互相抵銷——樣本寫錯什麼，解析就
+    照樣讀回什麼，測試全綠而真實 PDF 全錯。
+
+    中文必須註冊 CID 字型（1B-4 實作時踩過一次）：預設的 base-14 字型沒有中文字形，
+    寫進去的字會變成替代符號，抽出來自然對不上——**那是樣本產不出中文，不是 loader
+    抽不到**。
     """
-    import pymupdf
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfgen import canvas
 
-    document = pymupdf.open()
-    for lines in pages:
-        page = document.new_page()
-        y = 72.0
+    font = "STSong-Light"
+    pdfmetrics.registerFont(UnicodeCIDFont(font))
+
+    outline_by_page: dict[int, list[tuple[int, str]]] = {}
+    for level, title, page_number in outline or []:
+        outline_by_page.setdefault(page_number, []).append((level, title))
+
+    buffer = io.BytesIO()
+    _, height = A4
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+
+    for page_index, lines in enumerate(pages, start=1):
+        y = height - 72.0
         for text, size in lines:
-            page.insert_text((72, y), text, fontsize=size, fontname="china-t")
-            y += size * 2
-    data: bytes = document.tobytes()
-    document.close()
-    return data
+            pdf.setFont(font, size)
+            pdf.drawString(72, y, text)
+            # 行距 1.3 倍字級是排版慣例。用更大的值（例如兩倍）產生的樣本，每一行看
+            # 起來都像另起一段——loader 的分段判定會被測成「永遠不合併」，而那是樣本
+            # 不真實，不是實作有問題。
+            y -= size * 1.3
+
+        for level, title in outline_by_page.get(page_index, []):
+            key = f"p{page_index}-{level}-{title}"
+            pdf.bookmarkPage(key)
+            # reportlab 的 level 從 0 起算，PDF 大綱的層級由巢狀關係決定。
+            pdf.addOutlineEntry(title, key, level=level - 1)
+
+        rows = (tables or {}).get(page_index)
+        if rows:
+            y -= 24
+            cell_width, row_height = 120, 24
+            for row_index, row in enumerate(rows):
+                for column_index, value in enumerate(row):
+                    x = 72 + column_index * cell_width
+                    top = y - row_index * row_height
+                    pdf.rect(x, top, cell_width, row_height)
+                    pdf.setFont(font, 11)
+                    pdf.drawString(x + 4, top + 8, value)
+
+        pdf.showPage()
+
+    pdf.save()
+    return buffer.getvalue()
 
 
 def _docx(paragraphs: list[tuple[str, str]], tables: list[list[list[str]]] | None = None) -> bytes:
@@ -116,7 +164,7 @@ class TestPdf:
     def test_page_numbers_are_one_based(self) -> None:
         """頁碼從 1 開始——那是使用者看到的編號。
 
-        pymupdf 的頁索引是 0-based，直接沿用會讓引用整份文件差一頁，而每一個
+        解析函式庫的頁索引常是 0-based，直接沿用會讓引用整份文件差一頁，而每一個
         引用看起來都很合理（只是內容對不上）。
         """
         doc = extract(_pdf([[("唯一一頁", 11)]]), media_type=PDF)
@@ -155,6 +203,98 @@ class TestPdf:
         doc = extract(_pdf([[("a", 11)], [("b", 11)], [("c", 11)]]), media_type=PDF)
 
         assert doc.doc_meta["page_count"] == 3
+
+    def test_wrapped_lines_become_one_paragraph(self) -> None:
+        """同一段的折行要合回一個 block。
+
+        PDF 裡沒有「段落」，只有一行一行的字。逐行成塊的話，chunk 會是一堆各自
+        殘缺的短句，檢索時每一塊都缺少判斷語意所需的上下文。
+        """
+        content = _pdf([[("第一段的第一行，", 11), ("第一段的第二行。", 11)]])
+
+        doc = extract(content, media_type=PDF)
+        paragraphs = [block for block in doc.blocks if block.type is BlockType.PARAGRAPH]
+
+        assert len(paragraphs) == 1
+        assert "第一行" in paragraphs[0].text and "第二行" in paragraphs[0].text
+
+
+class TestPdfOutline:
+    """PDF 大綱（書籤）優先於字級啟發式（1B-4c）。
+
+    大綱是作者**明確標記**的階層，不是我們從版面猜出來的。有大綱時還去猜字級，等於
+    把已知的正確答案丟掉換一個估計值——而那個估計值在字級一致的文件上必然失敗。
+    """
+
+    def test_outline_titles_become_headings_even_at_body_size(self) -> None:
+        content = _pdf(
+            [[("第一章 總則", 11), ("本章說明適用範圍。", 11)]],
+            outline=[(1, "第一章 總則", 1)],
+        )
+
+        doc = extract(content, media_type=PDF)
+        headings = [block for block in doc.blocks if block.type is BlockType.HEADING]
+
+        assert [block.text for block in headings] == ["第一章 總則"]
+
+    def test_outline_level_drives_the_heading_path(self) -> None:
+        """大綱的層級直接決定 heading_path 的深度，不必再由字級排名推。"""
+        content = _pdf(
+            [
+                [("第一章", 11), ("第一節", 11), ("本節內容。", 11)],
+            ],
+            outline=[(1, "第一章", 1), (2, "第一節", 1)],
+        )
+
+        doc = extract(content, media_type=PDF)
+        body = next(block for block in doc.blocks if block.type is BlockType.PARAGRAPH)
+
+        assert body.meta.heading_path == ("第一章", "第一節")
+
+
+class TestPdfTables:
+    """表格抽成 TABLE block（1B-4c）。
+
+    使用者說「PDF 切出來超級不準確」的典型症狀就在這裡：一張表被攤成一串沒有欄位
+    歸屬的數字。抽成獨立 block 並保留表頭，1B-5 才有辦法「表格不拆散」。
+    """
+
+    def test_ruled_table_becomes_a_markdown_table_block(self) -> None:
+        content = _pdf([[("規格表", 22)]], tables={1: [["項目", "數值"], ["延遲", "300ms"]]})
+
+        doc = extract(content, media_type=PDF)
+        tables = [block for block in doc.blocks if block.type is BlockType.TABLE]
+
+        assert len(tables) == 1
+        assert tables[0].text.splitlines()[0] == "| 項目 | 數值 |"
+        assert "| 延遲 | 300ms |" in tables[0].text
+
+    def test_table_text_is_not_repeated_as_paragraphs(self) -> None:
+        """表格內的文字不得同時以段落形式再出現一次。
+
+        重複的後果不是「多一份」而已：同一份內容會被切成兩種形狀各自嵌入，檢索時
+        互相排擠，而回答引用到的是那個沒有欄位結構的版本。
+        """
+        content = _pdf([[("規格表", 22)]], tables={1: [["項目", "數值"], ["延遲", "300ms"]]})
+
+        doc = extract(content, media_type=PDF)
+        paragraphs = [block for block in doc.blocks if block.type is BlockType.PARAGRAPH]
+
+        assert all("300ms" not in block.text for block in paragraphs)
+
+    def test_table_carries_page_and_heading_path(self) -> None:
+        """表格也要能被引用——頁碼與所屬章節缺一不可。"""
+        content = _pdf(
+            [[("規格表", 11)]],
+            outline=[(1, "規格表", 1)],
+            tables={1: [["項目", "數值"], ["延遲", "300ms"]]},
+        )
+
+        doc = extract(content, media_type=PDF)
+        table = next(block for block in doc.blocks if block.type is BlockType.TABLE)
+
+        assert table.meta.page == 1
+        assert table.meta.heading_path == ("規格表",)
 
 
 class TestDocx:
@@ -240,7 +380,7 @@ class TestUnsupportedAndBroken:
     def test_corrupted_pdf_raises_extraction_failed(self) -> None:
         """壞掉的檔案 → `ExtractionFailedError`，不是函式庫自己的例外。
 
-        pymupdf / python-docx 的例外冒到上層之後，08 §6 的重試判定就得認得第三方
+        pdfplumber / python-docx 的例外冒到上層之後，08 §6 的重試判定就得認得第三方
         的例外型別——而那會隨版本改變。轉成自家例外，重試與 DLQ 的規則才有穩定依據。
         """
         with pytest.raises(ExtractionFailedError):

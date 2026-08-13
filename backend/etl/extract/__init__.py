@@ -30,7 +30,7 @@ _LOADERS: dict[str, Loader] = {
 def extract(content: bytes, *, media_type: str) -> ExtractedDoc:
     """依 ``media_type`` 選 loader 並抽取。失敗一律 `ExtractionFailedError`。
 
-    **第三方例外在這裡收斂。** pymupdf / python-docx 的例外型別會隨版本改變，而
+    **第三方例外在這裡收斂。** pdfplumber / python-docx 的例外型別會隨版本改變，而
     08 §6 的重試判定要有穩定依據；``details["cause"]`` 保留原始型別名供分類。
 
     這個函式**不做**行程隔離——隔離是呼叫端的決定（見 `etl.extract.sandbox`）：
