@@ -25,6 +25,7 @@ Django connection 是 thread-local，從 event loop 執行緒呼叫關不到 thr
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from http import HTTPStatus
@@ -40,6 +41,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from api.schemas.problem import PROBLEM_JSON, ProblemDetail
 from config.logging import bind_request_context, clear_request_context, get_logger
 from core.exceptions import DomainError, ErrorCode
+from core.object_storage import warm_up as warm_up_object_storage
+from core.tasks import warm_up as warm_up_tasks
 from core.tenant import clear_current_tenant_id
 
 logger = get_logger(__name__)
@@ -427,4 +430,23 @@ def create_app() -> FastAPI:
     app.include_router(tenants_router, prefix="/api/v1")
     app.include_router(knowledge_router, prefix="/api/v1")
     _install_problem_schema(app)
+
+    @app.on_event("startup")
+    async def _warm_up_external_clients() -> None:
+        """在**背景**預熱外部 client（物件儲存、Celery broker）。
+
+        兩者的第一次使用都很貴（boto3 建 client 要載入數百個描述檔；Celery 要 import
+        整個套件並連上 broker），而那筆成本原本會落在重啟後的第一個上傳請求上——
+        症狀是「偶爾有一次上傳非常慢」，只在剛部署完出現，看起來像儲存或網路的問題。
+
+        用背景執行緒而不是 await：預熱不該擋住服務就緒（healthcheck、讀取路徑都不需要
+        它）。失敗只記 log——這裡沒有任何東西是啟動的必要條件。
+        """
+        threading.Thread(target=_warm_up_clients, name="warm-up", daemon=True).start()
+
     return app
+
+
+def _warm_up_clients() -> None:
+    warm_up_object_storage()
+    warm_up_tasks()

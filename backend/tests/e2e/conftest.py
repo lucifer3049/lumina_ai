@@ -98,6 +98,44 @@ def api_server() -> Iterator[str]:
         proc.wait(timeout=10)
 
 
+@pytest.fixture(scope="session")
+def etl_worker() -> Iterator[None]:
+    """啟動一個真的 Celery worker（只吃 etl 佇列）。
+
+    與 `api_server` 同樣的理由：ETL 的**部署形狀**是「API 送訊息、另一個行程處理」，
+    而在測試行程內直接呼叫 service 驗不到那條路——broker 位址錯、task 名稱不一致、
+    worker 起不來（settings 或 django.setup 時序），全部只會表現成「文件永遠停在
+    uploaded」。那正是這一步要擋的迴歸。
+
+    ``--pool solo``：worker 預設 fork 出子行程，而抽取本身又會 fork（forkserver）。
+    測試環境不需要並行，少一層行程就少一種難以歸因的失敗。
+    """
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "celery",
+            "-A",
+            "config.celery_app",
+            "worker",
+            "--queues",
+            "etl",
+            "--pool",
+            "solo",
+            "--loglevel",
+            "warning",
+        ],
+        env=_dev_env(),
+    )
+    try:
+        if proc.poll() is not None:
+            raise RuntimeError(f"celery worker 起不來（exit={proc.returncode}）")
+        yield
+    finally:
+        proc.terminate()
+        proc.wait(timeout=15)
+
+
 @dataclass(frozen=True)
 class SmokeTenant:
     slug: str
@@ -127,8 +165,10 @@ def smoke_tenant() -> SmokeTenant:
             slug,
             "--owner-email",
             email,
-            "--owner-password",
-            password,
+            # ``--flag=value`` 而不是分開兩個 argv：``token_urlsafe`` 產生的密碼可能
+            # 以 ``-`` 開頭，argparse 會把它當成另一個旗標而以 exit 2 結束。症狀是
+            # smoke 偶爾在建租戶就掛掉，重跑又好——1B-6 實際踩到一次。
+            f"--owner-password={password}",
         ],
         env=_dev_env(),
         check=True,

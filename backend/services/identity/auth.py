@@ -26,6 +26,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 
 from common.passwords import hash_password, needs_rehash, verify_password
 from config.settings.app_settings import get_app_settings
@@ -87,7 +88,10 @@ class AuthService:
         redis = get_redis()
         attempts_key = tenant_key(tenant_id, "login-fail", email)
 
-        locked_for = redis.ttl(attempts_key)
+        # redis-py 6 的同步 client 與 async client 共用型別，每個命令的回傳都是
+        # ``Awaitable | Any``。這裡的 client 一定是同步的（core.redis 的單例），
+        # 因此以 cast 收斂——擴散到呼叫端會讓每個運算都要先判型別。
+        locked_for = cast(int, redis.ttl(attempts_key))
         if self._is_locked(attempts_key):
             raise AccountLockedError(retry_after_seconds=max(int(locked_for), 0))
 
@@ -234,7 +238,10 @@ class AuthService:
         if redis.exists(tenant_key(claims.tenant_id, "jti-denied", str(claims.jti))):
             raise TokenRevokedError("憑證已登出")
 
-        minimum = redis.get(tenant_key(claims.tenant_id, "min-token-version", str(claims.sub)))
+        minimum = cast(
+            str | None,
+            redis.get(tenant_key(claims.tenant_id, "min-token-version", str(claims.sub))),
+        )
         if minimum is not None and claims.token_version < int(minimum):
             # 改密碼或帳號停用之後簽發前的舊 token。
             raise TokenRevokedError("憑證已失效，請重新登入")
@@ -243,7 +250,7 @@ class AuthService:
     # ── 內部 ────────────────────────────────────────────────────
 
     def _is_locked(self, attempts_key: str) -> bool:
-        raw = get_redis().get(attempts_key)
+        raw = cast(str | None, get_redis().get(attempts_key))
         return raw is not None and int(raw) >= self._settings.login_max_attempts
 
     def _record_failure(self, attempts_key: str) -> None:

@@ -182,6 +182,10 @@ migrate: ## 執行 Django migration（以 owner 角色；含 pgvector / pgroonga
 # 指令拆成 API_ENV / API_ARGS 兩個變數，是為了讓 api 與 api-pinned 共用同一份
 # 定義——兩份會漂，而漂掉時症狀是「綁核心那組跑出不同數字」，看起來像 CPU
 # 綁定的效果，其實只是參數不同。
+# ETL worker 的並行度。預設 2：抽取本身又會 fork 一個子行程（08 §6 的隔離），
+# 本機開太多只是讓風扇轉得比較大聲。正式環境依 11_NFR 的佇列深度調整。
+ETL_CONCURRENCY ?= 2
+
 API_ENV  = CONN_MAX_AGE=$(CONN_MAX_AGE) ORM_THREADPOOL_SIZE=$(ORM_THREADPOOL_SIZE)
 API_ARGS = config.asgi:app --host 0.0.0.0 --port 8000 --workers $(UVICORN_WORKERS) \
 	--log-config config/uvicorn_logging.json --no-access-log
@@ -220,7 +224,7 @@ api-pinned: ## 啟動 API 並綁定 CPU $(API_CPUS)（基準線用）。log 導�
 # 新增頂層套件（common/、ai/、rag/…）時必須同步加進來，否則那個目錄的改動不會
 # 觸發重載——由 tests/unit/test_logging.py 的 DEV_RELOAD_DIRS 對帳測試擋住。
 # 若日後把 repo 搬進 WSL2 原生檔案系統（~/），兩項都可以拿掉。
-DEV_RELOAD_DIRS = api apps common config core etl repositories services
+DEV_RELOAD_DIRS = api apps common config core etl repositories services worker
 
 DEV_CMD = LOG_FORMAT=console WATCHFILES_FORCE_POLLING=1 \
 	$(UV_RUN) uvicorn config.asgi:app --host 127.0.0.1 --port $(DEV_PORT) \
@@ -229,6 +233,13 @@ DEV_CMD = LOG_FORMAT=console WATCHFILES_FORCE_POLLING=1 \
 
 dev: ## 開發伺服器：單 worker + 熱重載 + console log（前景，Ctrl-C 停止）
 	$(DEV_CMD)
+
+# ETL worker（08 §1：專屬佇列與行程，不與 default/embedding 爭資源）。
+# 前景執行，Ctrl-C 停止；沒有它的話上傳的文件會停在 uploaded——訊息進了佇列但
+# 沒有人處理，而那在 API 側完全看不出來。
+worker: ## 啟動 ETL worker（Celery，etl 佇列；需先 make up）
+	LOG_FORMAT=console $(UV_RUN) celery -A config.celery_app worker \
+		--queues etl --concurrency $(ETL_CONCURRENCY) --loglevel info
 
 # ── 一鍵啟停 ────────────────────────────────────────────────────
 # 實作在 scripts/dev.sh：背景行程要處理 process group、重導向與 pid 檔，寫成 make

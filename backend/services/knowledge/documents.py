@@ -19,6 +19,7 @@ from django.db import IntegrityError
 from config.logging import get_logger
 from core.exceptions import ConflictError, NotFoundError
 from core.object_storage import build_document_key, delete_object, put_object
+from core.tasks import enqueue_ingestion
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.knowledge import DocumentRepository, KnowledgeBaseRepository
@@ -122,6 +123,10 @@ class DocumentService:
                 # IntegrityError 冒成 500。
                 raise ConflictError("這份文件已經在這個知識庫裡") from exc
             raise
+
+        # **交易提交之後**才排 ETL（08 §2 的觸發點）。交易內送的話，worker 可能在
+        # COMMIT 之前就開始處理而查不到這份文件——症狀是隨機的「文件不存在」，重跑又好。
+        enqueue_ingestion(tenant_id=tenant_id, document_id=document.id)
 
         return self._view(document)
 

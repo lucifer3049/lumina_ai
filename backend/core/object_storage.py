@@ -59,6 +59,19 @@ def get_s3_client() -> Any:
     )
 
 
+def warm_up() -> None:
+    """先把 client 建好，別讓第一個上傳請求付這筆成本。
+
+    boto3 建 client 要載入 botocore 的服務描述檔（數百個 JSON）。在本機開發的
+    WSL2 + 掛載磁碟上實測 **15.6 秒**（容器內約 1 秒）——而那全部落在重啟後的
+    第一個上傳請求上。症狀是「上傳偶爾非常慢」，且只在剛部署完出現，看起來像
+    物件儲存有問題。
+
+    純本地作業（不連線），因此不會因為 MinIO 沒起來而失敗。
+    """
+    get_s3_client()
+
+
 def build_document_key(*, kb_id: uuid.UUID, document_id: uuid.UUID) -> str:
     """組出文件的 object key。
 

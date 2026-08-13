@@ -53,6 +53,7 @@ dependencies = [
     # 語言偵測跑在每一份文件上，走 API 會把 ETL 的延遲與成本綁到第三方可用性上。
     # 帶進 numpy（模型是矩陣運算）——1C 的向量處理本來就會需要它。
     "py3langid>=0.3",
+    "celery[redis]>=5.6.3",
 ]
 
 [dependency-groups]
@@ -172,8 +173,15 @@ ignore_missing_imports = true
 # 仍受完整 strict 檢查，pdfplumber 回傳的東西因此要在 loader 內顯式轉型別，
 # 那正是我們想要的邊界（第三方的 dict 不會直接流進 ExtractedDoc）。
 [[tool.mypy.overrides]]
-module = ["pdfplumber.*", "pdfminer.*", "reportlab.*", "py3langid.*"]
+module = ["pdfplumber.*", "pdfminer.*", "reportlab.*", "py3langid.*", "celery.*"]
 ignore_missing_imports = true
+
+# Celery 的 `shared_task` 沒有型別，strict 的 disallow_untyped_decorators 會把每個
+# task 判成未標型別。放寬**只限 worker/**：那一層的內容依定義就是三行包裝（鐵則 8），
+# 邏輯在 service，而 service 仍受完整檢查。
+[[tool.mypy.overrides]]
+module = ["worker.*"]
+disallow_untyped_decorators = false
 
 # loadtest/ 現在只剩 access log 分析工具（純 stdlib），維持 strict 即可；
 # 重新引入負載腳本時再視需要放寬。
@@ -213,7 +221,7 @@ markers = [
 # 違反，等於禁止分層本身。
 # ──────────────────────────────────────────────────────────────
 [tool.importlinter]
-root_packages = ["api", "apps", "common", "core", "etl", "repositories", "services"]
+root_packages = ["api", "apps", "common", "core", "etl", "repositories", "services", "worker"]
 
 [[tool.importlinter.contracts]]
 name = "api 不碰 ORM（Controller 三行原則）"
@@ -241,7 +249,7 @@ name = "common 是純工具，不認識任何層"
 type = "forbidden"
 allow_indirect_imports = true
 source_modules = ["common"]
-forbidden_modules = ["api", "services", "repositories", "apps", "core", "etl"]
+forbidden_modules = ["api", "services", "repositories", "apps", "core", "etl", "worker"]
 
 [[tool.importlinter.contracts]]
 # etl 是內層（02 §2）：它只認得 core 的型別與例外。禁 repositories/apps 而不只是
@@ -252,6 +260,16 @@ type = "forbidden"
 allow_indirect_imports = true
 source_modules = ["etl"]
 forbidden_modules = ["api", "services", "repositories", "apps"]
+
+[[tool.importlinter.contracts]]
+# worker 與 api 同為最外層（02 §2）：task 是薄包裝，邏輯在 service。禁 repositories
+# 與 apps 的理由與 api 相同——ORM 只在 repository 裡，task 直接查 ORM 就繞過了租戶
+# filter，而 worker 沒有請求上下文可以兜底。
+name = "worker 是薄包裝（Celery task 不碰 ORM）"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["worker"]
+forbidden_modules = ["repositories", "apps"]
 
 [[tool.importlinter.contracts]]
 name = "repositories 不反向依賴上層"

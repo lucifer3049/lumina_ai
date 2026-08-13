@@ -148,6 +148,16 @@ class DocumentRepository(SoftDeletableRepository[Document]):
             source_type=source_type,
         )
 
+    def set_status(
+        self, document_id: uuid.UUID, *, status: str, error: dict[str, object] | None = None
+    ) -> int:
+        """狀態機推進（08 §2）。``error`` 顯式傳 None 會清掉上一次的失敗紀錄。
+
+        走 ``update`` 而不是讀出來改再存：ETL 與使用者的請求可能同時碰同一列，
+        read-modify-write 會把對方的改動蓋掉（例如把已軟刪的文件寫回未刪）。
+        """
+        return self.get_queryset().filter(id=document_id).update(status=status, error=error)
+
 
 class ChunkRepository(TenantScopedRepository[Chunk]):
     model = Chunk
@@ -178,6 +188,39 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
         """
         return self.get_queryset().filter(id__in=list(chunk_ids)).update(superseded=True)
 
+    def replace_for_version(
+        self,
+        *,
+        document_id: uuid.UUID,
+        kb_id: uuid.UUID,
+        doc_version: int,
+        rows: Sequence[dict[str, object]],
+    ) -> int:
+        """先刪同版本殘留再整批寫入（08 §6 的冪等）。
+
+        **刪除是必要的，不是保險**：``uq_chunk_document_version_seq`` 會讓重跑在
+        第一筆就撞唯一約束，而部分寫入的殘留（上次跑到一半崩潰）不刪就永遠卡住。
+        兩件事在同一個交易裡，中途失敗時不會留下「刪了但沒寫」的空文件。
+
+        ``bulk_create`` 而非逐筆 ``create``：一份 500 頁的 PDF 會有上千個 chunk，
+        逐筆是上千次 round-trip。
+        """
+        self.get_queryset().filter(document_id=document_id, doc_version=doc_version).delete()
+        tenant_id = get_current_tenant_id(operation="ChunkRepository.replace_for_version")
+        created = Chunk.objects.bulk_create(
+            [
+                Chunk(
+                    tenant_id=tenant_id,
+                    document_id=document_id,
+                    kb_id=kb_id,
+                    doc_version=doc_version,
+                    **row,
+                )
+                for row in rows
+            ]
+        )
+        return len(created)
+
 
 class EtlJobRepository(TenantScopedRepository[EtlJob]):
     model = EtlJob
@@ -196,4 +239,44 @@ class EtlJobRepository(TenantScopedRepository[EtlJob]):
             document_id=doc_id,
             doc_version=doc_version,
             stage=stage,
+        )
+
+    def start(self, *, doc_id: uuid.UUID, doc_version: int, stage: str) -> EtlJob:
+        """取得或建立這個階段的 job，並標記為執行中、attempt +1。
+
+        ``get_or_create`` 走 DB 的唯一約束（08 §6 的冪等鍵）而不是「先查再建」：
+        併發觸發（使用者連點兩次、重試與排程同時進來）時，先查再建的兩邊都會查到
+        「不存在」，於是各自建一筆——而那兩個 job 會同時處理同一份文件。
+        """
+        job, _ = EtlJob.objects.get_or_create(
+            tenant_id=get_current_tenant_id(operation="EtlJobRepository.start"),
+            document_id=doc_id,
+            doc_version=doc_version,
+            stage=stage,
+        )
+        job.status = "running"
+        job.attempt += 1
+        job.started_at = timezone.now()
+        job.finished_at = None
+        job.save(update_fields=["status", "attempt", "started_at", "finished_at", "updated_at"])
+        return job
+
+    def finish(
+        self,
+        job_id: uuid.UUID,
+        *,
+        status: str,
+        stats: dict[str, object] | None = None,
+        error: dict[str, object] | None = None,
+    ) -> int:
+        """收尾（succeeded / failed）。``finished_at`` 一併寫，避免兩處各寫一半。"""
+        return (
+            self.get_queryset()
+            .filter(id=job_id)
+            .update(
+                status=status,
+                stats=stats or {},
+                error=error,
+                finished_at=timezone.now(),
+            )
         )

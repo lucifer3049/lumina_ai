@@ -13,6 +13,8 @@ Redis 在本專案被明確定位為「可重建快取」（12 §4.1：可丟，
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 import redis
 
@@ -38,7 +40,11 @@ def test_redis_reachable(redis_client: redis.Redis) -> None:
 
 def test_persistence_is_aof_everysec(redis_client: redis.Redis) -> None:
     """AOF 必開且 fsync 策略為 everysec（12 §4.1）。"""
-    config = redis_client.config_get("appendonly") | redis_client.config_get("appendfsync")
+    # cast 的理由同 services/identity/auth.py：redis-py 6 的命令回傳型別是
+    # ``Awaitable | Any``（同步與非同步 client 共用宣告）。
+    config = cast(dict[str, Any], redis_client.config_get("appendonly")) | cast(
+        dict[str, Any], redis_client.config_get("appendfsync")
+    )
 
     assert config.get("appendonly") == "yes", "appendonly 未開（12 §4.1）"
     assert config.get("appendfsync") == "everysec", (

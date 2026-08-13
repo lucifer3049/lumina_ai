@@ -13,12 +13,61 @@ bug」，是「尚未存在的功能」——reason 欄直接寫明等哪個工�
 
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
+
 import httpx
 import pytest
 
 from tests.e2e.conftest import SmokeTenant
 
 _TIMEOUT_S = 10.0
+
+# 一份小文件的 ETL 應在數秒內完成；60 秒是「worker 沒起來 / 卡住」的止血點，
+# 不是效能目標（那是 11_NFR 的事）。
+_ETL_TIMEOUT_S = 60.0
+
+_SMOKE_DOCUMENT = """# Smoke 測試文件
+
+這份文件由 smoke suite 上傳，用來驗證整條 ETL 走得通。
+
+## 第一節
+
+內容需要足夠長，切塊之後至少會有一個 chunk 可供檢索。
+""".encode()
+
+
+@dataclass
+class _SmokeState:
+    """步驟之間傳遞的狀態（token、document id）。
+
+    骨架階段（1A-5）刻意沒有預先搭這個架子——上傳的回應形狀當時還沒定案。現在定案了，
+    用一個 session 級的可變物件串接：pytest 的 fixture 之間不能回傳「上一個測試算出來
+    的值」，而把每一步都重跑一次前置（登入、建 KB、上傳）會讓 smoke 慢好幾倍。
+    """
+
+    tenant: SmokeTenant
+    token: str = ""
+    document_id: str = ""
+
+
+@pytest.fixture(scope="session")
+def smoke_state(smoke_tenant: SmokeTenant) -> _SmokeState:
+    return _SmokeState(tenant=smoke_tenant)
+
+
+def _login(api_server: str, tenant: SmokeTenant) -> str:
+    response = httpx.post(
+        f"{api_server}/api/v1/auth/login",
+        json={
+            "tenant_slug": tenant.slug,
+            "email": tenant.email,
+            "password": tenant.password,
+        },
+        timeout=_TIMEOUT_S,
+    )
+    assert response.status_code == 200, response.text
+    return str(response.json()["access_token"])
 
 
 class TestSmokeLoop:
@@ -48,11 +97,65 @@ class TestSmokeLoop:
         assert me.status_code == 200, me.text
         assert me.json()["email"] == smoke_tenant.email
 
-    @pytest.mark.skip(reason="等 1B：文件上傳端點（KB/Document CRUD + 單請求上傳）")
-    def test_step_2_upload_document(self) -> None: ...
+    def test_step_2_upload_document(self, api_server: str, smoke_state: _SmokeState) -> None:
+        """建 KB → 上傳一份 Markdown → 拿到 document id。
 
-    @pytest.mark.skip(reason="等 1B/1C：ETL 狀態機 + embedding worker（文件轉 ready）")
-    def test_step_3_document_becomes_ready(self) -> None: ...
+        走 multipart 真的送位元組（09 §3.1 的小檔路徑），不是造一列 DB：這一步要驗的
+        是「上傳端點 + 物件儲存 + 內容判定」串起來還活著。
+        """
+        token = _login(api_server, smoke_state.tenant)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        created = httpx.post(
+            f"{api_server}/api/v1/knowledge-bases",
+            headers=headers,
+            json={"name": "Smoke KB"},
+            timeout=_TIMEOUT_S,
+        )
+        assert created.status_code == 201, created.text
+        kb_id = created.json()["id"]
+
+        uploaded = httpx.post(
+            f"{api_server}/api/v1/knowledge-bases/{kb_id}/documents",
+            headers=headers,
+            files={"file": ("smoke.md", _SMOKE_DOCUMENT, "text/markdown")},
+            timeout=_TIMEOUT_S,
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        body = uploaded.json()
+        assert body["status"] == "uploaded"
+
+        smoke_state.token = token
+        smoke_state.document_id = body["id"]
+
+    def test_step_3_document_is_chunked(
+        self, api_server: str, etl_worker: None, smoke_state: _SmokeState
+    ) -> None:
+        """ETL 把文件推進到 ``chunked``（08 §2 的狀態機）。
+
+        **終點暫時是 chunked 而不是 ready**：``ready`` 要等 1C 的 embedding。改成等
+        ready 的話這一步會永遠逾時，而原因與本階段無關。1C 完成時把斷言往前推一格。
+
+        輪詢而非固定 sleep：ETL 的時間隨文件大小變動，固定等待不是太慢就是會偶爾紅。
+        """
+        assert smoke_state.document_id, "第 2 步沒有留下 document id"
+        headers = {"Authorization": f"Bearer {smoke_state.token}"}
+        deadline = time.monotonic() + _ETL_TIMEOUT_S
+
+        while True:
+            response = httpx.get(
+                f"{api_server}/api/v1/documents/{smoke_state.document_id}",
+                headers=headers,
+                timeout=_TIMEOUT_S,
+            )
+            assert response.status_code == 200, response.text
+            document = response.json()
+            if document["status"] in {"chunked", "failed"}:
+                break
+            assert time.monotonic() < deadline, f"ETL {_ETL_TIMEOUT_S}s 內未完成：{document}"
+            time.sleep(1.0)
+
+        assert document["status"] == "chunked", document
 
     @pytest.mark.skip(reason="等 1D：Chat SSE 問答")
     def test_step_4_ask_question(self) -> None: ...
