@@ -11,11 +11,13 @@ bytes 而非副檔名），常數共用於 `core/media_types`。
 from __future__ import annotations
 
 from core.exceptions import ExtractionFailedError
-from core.media_types import DOCX, PDF, TEXT
+from core.media_types import DOCX, MARKDOWN, PDF, TEXT, XLSX
 from etl.extract.loaders import Loader
 from etl.extract.loaders import docx as docx_loader
+from etl.extract.loaders import markdown as markdown_loader
 from etl.extract.loaders import pdf as pdf_loader
 from etl.extract.loaders import text as text_loader
+from etl.extract.loaders import xlsx as xlsx_loader
 from etl.extract.model import Block, BlockMeta, BlockType, ExtractedDoc
 
 __all__ = ["Block", "BlockMeta", "BlockType", "ExtractedDoc", "extract"]
@@ -23,7 +25,9 @@ __all__ = ["Block", "BlockMeta", "BlockType", "ExtractedDoc", "extract"]
 _LOADERS: dict[str, Loader] = {
     PDF: pdf_loader.load,
     DOCX: docx_loader.load,
+    XLSX: xlsx_loader.load,
     TEXT: text_loader.load,
+    MARKDOWN: markdown_loader.load,
 }
 
 

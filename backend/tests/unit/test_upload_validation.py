@@ -8,8 +8,12 @@
 白名單的失敗方向是「合法的東西被擋下」（使用者會回報），黑名單的失敗方向是
 「危險的東西被收下」（沒有人會回報）。
 
-1B 的白名單是 PDF / docx / txt（13 §3 的三種 loader）。純邏輯、不碰 DB 也不碰
-物件儲存，因此放 unit 層。
+白名單是 PDF / docx / xlsx / txt / Markdown（08 §3 的 loader；xlsx 與 Markdown 於
+1B-4b 提前自 2D）。純邏輯、不碰 DB 也不碰物件儲存，因此放 unit 層。
+
+**Markdown 是唯一看副檔名的型別**，而它不構成上面那條規則的例外：Markdown 與純文字
+的位元組完全相同，副檔名決定的是「交給哪個 loader」而不是「收不收」——內容仍須先
+通過純文字驗證。`TestMarkdownSuffix` 把這個邊界釘住。
 """
 
 from __future__ import annotations
@@ -41,6 +45,15 @@ def _docx_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def _xlsx_bytes() -> bytes:
+    """最小的 .xlsx：同樣是 ZIP 容器，但必要成員是 ``xl/workbook.xml``。"""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("xl/workbook.xml", "<workbook/>")
+    return buffer.getvalue()
+
+
 class TestAcceptedTypes:
     def test_pdf_is_detected_from_magic_bytes(self) -> None:
         assert detect_media_type(PDF_BYTES, filename="anything.bin") == "application/pdf"
@@ -57,6 +70,36 @@ class TestAcceptedTypes:
         任何二進位檔只要碰巧解得開 UTF-8 就會被當成文字。下面兩條測試守住那個邊界。
         """
         assert detect_media_type(TEXT_BYTES, filename="notes.txt") == "text/plain"
+
+
+class TestSpreadsheetsAndMarkdown:
+    """1B-4b 新增的兩種型別。"""
+
+    def test_xlsx_is_detected_by_looking_inside_the_zip(self) -> None:
+        """xlsx 與 docx 的前四個位元組相同，靠容器內的成員區分。
+
+        只驗 ZIP 魔術字就當成 xlsx 的話，一份 docx 會被送進試算表 loader——
+        失敗訊息會指向解析，而真正的錯誤發生在判定。
+        """
+        assert detect_media_type(_xlsx_bytes(), filename="x.zip") == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    def test_markdown_suffix_selects_the_markdown_loader(self) -> None:
+        assert detect_media_type(b"# title\n", filename="notes.md") == "text/markdown"
+
+    def test_same_bytes_without_the_suffix_stay_plain_text(self) -> None:
+        """同一份位元組換個副檔名就是純文字——這正是它必須看副檔名的原因。"""
+        assert detect_media_type(b"# title\n", filename="notes.txt") == "text/plain"
+
+    def test_markdown_suffix_does_not_smuggle_binaries(self) -> None:
+        """``.md`` 不會讓二進位內容過關——副檔名只在內容已是純文字之後才被看。
+
+        這條是本檔第一條規則（不信副檔名）在新型別上的延伸：Markdown 的例外只影響
+        「選哪個 loader」，不影響「收不收」。
+        """
+        with pytest.raises(UnsupportedMediaTypeError):
+            detect_media_type(b"MZ\x90\x00\x03\x00\x00\x00" + b"\x00" * 64, filename="evil.md")
 
 
 class TestRejectedContent:

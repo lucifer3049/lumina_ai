@@ -13,4 +13,9 @@ from __future__ import annotations
 
 PDF = "application/pdf"
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 TEXT = "text/plain"
+# Markdown 與純文字的位元組**無法區分**（它就是文字），因此上傳端以副檔名決定走哪個
+# loader——那是這個常數存在的唯一理由：兩者的結構抽取方式不同（見 08 §3 與
+# `services/knowledge/uploads.detect_media_type` 對這個例外的說明）。
+MARKDOWN = "text/markdown"

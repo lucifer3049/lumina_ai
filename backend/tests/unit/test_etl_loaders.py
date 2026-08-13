@@ -27,7 +27,9 @@ import zipfile
 import pytest
 
 from core.exceptions import ExtractionFailedError
+from core.media_types import MARKDOWN, XLSX
 from etl.extract import extract
+from etl.extract.loaders.xlsx import ROWS_PER_BLOCK
 from etl.extract.model import BlockType, ExtractedDoc
 from services.knowledge.uploads import DOCX, PDF, TEXT
 
@@ -99,6 +101,25 @@ def _pdf(
         pdf.showPage()
 
     pdf.save()
+    return buffer.getvalue()
+
+
+def _xlsx(sheets: dict[str, list[list[object]]]) -> bytes:
+    """產生 xlsx：工作表名 → 列資料（第一列視為表頭）。"""
+    import openpyxl
+
+    workbook = openpyxl.Workbook()
+    # 新活頁簿自帶一張空白工作表；留著它會多出一個空節。
+    default_sheet = workbook.active
+    if default_sheet is not None:
+        workbook.remove(default_sheet)
+    for title, rows in sheets.items():
+        sheet = workbook.create_sheet(title=title)
+        for row in rows:
+            sheet.append(row)
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
     return buffer.getvalue()
 
 
@@ -364,6 +385,129 @@ class TestDocx:
         doc = extract(content, media_type=DOCX)
 
         assert [block.text for block in doc.blocks] == ["有內容", "也有內容"]
+
+
+class TestXlsx:
+    """試算表（08 §3：每 sheet 一節、表頭隨列窗重複；1B-4b）。
+
+    試算表與文件的差別在於**它沒有敘事**：一張表就是一大片格子，沒有段落、沒有頁。
+    所以結構全靠兩件事撐住——工作表名（它就是這一節的標題）與表頭（它決定每一欄的
+    意義）。少了任一個，切出來的塊就是一串沒有歸屬的數字。
+    """
+
+    def test_each_sheet_becomes_a_section(self) -> None:
+        content = _xlsx({"營收": [["年", "金額"], ["2025", "100"]], "成本": [["年", "金額"]]})
+
+        doc = extract(content, media_type=XLSX)
+        headings = [block.text for block in doc.blocks if block.type is BlockType.HEADING]
+
+        assert headings == ["營收", "成本"]
+
+    def test_rows_become_a_table_block_under_the_sheet_heading(self) -> None:
+        content = _xlsx({"營收": [["年", "金額"], ["2025", "100"]]})
+
+        doc = extract(content, media_type=XLSX)
+        table = next(block for block in doc.blocks if block.type is BlockType.TABLE)
+
+        assert table.meta.heading_path == ("營收",)
+        assert table.text.splitlines()[0] == "| 年 | 金額 |"
+        assert "| 2025 | 100 |" in table.text
+
+    def test_large_sheet_is_split_into_windows_that_each_repeat_the_header(self) -> None:
+        """大表按列窗切開，**每一塊都自帶表頭**。
+
+        表頭只放在第一塊的話，第二塊之後的每一列都會失去欄位意義——而檢索命中的
+        往往正是後面那些塊（它們才是資料）。
+        """
+        rows: list[list[object]] = [["年", "金額"]]
+        rows += [[str(2000 + i), str(i)] for i in range(ROWS_PER_BLOCK + 5)]
+
+        doc = extract(_xlsx({"營收": rows}), media_type=XLSX)
+        tables = [block for block in doc.blocks if block.type is BlockType.TABLE]
+
+        assert len(tables) == 2
+        assert all(table.text.splitlines()[0] == "| 年 | 金額 |" for table in tables)
+        # 資料列不得因為切窗而遺失或重複。
+        data_lines = [
+            line
+            for table in tables
+            for line in table.text.splitlines()[2:]  # 跳過表頭與分隔列
+        ]
+        assert len(data_lines) == ROWS_PER_BLOCK + 5
+
+    def test_empty_sheets_are_skipped(self) -> None:
+        """完全空的工作表不產生任何 block——它是活頁簿的殘留，不是內容。"""
+        doc = extract(_xlsx({"有資料": [["a"], ["1"]], "空的": []}), media_type=XLSX)
+
+        assert [block.text for block in doc.blocks if block.type is BlockType.HEADING] == ["有資料"]
+
+    def test_sheet_count_is_reported_in_doc_meta(self) -> None:
+        doc = extract(_xlsx({"一": [["a"]], "二": [["b"]]}), media_type=XLSX)
+
+        assert doc.doc_meta["sheet_count"] == 2
+
+    def test_spreadsheets_have_no_page_numbers(self) -> None:
+        """試算表沒有頁——``page`` 必須是 None（同純文字的理由）。"""
+        doc = extract(_xlsx({"一": [["a"], ["1"]]}), media_type=XLSX)
+
+        assert all(block.meta.page is None for block in doc.blocks)
+
+
+class TestMarkdown:
+    """Markdown 來源（1B-4b）。
+
+    Markdown 是**唯一結構已經明說的文字來源**：標題就是標題，表格就是表格，不必
+    像 PDF 那樣猜。因此這裡的錯誤方式只有一種——把已經標好的結構弄丟。
+    """
+
+    def test_headings_build_the_heading_path(self) -> None:
+        content = "# 第一章\n\n## 第一節\n\n本節內容。\n".encode()
+
+        doc = extract(content, media_type=MARKDOWN)
+        body = next(block for block in doc.blocks if block.type is BlockType.PARAGRAPH)
+
+        assert body.meta.heading_path == ("第一章", "第一節")
+
+    def test_heading_text_excludes_the_hashes(self) -> None:
+        """``#`` 是標記不是內容——留著它，引用顯示與 heading_path 都會帶著井字號。"""
+        doc = extract(b"## Section title\n", media_type=MARKDOWN)
+
+        assert doc.blocks[0].text == "Section title"
+
+    def test_gfm_table_stays_a_table_block(self) -> None:
+        content = "| 項目 | 數值 |\n| --- | --- |\n| 延遲 | 300ms |\n".encode()
+
+        doc = extract(content, media_type=MARKDOWN)
+        table = next(block for block in doc.blocks if block.type is BlockType.TABLE)
+
+        assert "| 延遲 | 300ms |" in table.text
+
+    def test_fenced_code_becomes_a_code_block(self) -> None:
+        """程式碼要標成 CODE：1B-5 不該在函式中間切開，而切塊靠的是 block 型別。"""
+        content = b"```python\nprint('hi')\n```\n"
+
+        doc = extract(content, media_type=MARKDOWN)
+
+        assert [block.type for block in doc.blocks] == [BlockType.CODE]
+        assert "print('hi')" in doc.blocks[0].text
+
+    def test_a_list_stays_one_block(self) -> None:
+        """整份清單是一個 block。
+
+        逐項成塊的話，「以下三種情況適用：」與它的三個項目會被切散，而每一項單獨
+        看都不知道在說什麼。
+        """
+        content = "- 第一項\n- 第二項\n- 第三項\n".encode()
+
+        doc = extract(content, media_type=MARKDOWN)
+
+        assert len(doc.blocks) == 1
+        assert "第三項" in doc.blocks[0].text
+
+    def test_markdown_has_no_page_numbers(self) -> None:
+        doc = extract(b"just text\n", media_type=MARKDOWN)
+
+        assert doc.blocks[0].meta.page is None
 
 
 class TestUnsupportedAndBroken:

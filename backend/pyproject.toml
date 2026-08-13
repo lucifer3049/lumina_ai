@@ -41,6 +41,13 @@ dependencies = [
     # 08 §3 指名的 docx 解析。標題來自**樣式**而非啟發式，是三種 loader 中結構
     # 保真度最高的一種。
     "python-docx>=1.1",
+    # 08 §3 指名的 xlsx 解析（MIT）。read_only 模式是必要條件而不是最佳化：預設模式
+    # 會把整份活頁簿建成物件圖，十萬列的檔案吃掉數 GB，而那正是子行程記憶體上限
+    # 要擋的東西。
+    "openpyxl>=3.1",
+    # Markdown 解析（MIT）。不自己切行：setext 標題、fence 內的井字號、表格對齊列、
+    # 巢狀清單——每一項都是「看起來簡單、實際上是解析器」的陷阱。
+    "markdown-it-py>=3.0",
 ]
 
 [dependency-groups]
@@ -62,6 +69,10 @@ dev = [
     # 兩邊的偏差會互相抵銷——樣本寫錯什麼、解析就照樣讀回什麼，測試全綠而真實 PDF
     # 全錯。
     "reportlab>=4.2",
+    # openpyxl 沒有隨附型別。裝 typeshed 的 stub 而不是 ignore_missing_imports：
+    # 這個 loader 的錯誤模式正是「以為某個欄位一定有值」（`Workbook.active` 可以是
+    # None、公式格的快取值可以是 None），而那是型別檢查抓得到的一類。
+    "types-openpyxl>=3.1.5",
 ]
 # 註（1A-5）：原有一個 `loadtest` group（locust）。負載產生腳本隨 spike 面刪除
 # （它打的是 /api/v1/spike/*），依賴跟著移除——留著一個沒有任何檔案 import 的
