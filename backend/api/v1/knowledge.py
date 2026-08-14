@@ -185,6 +185,20 @@ async def get_document(
     return _document_out(await run_orm(_documents.get, principal.tenant_id, document_id))
 
 
+@router.post(
+    "/documents/{document_id}/reingest",
+    operation_id="documents_reingest",
+    # 202：ETL 是非同步的（09 §2.3）。回 200 會讓 client 以為重跑已經完成，而它
+    # 才剛進佇列——前端該做的是回去輪詢狀態，狀態碼就是那個提示。
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def reingest_document(
+    document_id: uuid.UUID,
+    principal: Annotated[Principal, Depends(RequireScope("knowledge:write"))],
+) -> DocumentOut:
+    return _document_out(await run_orm(_documents.reingest, principal.tenant_id, document_id))
+
+
 @router.delete(
     "/documents/{document_id}",
     operation_id="documents_delete",

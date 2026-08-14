@@ -237,9 +237,15 @@ dev: ## 開發伺服器：單 worker + 熱重載 + console log（前景，Ctrl-C
 # ETL worker（08 §1：專屬佇列與行程，不與 default/embedding 爭資源）。
 # 前景執行，Ctrl-C 停止；沒有它的話上傳的文件會停在 uploaded——訊息進了佇列但
 # 沒有人處理，而那在 API 側完全看不出來。
+# `python -m celery` 而不是 `celery`：主控台腳本的 sys.path[0] 是 bin 目錄，工作目錄
+# 不在路徑上，於是 worker 啟動時 `autodiscover_tasks(["worker"])` 會 ModuleNotFoundError
+# （而 `-A config.celery_app` 反而先過了，錯誤看起來像是 worker 套件不存在）。
+# `-m` 會把工作目錄放進 sys.path，與 smoke 的 worker fixture 走同一條路。
+WORKER_CMD = LOG_FORMAT=console $(UV_RUN) python -m celery -A config.celery_app worker \
+	--queues etl --concurrency $(ETL_CONCURRENCY) --loglevel info
+
 worker: ## 啟動 ETL worker（Celery，etl 佇列；需先 make up）
-	LOG_FORMAT=console $(UV_RUN) celery -A config.celery_app worker \
-		--queues etl --concurrency $(ETL_CONCURRENCY) --loglevel info
+	$(WORKER_CMD)
 
 # ── 一鍵啟停 ────────────────────────────────────────────────────
 # 實作在 scripts/dev.sh：背景行程要處理 process group、重導向與 pid 檔，寫成 make
@@ -255,6 +261,7 @@ worker: ## 啟動 ETL worker（Celery，etl 佇列；需先 make up）
 # 一個看不懂的 RuntimeError。
 DEV_SH = DEV_PORT=$(DEV_PORT) FE_PORT=$(FE_PORT) \
 	API_CMD='$(DEV_CMD)' FE_CMD='$(PNPM) run dev --port $(FE_PORT)' \
+	WORKER_CMD='$(WORKER_CMD)' \
 	bash scripts/dev.sh
 
 start: up migrate gen-jwt-keys ## 一鍵啟動：容器 + API + 前端（背景執行，log 在 .run/）

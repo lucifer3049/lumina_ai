@@ -3,10 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 08 |
-| 版本 | v1.0 |
-| 日期 | 2026-07-30 |
+| 版本 | v1.1 |
+| 日期 | 2026-08-14 |
 | 狀態 | Draft — 待審閱 |
 | 相依文件 | 04（ETL / Document 模組）、05（documents / chunks / etl_jobs 表）、06（Ingestion pipeline） |
+| 變更紀錄 | v1.1：§3 的 PDF 選型由 pymupdf 改為 **pdfplumber**（AGPL §13 對多租戶 SaaS 會實際觸發，選型時未評估；1B-4c 決策）；xlsx 與新增的 Markdown loader 自 2D 提前至 1B-4b（13 §3.3）；§3 補上「標題來源」欄與 Markdown 一列；§4 補上語言偵測的實作方式 |
 
 ---
 
@@ -38,9 +39,10 @@ stateDiagram-v2
 
 | 來源 | 函式庫/方式 | 要點 |
 |------|-------------|------|
-| PDF | pymupdf（文字層）+ 表格偵測；掃描頁 fallback OCR（可組態，預設關） | 保留頁碼/標題階層；混合文字+掃描逐頁判斷 |
-| Word (.docx) | python-docx | 標題階層 → heading blocks；表格 → table blocks |
-| Excel (.xlsx) | openpyxl | 每 sheet 一節；表格保留表頭；大表按列窗切塊（表頭重複附帶） |
+| PDF | **pdfplumber**（MIT；文字層 + `extract_tables`）；掃描頁 fallback OCR（可組態，預設關） | 保留頁碼/標題階層。**標題來源分兩層**：PDF 大綱（作者標記，可信）優先，無大綱才退回字級啟發式；`doc_meta.heading_source` 記下用了哪一種。無文字層視為失敗而非空文件 |
+| Word (.docx) | python-docx | 標題階層 → heading blocks；表格 → table blocks（GFM） |
+| Excel (.xlsx) | openpyxl（read_only + data_only） | 每 sheet 一節；表格保留表頭；大表按列窗切塊（表頭重複附帶，每塊 ≤ 50 列） |
+| Markdown | markdown-it-py（CommonMark + table） | 結構已明說，不需啟發式；block 文字取原始碼片段，清單與引用整段保留。上傳端以副檔名區分 Markdown 與純文字（位元組相同，見 10 §99 的例外說明） |
 | CSV | pandas（dtype 推斷關閉，全字串） | 同 Excel 表格處理；編碼偵測（utf-8/big5/cp950） |
 | JSON | 內建 | 依 KB 設定的 record path 展開為紀錄；每紀錄一 block |
 | API | 通用 HTTP connector | 認證（header/bearer/basic）、分頁遍歷、rate limit 禮貌延遲；回應 → JSON 流程 |
@@ -49,11 +51,13 @@ stateDiagram-v2
 
 統一產出 `ExtractedDoc`：`blocks[]`（type: paragraph/heading/table/code/caption、text、meta{page, heading_path, order}）+ `doc_meta`（語言、來源、抽取統計）。
 
+**Markdown 是序列化形式，不是中間格式**（1B-4 決策）：中間格式仍是 `ExtractedDoc`，`etl/extract/markdown.py` 只在餵給下游／LLM 時把 blocks 寫成 Markdown。純 Markdown 沒有頁碼，而 1D 的引用要指得出頁——兩者因此不能互相取代。表格的 GFM 由 loader 產出（只有它看得到儲存格邊界）。
+
 ## 4. Clean / Chunk（下游規格）
 
 已於 06_AI_Pipeline §2.1 定義，此處補充 ETL 側職責邊界：
 
-- Clean：頁首頁尾模式偵測（跨頁重複行）、亂碼比率過高的 block 丟棄並記 stats、語言偵測寫入 doc_meta。
+- Clean：頁首頁尾模式偵測（跨頁重複行；門檻以 **token** 而非字元計，且需跨 ≥3 頁）、亂碼比率過高的 block 丟棄並記 stats、語言偵測寫入 doc_meta。**語言偵測**用 py3langid（BSD、離線模型），但假名/諺文的字元證據排在模型之前（漢字為主的日文會被位元組 n-gram 判成中文）；信心 < 0.5 記為 `und` 而不採用模型首選——06 §3.4 的跨語言統計依這個欄位分組。
 - Chunk：策略由 KB config 決定；chunker 輸入是 `ExtractedDoc`（結構化），因此能做「標題邊界優先、表格不拆散」的結構感知切塊。
 - 產出統計落 `etl_jobs.stats`：頁數、block 數、丟棄率、chunk 數、平均 token——**丟棄率 > 20% 自動標警示**（品質防線，通知使用者檢查來源）。
 

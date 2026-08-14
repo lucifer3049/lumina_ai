@@ -14,10 +14,27 @@
 
 from __future__ import annotations
 
+import os
+
+import django
 from celery import Celery
 
-from config.settings.app_settings import get_app_settings
-from core.tasks import INGEST_DOCUMENT_TASK
+# **`django.setup()` 必須在 import 期完成**，理由與 `config/asgi.py` 相同：worker
+# 啟動時會 import task → service → repository → model，而 Django model 在 import
+# 當下就存取 app registry。放在 worker 的啟動 signal 裡太晚，症狀是
+# ``ImproperlyConfigured: Requested setting INSTALLED_APPS``。
+#
+# API 行程也會 import 本模組（送任務），那時 Django 已經設定好——重複呼叫是安全的。
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.dev")
+django.setup()
+
+from config.logging import configure_logging  # noqa: E402
+from config.settings.app_settings import get_app_settings  # noqa: E402
+from core.tasks import INGEST_DOCUMENT_TASK  # noqa: E402
+
+# worker 的日誌走與 API 同一條 pipeline（12 §1.1）。少了這行，task 內的 structlog
+# 事件會退回 stdlib 預設：純文字、沒有 tenant_id、WARNING 以下全部消失。
+configure_logging()
 
 _settings = get_app_settings()
 

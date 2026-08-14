@@ -28,6 +28,8 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from http import HTTPStatus
 from typing import Any
 
@@ -269,7 +271,7 @@ def create_app() -> FastAPI:
     那組東西連同旗標在本工作包整組刪除：租戶只有一個來源，就是已驗證的 JWT claim
     （``api/dependencies/auth.py``）。回歸守門在 ``tests/api/test_spike_removal.py``。
     """
-    app = FastAPI(title="Lumina AI Knowledge Platform", version="0.1.0")
+    app = FastAPI(title="Lumina AI Knowledge Platform", version="0.1.0", lifespan=_lifespan)
 
     app.add_middleware(RequestContextMiddleware)
 
@@ -431,20 +433,23 @@ def create_app() -> FastAPI:
     app.include_router(knowledge_router, prefix="/api/v1")
     _install_problem_schema(app)
 
-    @app.on_event("startup")
-    async def _warm_up_external_clients() -> None:
-        """在**背景**預熱外部 client（物件儲存、Celery broker）。
-
-        兩者的第一次使用都很貴（boto3 建 client 要載入數百個描述檔；Celery 要 import
-        整個套件並連上 broker），而那筆成本原本會落在重啟後的第一個上傳請求上——
-        症狀是「偶爾有一次上傳非常慢」，只在剛部署完出現，看起來像儲存或網路的問題。
-
-        用背景執行緒而不是 await：預熱不該擋住服務就緒（healthcheck、讀取路徑都不需要
-        它）。失敗只記 log——這裡沒有任何東西是啟動的必要條件。
-        """
-        threading.Thread(target=_warm_up_clients, name="warm-up", daemon=True).start()
-
     return app
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """啟動時在**背景**預熱外部 client（物件儲存、Celery broker）。
+
+    兩者的第一次使用都很貴（boto3 建 client 要載入數百個描述檔，在 WSL2 掛載磁碟上
+    實測 15.6 秒；Celery 要 import 整個套件並連上 broker），而那筆成本原本會落在重啟
+    後的第一個上傳請求上——症狀是「偶爾有一次上傳非常慢」，只在剛部署完出現，看起來
+    像儲存或網路的問題。
+
+    用背景執行緒而不是 await：預熱不該擋住服務就緒（healthcheck 與讀取路徑都不需要
+    它）。失敗只記 log——這裡沒有任何東西是啟動的必要條件。
+    """
+    threading.Thread(target=_warm_up_clients, name="warm-up", daemon=True).start()
+    yield
 
 
 def _warm_up_clients() -> None:

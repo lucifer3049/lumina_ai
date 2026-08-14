@@ -109,6 +109,16 @@ class TestStandardFields:
             json.loads(out.splitlines()[0])
 
 
+def _makefile_variable(makefile: str, name: str) -> str:
+    """取 Makefile 變數的定義（含以反斜線續行的部分）。
+
+    以空行為界：本 repo 的變數定義都是一段連續的行，後面接空行。用 ``\\n\\n`` 切，
+    比逐行解析續行符簡單，且定義中間多一個空行時會立刻被測試發現（而不是靜默截斷）。
+    """
+    body = makefile.split(f"\n{name} =", 1)[1]
+    return body[: body.index("\n\n")]
+
+
 class TestUvicornLogConfig:
     """uvicorn 的 logger 也必須流進同一條 pipeline。
 
@@ -135,9 +145,14 @@ class TestUvicornLogConfig:
         裡的，所以這裡只在有引用時才展開。
         """
         recipe = makefile.split(f"\n{target}:", 1)[1].split("\n\n", 1)[0]
-        if "$(API_ARGS)" in recipe:
-            api_args = makefile.split("\nAPI_ARGS =", 1)[1]
-            recipe = recipe.replace("$(API_ARGS)", api_args[: api_args.index("\n\n")])
+        # 變數展開一層。``dev`` 的指令在 1B-6 之前直接寫在 recipe 裡，之後搬進
+        # ``DEV_CMD``（`make start` 的背景啟動要用同一份）——只讀 recipe 的話，
+        # 這裡看到的是字面上的 ``$(DEV_CMD)``，於是「dev 帶了 --reload 嗎」這類
+        # 斷言會在指令完全正確的情況下紅燈。
+        for variable in ("API_ARGS", "DEV_CMD"):
+            token = f"$({variable})"
+            if token in recipe:
+                recipe = recipe.replace(token, _makefile_variable(makefile, variable))
         return recipe
 
     @pytest.mark.parametrize("target", ["api", "api-pinned", "dev"])

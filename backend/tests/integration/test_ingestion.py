@@ -23,7 +23,7 @@ import uuid
 import pytest
 
 from apps.knowledge.models import Chunk, Document, EtlJob
-from core.exceptions import NotFoundError
+from core.exceptions import ConflictError, NotFoundError
 from services.knowledge.documents import DocumentService
 from services.knowledge.ingestion import IngestionService
 from tests.conftest import TENANT_A, TENANT_B
@@ -220,3 +220,82 @@ class TestTenantIsolation:
 
         with pytest.raises(NotFoundError):
             IngestionService().ingest(TENANT_B, document_id)
+
+
+class TestReingest:
+    """重新處理（08 §2 的 ``ready → parsing``、doc_version+1；09 §2.3 的端點）。"""
+
+    def test_version_is_incremented_and_old_chunks_are_superseded(self, tenants: None) -> None:
+        """舊 chunk **標記**而不是刪除。
+
+        新版本的 embedding 還沒好，這段期間檢索仍要服務得了查詢；刪掉的話重跑的那
+        幾分鐘這份文件會完全查不到，而使用者的感受是「東西不見了」。
+        """
+        document_id = _upload(TENANT_A)
+        IngestionService().ingest(TENANT_A, document_id)
+        with tenant_scope(TENANT_A):
+            first_ids = set(
+                Chunk.objects.filter(document_id=document_id).values_list("id", flat=True)
+            )
+
+        DocumentService().reingest(TENANT_A, document_id)
+
+        with tenant_scope(TENANT_A):
+            document = Document.objects.get(id=document_id)
+            old = list(Chunk.objects.filter(id__in=first_ids))
+        assert document.doc_version == 2
+        assert document.status == "uploaded"
+        assert old and all(chunk.superseded for chunk in old)
+
+    def test_the_new_version_produces_a_fresh_set_of_chunks(self, tenants: None) -> None:
+        """新版本的 chunk 與舊版共存（舊的已 superseded），且冪等鍵指向新版本。"""
+        document_id = _upload(TENANT_A)
+        service = IngestionService()
+        service.ingest(TENANT_A, document_id)
+
+        DocumentService().reingest(TENANT_A, document_id)
+        service.ingest(TENANT_A, document_id)
+
+        # QuerySet 是惰性的：在 ``tenant_scope`` 外才執行的話，RLS 的交易區域參數
+        # 已經消失，查詢會回空集合而不是報錯（本測試第一版正是如此）。
+        with tenant_scope(TENANT_A):
+            active = list(Chunk.objects.filter(document_id=document_id, superseded=False))
+            job_count = EtlJob.objects.filter(document_id=document_id, doc_version=2).count()
+        assert active
+        assert all(chunk.doc_version == 2 for chunk in active)
+        assert job_count == 3
+
+    def test_a_document_in_progress_cannot_be_reingested(self, tenants: None) -> None:
+        """處理中重跑 → 409。
+
+        兩個 job 同時寫同一份文件時，先寫完的那個會被另一個的「先刪同版本殘留」清掉
+        ——結果是隨機少一半內容，而兩邊都不會報錯。
+        """
+        document_id = _upload(TENANT_A)
+        with tenant_scope(TENANT_A):
+            Document.objects.filter(id=document_id).update(status="parsing")
+
+        with pytest.raises(ConflictError):
+            DocumentService().reingest(TENANT_A, document_id)
+
+
+class TestRetriesExhausted:
+    def test_the_document_records_a_retryable_failure(self, tenants: None) -> None:
+        """重試耗盡要落在 DB，而不是只留在 worker 的 log 裡（08 §6 的 DLQ 內容）。
+
+        ``retryable=True`` 與毒檔的 ``False`` 分得開：前者要修環境後重跑，後者重跑
+        幾次都一樣。混成同一個狀態時，維運面對一排 failed 文件無從判斷該修什麼。
+        """
+        document_id = _upload(TENANT_A)
+
+        IngestionService().mark_retries_exhausted(
+            TENANT_A, document_id, OSError("物件儲存連不上"), attempts=3
+        )
+
+        with tenant_scope(TENANT_A):
+            document = Document.objects.get(id=document_id)
+        assert document.status == "failed"
+        assert document.error is not None
+        assert document.error["retryable"] is True
+        assert document.error["attempts"] == 3
+        assert document.error["stage"] == "extract"

@@ -1,6 +1,6 @@
-"""DocumentService —— 文件的上傳、讀取與刪除（09 §2.3、§3.1）。
+"""DocumentService —— 文件的上傳、讀取、重跑與刪除（09 §2.3、§3.1）。
 
-大檔（>32MB）的 presigned 分塊直傳與 ETL 重跑（reingest）屬後續工作包。
+大檔（>32MB）的 presigned 分塊直傳屬後續工作包。
 
 交易邊界與回傳型別的規則同 `knowledge_bases.py`，不重述。
 
@@ -22,10 +22,17 @@ from core.object_storage import build_document_key, delete_object, put_object
 from core.tasks import enqueue_ingestion
 from core.tenant import tenant_context
 from core.uow import unit_of_work
-from repositories.knowledge import DocumentRepository, KnowledgeBaseRepository
+from repositories.knowledge import (
+    ChunkRepository,
+    DocumentRepository,
+    KnowledgeBaseRepository,
+)
 from services.knowledge.uploads import detect_media_type, ensure_within_limit, sha256_of
 
 logger = get_logger(__name__)
+
+# ETL 進行中的狀態（08 §2）。這幾個狀態下重跑會讓兩個 job 寫同一份文件。
+_IN_PROGRESS_STATUSES = {"parsing", "embedding"}
 
 
 @dataclass(frozen=True)
@@ -56,9 +63,11 @@ class DocumentService:
         *,
         documents: DocumentRepository | None = None,
         knowledge_bases: KnowledgeBaseRepository | None = None,
+        chunks: ChunkRepository | None = None,
     ) -> None:
         self._documents = documents or DocumentRepository()
         self._knowledge_bases = knowledge_bases or KnowledgeBaseRepository()
+        self._chunks = chunks or ChunkRepository()
 
     def list_for_kb(self, tenant_id: uuid.UUID, kb_id: uuid.UUID) -> list[DocumentView]:
         with tenant_context(tenant_id), unit_of_work():
@@ -145,6 +154,33 @@ class DocumentService:
     def get(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> DocumentView:
         with tenant_context(tenant_id), unit_of_work():
             return self._view(self._require(document_id))
+
+    def reingest(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> DocumentView:
+        """重新處理（09 §2.3 的 ``POST /documents/{id}/reingest``，回 202）。
+
+        三件事在同一個交易裡（08 §2 的 ``ready → parsing``、``doc_version+1``）：
+
+        1. **舊 chunk 標 superseded**——不是刪除。新版本的 embedding 還沒好，這段期間
+           檢索仍要服務得了查詢；刪掉的話重跑的那幾分鐘這份文件會完全查不到。
+        2. **doc_version +1**——它是冪等鍵的一部分（08 §6）。不遞增的話，新一輪會查到
+           上一版**已成功**的 job 而跳過每個階段，文件停在舊內容、狀態卻是完成。
+        3. **狀態回 ``uploaded`` 並清掉 error**——重跑的起點與第一次上傳完全相同。
+
+        處理中的文件不得重跑：那會讓兩個 job 寫同一份文件的 chunk，而先寫完的那個
+        會被另一個的「先刪同版本殘留」清掉——結果是隨機少一半內容。
+        """
+        with tenant_context(tenant_id), unit_of_work():
+            document = self._require(document_id)
+            if document.status in _IN_PROGRESS_STATUSES:
+                raise ConflictError("文件正在處理中，請等它結束再重跑")
+            next_version = int(document.doc_version) + 1
+            self._chunks.supersede_for_document(document_id)
+            self._documents.start_new_version(document_id, doc_version=next_version)
+            refreshed = self._require(document_id)
+            view = self._view(refreshed)
+
+        enqueue_ingestion(tenant_id=tenant_id, document_id=document_id)
+        return view
 
     def delete(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> None:
         """軟刪除（05 §5.4）。chunk 與 embedding 的硬刪由清理 worker 負責。"""

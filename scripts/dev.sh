@@ -39,6 +39,9 @@ FE_PORT="${FE_PORT:-5173}"
 # 啟動指令一律由 Makefile 傳入（單一來源）；直接執行本腳本沒有意義。
 API_CMD="${API_CMD:?請經 make start 呼叫（API_CMD 未設定）}"
 FE_CMD="${FE_CMD:?請經 make start 呼叫（FE_CMD 未設定）}"
+# ETL worker（1B-6）。沒有它的話上傳的文件會停在 uploaded——訊息進了佇列卻沒有人
+# 處理，而 API 側完全看不出來（回應是 201，狀態欄看起來只是「還在處理」）。
+WORKER_CMD="${WORKER_CMD:?請經 make start 呼叫（WORKER_CMD 未設定）}"
 
 pid_file() { echo "${RUN_DIR}/$1.pid"; }
 log_file() { echo "${RUN_DIR}/$1.log"; }
@@ -80,9 +83,13 @@ start_one() {
   rm -f "${file}"
 
   # 子行程自己寫 pid：setsid 可能 fork，外層的 $! 不保證是 session leader。
+  #
+  # `9>&-` 關掉繼承來的鎖 fd（1B-6 發現）。flock 綁的是 open file description，而
+  # fd 會被子行程繼承——服務跑起來之後那個 description 永遠有人持有，於是**下一次
+  # `make stop` 會永遠卡在 acquire_lock**，症狀是指令沒有輸出也不結束。
   setsid bash -c 'echo $$ > "$1"; cd "$2"; eval "$3"' _ \
     "${file}" "${REPO_ROOT}" "${command}" \
-    > "$(log_file "${name}")" 2>&1 < /dev/null &
+    > "$(log_file "${name}")" 2>&1 < /dev/null 9>&- &
 
   # 等 pid 檔落地再回傳：否則 start 後立刻 stop/status 會看不到行程，留下孤兒。
   for _ in {1..50}; do
@@ -139,6 +146,20 @@ wait_for() {
   return 1
 }
 
+wait_alive() {
+  # 給服務幾秒鐘暴露啟動期的失敗（import 錯誤、連不上 broker），再確認它還在。
+  # 沒有這段的話，「起來後兩秒就死」與「正常執行」在 start 的輸出裡完全一樣。
+  local name="$1"
+  sleep 3
+  if is_running "${name}"; then
+    echo "${name} 就緒"
+    return 0
+  fi
+  echo "${name} 啟動失敗，$(log_file "${name}") 最後 20 行：" >&2
+  tail -20 "$(log_file "${name}")" >&2 || true
+  return 1
+}
+
 mkdir -p "${RUN_DIR}"
 
 case "${1:-}" in
@@ -151,8 +172,12 @@ case "${1:-}" in
     export VITE_DEV_API_TARGET="${VITE_DEV_API_TARGET:-http://127.0.0.1:${API_PORT}}"
     start_one api "${API_CMD}"
     start_one frontend "${FE_CMD}"
+    start_one worker "${WORKER_CMD}"
     wait_for api "http://127.0.0.1:${API_PORT}/openapi.json"
     wait_for frontend "http://127.0.0.1:${FE_PORT}/"
+    # worker 沒有埠可以探測，改驗「起來之後還活著」：缺 .env、broker 連不上這類
+    # 失敗會讓它在數秒內退出，而 pid 檔照樣建得起來。
+    wait_alive worker
     cat <<EOF
 
   前端      http://127.0.0.1:${FE_PORT}
@@ -165,9 +190,10 @@ EOF
     acquire_lock
     stop_one api
     stop_one frontend
+    stop_one worker
     ;;
   status)
-    for name in api frontend; do
+    for name in api frontend worker; do
       if is_running "${name}"; then
         echo "${name}     執行中（pid $(cat "$(pid_file "${name}")")）"
       else
@@ -176,8 +202,8 @@ EOF
     done
     ;;
   logs)
-    touch "$(log_file api)" "$(log_file frontend)"
-    tail -f "$(log_file api)" "$(log_file frontend)"
+    touch "$(log_file api)" "$(log_file frontend)" "$(log_file worker)"
+    tail -f "$(log_file api)" "$(log_file frontend)" "$(log_file worker)"
     ;;
   *)
     echo "用法：$0 {start|stop|status|logs}" >&2

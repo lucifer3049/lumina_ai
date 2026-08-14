@@ -36,6 +36,7 @@ SLUG_A = "tenant-a"
 ALLOWED = 200
 CREATED = 201
 NO_CONTENT = 204
+ACCEPTED = 202
 FORBIDDEN = 403
 
 # 上傳那一列的 body 不是 JSON。用一個哨兵值標記，由 test_permission_matrix 轉成
@@ -99,6 +100,14 @@ PERMISSION_MATRIX = [
         "/api/v1/documents/{doc}",
         None,
         {"owner": ALLOWED, "admin": ALLOWED, "editor": ALLOWED, "viewer": ALLOWED},
+    ),
+    # 重跑 ETL 是 knowledge:write，與上傳同級：它改的是同一份文件的內容表示
+    # （doc_version+1、舊 chunk superseded），而不是設定或權限。
+    (
+        "POST",
+        "/api/v1/documents/{doc}/reingest",
+        None,
+        {"owner": ACCEPTED, "admin": ACCEPTED, "editor": ACCEPTED, "viewer": FORBIDDEN},
     ),
     # 刪文件是 knowledge:write（Editor 的日常工作），不是 admin：文件進出是編輯者
     # 的職責，而它的破壞範圍限於單一文件、且是軟刪除（30 天內可救）。

@@ -148,6 +148,18 @@ class DocumentRepository(SoftDeletableRepository[Document]):
             source_type=source_type,
         )
 
+    def start_new_version(self, document_id: uuid.UUID, *, doc_version: int) -> int:
+        """re-ingest：版本 +1 並回到起點（08 §2 的 ``ready → parsing`` 那條邊）。
+
+        版本、狀態、error 一起寫：分開寫的話，中途失敗會留下「版本已經 +1 但狀態還是
+        ready」的列——下一次重跑的冪等鍵指向新版本，於是舊 chunk 永遠不會被取代。
+        """
+        return (
+            self.get_queryset()
+            .filter(id=document_id)
+            .update(doc_version=doc_version, status="uploaded", error=None)
+        )
+
     def set_status(
         self, document_id: uuid.UUID, *, status: str, error: dict[str, object] | None = None
     ) -> int:
@@ -187,6 +199,19 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
         superseded——受害租戶的檢索會突然回空集合，而沒有任何錯誤訊息。
         """
         return self.get_queryset().filter(id__in=list(chunk_ids)).update(superseded=True)
+
+    def supersede_for_document(self, document_id: uuid.UUID) -> int:
+        """把一份文件目前所有未 superseded 的 chunk 標成舊版（re-ingest 用）。
+
+        **標記而不是刪除**（05 §3.2）：新版本的 embedding 還沒好，這段期間檢索仍要
+        服務得了查詢。刪掉的話，重跑進行中的那幾分鐘裡這份文件會完全查不到，而使用者
+        的感受是「東西不見了」。舊列由清理 job 在重嵌入完成後硬刪。
+        """
+        return (
+            self.get_queryset()
+            .filter(document_id=document_id, superseded=False)
+            .update(superseded=True)
+        )
 
     def replace_for_version(
         self,

@@ -35,20 +35,29 @@ _MAX_RETRIES = len(_RETRY_BACKOFF_SECONDS)
 )
 def ingest_document(self: Any, tenant_id: str, document_id: str) -> dict[str, Any]:
     """把一份文件跑完 Extract → Clean → Chunk。"""
+    service = IngestionService()
     try:
-        result = IngestionService().ingest(uuid.UUID(tenant_id), uuid.UUID(document_id))
+        result = service.ingest(uuid.UUID(tenant_id), uuid.UUID(document_id))
     except Exception as exc:
+        attempts = self.request.retries + 1
+        if attempts > _MAX_RETRIES:
+            # **重試耗盡的落點**（08 §6 的 DLQ）。不寫下來的話，這次失敗只存在於
+            # worker 的 log 裡：文件會永遠停在 parsing，而使用者與維運都沒有東西可看。
+            # 標成 failed 且 ``retryable=True``——與毒檔（False）分得開，因為處置不同：
+            # 這種要修環境後重跑，那種重跑幾次都一樣。
+            service.mark_retries_exhausted(
+                uuid.UUID(tenant_id), uuid.UUID(document_id), exc, attempts=attempts
+            )
+            raise
+
         countdown = _RETRY_BACKOFF_SECONDS[min(self.request.retries, _MAX_RETRIES - 1)]
         logger.warning(
             "ingestion_task_retrying",
             document_id=document_id,
-            attempt=self.request.retries + 1,
+            attempt=attempts,
             countdown=countdown,
             exc_info=True,
         )
-        # 重試耗盡時 Celery 讓原例外冒出去 → 任務落 DLQ（08 §6）。文件的狀態由
-        # 下一次人工重跑或清理流程處理：這裡不強制標 failed，因為「暫時性錯誤重試
-        # 用完」與「這份文件壞了」是不同的事，混成同一個狀態會讓重跑的判斷失去依據。
         raise self.retry(exc=exc, countdown=countdown) from exc
 
     return {

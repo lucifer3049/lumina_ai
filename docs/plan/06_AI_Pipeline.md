@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 06 |
-| 版本 | v1.2 |
-| 日期 | 2026-08-11 |
+| 版本 | v1.3 |
+| 日期 | 2026-08-14 |
 | 狀態 | Draft — 待審閱 |
 | 相依文件 | 01（ADR-003/004）、04（RAG / Embedding / Memory / Gateway 模組）、05（chunks / embeddings 表） |
-| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08）。v1.2：新增 §3.5 Prompt Engineering 策略分級表；§4 增補 reasoning 模式與 structured output 的介面預留 |
+| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08）。v1.2：新增 §3.5 Prompt Engineering 策略分級表；§4 增補 reasoning 模式與 structured output 的介面預留。v1.3：§2.1 的 Clean / Chunk 兩列補上 1B-5 的實作定案（語言偵測方式、正規化邊界、不可切塊型別、token 計數注入） |
 
 ---
 
@@ -44,8 +44,8 @@ flowchart LR
 | 階段 | 要點 |
 |------|------|
 | Extract | loader 依 MIME 分派（詳見 08_ETL）；產出統一中間格式 `ExtractedDoc`（blocks：paragraph / table / heading / image-caption，含頁碼與座標 meta） |
-| Clean | 頁首頁尾去除、亂碼修復、空白正規化、語言偵測（寫入 meta，供檢索與 embedding 模型選擇）；PII 偵測僅標記不改寫（masking 政策見 10_安全設計） |
-| Chunk | 預設 `recursive`（結構感知：標題邊界優先，target 512 tokens、overlap 64）；表格走 `table-aware`（表格不切散、附表頭上下文）；KB 可選 `semantic`（embedding 相似度斷點，成本高、選配） |
+| Clean | 頁首頁尾去除、亂碼 block 丟棄、空白正規化（**只動空白與零寬字元**——改寫用字會讓 1D 的引用對不回原文）、語言偵測（py3langid + 書寫系統前置判定，信心不足記 `und`；寫入 meta，供檢索與 embedding 模型選擇）；PII 偵測僅標記不改寫（masking 政策見 10_安全設計）。丟棄率 > 20% 記 `quality_warning`（08 §4） |
+| Chunk | 預設 `recursive`（結構感知：標題邊界優先，target 512 tokens、overlap 64；重疊不跨標題）；表格與程式碼**整塊不切**（附表頭上下文）；chunk 文字為 Markdown，meta 保留 page 與 heading_path。token 計數可注入——真正的切詞由模型決定，而模型屬 AI Gateway（1C）；KB 可選 `semantic`（embedding 相似度斷點，成本高、選配） |
 | Embed | batch=64 併發受控；embedding cache（`sha256(content)+model` → vector，Redis + DB 雙層）重複內容零成本；單 chunk 失敗不阻斷整批（記錄後重試） |
 
 ### 2.2 重嵌入（Embedding 版本升級）

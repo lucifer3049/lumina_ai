@@ -108,6 +108,51 @@ class IngestionService:
             # 永久失敗（毒檔、壞檔、逾時）——重試只是把同一個錯誤做三遍。
             return self._fail_permanently(tenant_id, target, exc)
 
+    def mark_retries_exhausted(
+        self, tenant_id: uuid.UUID, document_id: uuid.UUID, exc: Exception, *, attempts: int
+    ) -> None:
+        """重試耗盡 → 文件標 failed 並留下結構化原因（08 §6 的 DLQ 內容）。
+
+        **與永久失敗刻意分成兩種紀錄**：``retryable=True`` 表示「這個錯誤本來是可以
+        重試的，只是試完了」——那通常是基礎設施問題（物件儲存、DB、broker），處置是
+        修環境後重跑；``retryable=False`` 是毒檔，重跑幾次都一樣。混成同一個狀態的話，
+        維運面對一排 failed 文件時無從判斷該修什麼。
+
+        Notification（通知使用者）屬 2A：這裡先把事實寫進 DB，那是通知的資料來源。
+        """
+        error = {
+            "stage": self._last_running_stage(tenant_id, document_id),
+            **_error_payload(exc),
+            "retryable": True,
+            "attempts": attempts,
+        }
+        with tenant_context(tenant_id), unit_of_work():
+            self._documents.set_status(document_id, status=STATUS_FAILED, error=error)
+        logger.error(
+            "ingestion_retries_exhausted",
+            document_id=str(document_id),
+            attempts=attempts,
+            cause=error["cause"],
+        )
+
+    def _last_running_stage(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str:
+        """最後一個沒有成功的階段。
+
+        重試耗盡時例外已經被 Celery 包過幾層，從它反推階段並不可靠；job 列才是
+        事實來源（08 §6 要求 DLQ 內容含 stage）。
+        """
+        with tenant_context(tenant_id), unit_of_work():
+            document = self._documents.get_by_id(document_id)
+            if document is None:
+                return STAGE_EXTRACT
+            for stage in (STAGE_EXTRACT, STAGE_CLEAN, STAGE_CHUNK):
+                job = self._jobs.find(
+                    doc_id=document_id, doc_version=document.doc_version, stage=stage
+                )
+                if job is None or job.status != _JOB_SUCCEEDED:
+                    return stage
+        return STAGE_CHUNK
+
     # ── 編排 ────────────────────────────────────────────────
 
     def _run(self, tenant_id: uuid.UUID, target: _Target) -> IngestionResult:
