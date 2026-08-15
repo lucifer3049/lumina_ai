@@ -24,6 +24,7 @@ import pytest
 
 from apps.knowledge.models import Chunk, Document, EtlJob
 from core.exceptions import ConflictError, NotFoundError
+from core.object_storage import delete_object
 from services.knowledge.documents import DocumentService
 from services.knowledge.ingestion import IngestionService
 from tests.conftest import TENANT_A, TENANT_B
@@ -57,6 +58,12 @@ def tenants() -> None:
     for tenant_id, name in ((TENANT_A, "a"), (TENANT_B, "b")):
         with tenant_scope(tenant_id):
             make_tenant(id=tenant_id, slug=f"tenant-{name}")
+
+
+def delete_object_as(tenant_id: uuid.UUID, storage_key: str) -> None:
+    """在租戶 context 下刪掉物件——模擬「DB 說有、儲存說沒有」。"""
+    with tenant_scope(tenant_id):
+        delete_object(storage_key)
 
 
 def _upload(
@@ -299,3 +306,50 @@ class TestRetriesExhausted:
         assert document.error["retryable"] is True
         assert document.error["attempts"] == 3
         assert document.error["stage"] == "extract"
+
+
+class TestFailureClassification:
+    """哪些錯誤該重試——判錯的代價是「同一個結論做四遍」或「該重試的被當成壞檔」。"""
+
+    def test_a_missing_object_is_permanent(self, tenants: None) -> None:
+        """DB 說有、物件儲存說沒有 → 永久失敗。
+
+        物件不會自己回來。重試三次只是把同一個結論拖慢六分鐘，而 DLQ 還會標成
+        ``retryable=True``——維運會去查一個不存在的環境問題。
+        """
+        document_id = _upload(TENANT_A)
+        with tenant_scope(TENANT_A):
+            storage_key = Document.objects.get(id=document_id).storage_key
+        delete_object_as(TENANT_A, storage_key)
+
+        result = IngestionService().ingest(TENANT_A, document_id)
+
+        with tenant_scope(TENANT_A):
+            document = Document.objects.get(id=document_id)
+        assert result.status == "failed"
+        assert document.error is not None
+        assert document.error["retryable"] is False
+        assert document.error["cause"] == "ObjectNotFoundError"
+
+    def test_infrastructure_errors_do_not_leak_their_message(self, tenants: None) -> None:
+        """第三方例外的訊息不進 ``document.error``（鐵則 9）。
+
+        這份 dict 會經 `DocumentOut.error` 回到租戶手上，而 botocore 的訊息夾 endpoint
+        與 bucket 名稱、psycopg 夾表名與 SQL 片段。對使用者沒有意義，對想摸清架構的
+        人卻很有意義。型別名（``cause``）留著——分類要用，而它不洩漏內容。
+        """
+        document_id = _upload(TENANT_A)
+
+        IngestionService().mark_retries_exhausted(
+            TENANT_A,
+            document_id,
+            OSError("Could not connect to endpoint http://minio.internal:9000 bucket=lumina"),
+            attempts=3,
+        )
+
+        with tenant_scope(TENANT_A):
+            document = Document.objects.get(id=document_id)
+        assert document.error is not None
+        assert document.error["cause"] == "OSError"
+        assert "minio.internal" not in document.error["message"]
+        assert "bucket" not in document.error["message"]

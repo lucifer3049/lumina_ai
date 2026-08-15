@@ -30,6 +30,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import cache
 from http import HTTPStatus
 from typing import Any
 
@@ -452,6 +453,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
+@cache
 def _warm_up_clients() -> None:
+    """預熱**一個行程只做一次**。
+
+    `@cache` 在這裡不是省時間，是防數量：測試會反覆建立 app（每個 api 測試一次），
+    沒有它的話每建一次就多一條 warm-up 執行緒與一條 broker 連線。
+    """
     warm_up_object_storage()
     warm_up_tasks()

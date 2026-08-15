@@ -25,7 +25,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from config.logging import get_logger
-from core.exceptions import DomainError, ExtractionFailedError, NotFoundError
+from core.exceptions import (
+    DomainError,
+    ExtractionFailedError,
+    NotFoundError,
+    ObjectNotFoundError,
+)
 from core.object_storage import get_object, put_object
 from core.tenant import tenant_context
 from core.uow import unit_of_work
@@ -53,6 +58,17 @@ STATUS_FAILED = "failed"
 
 _JOB_SUCCEEDED = "succeeded"
 _JOB_FAILED = "failed"
+
+# 非自家例外對外顯示的固定訊息（見 `_error_payload`）。
+_INTERNAL_FAILURE_MESSAGE = "處理失敗，請稍後重試或聯絡管理員"
+
+# **永久失敗**的例外型別：重試不會有不同結果。
+#
+# - `ExtractionFailedError`：毒檔、壞檔、逾時、不支援的型別。
+# - `ObjectNotFoundError`：DB 說有、物件儲存說沒有。物件不會自己回來，重試三次只是
+#   把同一個結論拖慢六分鐘，而 DLQ 裡還會標成 ``retryable=True``——那會誤導維運去
+#   查一個不存在的環境問題。
+_PERMANENT_FAILURES = (ExtractionFailedError, ObjectNotFoundError)
 
 
 @dataclass(frozen=True)
@@ -104,8 +120,9 @@ class IngestionService:
 
         try:
             return self._run(tenant_id, target)
-        except ExtractionFailedError as exc:
-            # 永久失敗（毒檔、壞檔、逾時）——重試只是把同一個錯誤做三遍。
+        except _PERMANENT_FAILURES as exc:
+            # 重試不會有不同結果（見 `_PERMANENT_FAILURES`）——記錄後正常回傳，
+            # 讓 Celery 不要把一個確定的結論做四遍。
             return self._fail_permanently(tenant_id, target, exc)
 
     def mark_retries_exhausted(
@@ -342,7 +359,7 @@ class IngestionService:
             self._jobs.finish(job_id, status=_JOB_FAILED, error=_error_payload(exc))
 
     def _fail_permanently(
-        self, tenant_id: uuid.UUID, target: _Target, exc: ExtractionFailedError
+        self, tenant_id: uuid.UUID, target: _Target, exc: DomainError
     ) -> IngestionResult:
         stage = self._failing_stage(tenant_id, target)
         error = {"stage": stage, **_error_payload(exc), "retryable": False}
@@ -381,12 +398,15 @@ def _error_payload(exc: Exception) -> dict[str, Any]:
 
     ``cause`` 給程式看（重試判定、統計），``message`` 給人看。只寫訊息的話，維運
     看到的是一堆措辭不同的字串，分不出毒檔與我們的 bug。
+
+    **只有自家例外的訊息會被寫進去**（鐵則 9）。這份 dict 會經 `DocumentOut.error`
+    回到租戶手上，而第三方例外的字串常帶內部細節——botocore 會夾 endpoint 與 bucket
+    名稱、psycopg 會夾表名與 SQL 片段。那些對使用者沒有意義，對想摸清架構的人卻很有
+    意義。完整訊息只進 log（worker 那一層已經帶 ``exc_info``）。
     """
-    cause = exc.details.get("cause") if isinstance(exc, DomainError) else None
-    return {
-        "cause": str(cause or type(exc).__name__),
-        "message": str(exc),
-    }
+    if isinstance(exc, DomainError):
+        return {"cause": str(exc.details.get("cause") or type(exc).__name__), "message": str(exc)}
+    return {"cause": type(exc).__name__, "message": _INTERNAL_FAILURE_MESSAGE}
 
 
 def _chunk_config_from(config: dict[str, Any]) -> ChunkConfig:

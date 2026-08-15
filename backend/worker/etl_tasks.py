@@ -16,6 +16,7 @@ from typing import Any
 from celery import shared_task
 
 from config.logging import get_logger
+from core.exceptions import NotFoundError
 from core.tasks import INGEST_DOCUMENT_TASK
 from services.knowledge.ingestion import IngestionService
 
@@ -38,6 +39,12 @@ def ingest_document(self: Any, tenant_id: str, document_id: str) -> dict[str, An
     service = IngestionService()
     try:
         result = service.ingest(uuid.UUID(tenant_id), uuid.UUID(document_id))
+    except NotFoundError:
+        # 文件不見了（使用者在排隊期間刪掉，或任務參數有誤）。**不重試**：兩種情況
+        # 重跑四次的結果都一樣，而那會在 DLQ 留下一筆看起來像故障的紀錄——刪除是
+        # 正常操作，不該長得像事故。
+        logger.info("ingestion_task_document_missing", document_id=document_id)
+        return {"document_id": document_id, "status": "missing", "chunk_count": 0}
     except Exception as exc:
         attempts = self.request.retries + 1
         if attempts > _MAX_RETRIES:

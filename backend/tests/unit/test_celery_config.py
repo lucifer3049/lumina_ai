@@ -88,3 +88,24 @@ class TestTaskIsThin:
         etl_tasks.ingest_document.run(str(tenant_id), str(document_id))
 
         assert calls == [(tenant_id, document_id)]
+
+    def test_a_missing_document_is_not_retried(self, monkeypatch: object) -> None:
+        """文件不見了就不要重試。
+
+        使用者在排隊期間刪掉文件是**正常操作**——重跑四次的結果都一樣，而那會在 DLQ
+        留下一筆看起來像故障的紀錄。刪除不該長得像事故。
+        """
+        import uuid
+
+        from core.exceptions import NotFoundError
+        from worker import etl_tasks
+
+        class _MissingService:
+            def ingest(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> object:
+                raise NotFoundError("文件不存在")
+
+        monkeypatch.setattr(etl_tasks, "IngestionService", _MissingService)  # type: ignore[attr-defined]
+
+        result = etl_tasks.ingest_document.run(str(uuid.uuid4()), str(uuid.uuid4()))
+
+        assert result["status"] == "missing"

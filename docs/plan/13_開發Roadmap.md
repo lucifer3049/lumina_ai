@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 13 |
-| 版本 | v2.0 |
+| 版本 | v2.1 |
 | 日期 | 2026-08-14 |
 | 狀態 | Draft — 待審閱 |
 | 估算基準 | **1 位工程師 + AI（Claude Code）結對開發**；AI 加速 coding 與測試撰寫，但 review、整合、除錯與決策仍以人為瓶頸——時程按此重估；pw 數字保留作為工作量參考；不含需求變更緩衝（建議整體 +20%） |
-| 變更紀錄 | v1.1：估算基準改為 1 人 + AI；時程重估（27→29 週）；2C 裁切（Django Admin 頂替、自訂角色延後）；新增人機協作開發規則；R4 改寫。v1.2：§9.1 補非開發 lead time（F-10）。v1.3：人機協作規則重編為 §1.2（原誤植 §2.1，編號順序錯誤）。v1.4：新增 §3.1「1A 前置條件」（RLS 有三個漏做即靜默失效的前置項）與 §3.2「1A 同步改動：log 的租戶綁定」，兩者皆出自 Phase 0 結案程式審查（見 15 §8）；版本欄同步更正（原停在 v1.1 而變更紀錄已到 v1.3）。v1.5：Phase 0 DoD 的認證併發數改為「待分機環境判定」——單機量測法的絕對值跨 session 漂移 34–48%，無法裁決 150（08-05）與 100（08-07）孰為真（依據見 11 §1.4）。v1.6：§2 新增 Phase 0 結案紀錄（2026-08-07 通過閘門，含依據與三項不阻塞的未結項）。v1.7：§3.1 末段兩項處置在 1A-1 實作時被推翻並改寫——PgBouncer 佔位符不新增（owner 一律不經連線池）、不預先建立 bypass 角色（owner 受 FORCE RLS 管，跨租戶作業延到 2A）；兩項都有強制測試。v1.8：§2 Phase 0 未結項①（CI 真實跑一次）結案並記下它兌現的方式——CI 自 1A-3 起連三次全紅無人察覺，根因是 workflow 缺 `make gen-jwt-keys`；§3.2 補上 1A-3/1A-5 的落地結果。v1.9：§3 新增「1A 結案」小節（**暫行**——Phase 1 的 DoD 是整期的，1A 單獨驗不了，1B–1D 完成後回頭修訂），含子項、驗收依據、帶進 1B 的四個已知缺口，以及過程中發現的兩個非原訂範圍問題。v2.0：新增 §3.3「1B 的範圍偏離紀錄」（PDF 解析器改 pdfplumber、xlsx/Markdown 自 2D 提前、Markdown 的定位、1B-4~1B-6 的子項切分），並同步 §4 的 2D 內容 |
+| 變更紀錄 | v1.1：估算基準改為 1 人 + AI；時程重估（27→29 週）；2C 裁切（Django Admin 頂替、自訂角色延後）；新增人機協作開發規則；R4 改寫。v1.2：§9.1 補非開發 lead time（F-10）。v1.3：人機協作規則重編為 §1.2（原誤植 §2.1，編號順序錯誤）。v1.4：新增 §3.1「1A 前置條件」（RLS 有三個漏做即靜默失效的前置項）與 §3.2「1A 同步改動：log 的租戶綁定」，兩者皆出自 Phase 0 結案程式審查（見 15 §8）；版本欄同步更正（原停在 v1.1 而變更紀錄已到 v1.3）。v1.5：Phase 0 DoD 的認證併發數改為「待分機環境判定」——單機量測法的絕對值跨 session 漂移 34–48%，無法裁決 150（08-05）與 100（08-07）孰為真（依據見 11 §1.4）。v1.6：§2 新增 Phase 0 結案紀錄（2026-08-07 通過閘門，含依據與三項不阻塞的未結項）。v1.7：§3.1 末段兩項處置在 1A-1 實作時被推翻並改寫——PgBouncer 佔位符不新增（owner 一律不經連線池）、不預先建立 bypass 角色（owner 受 FORCE RLS 管，跨租戶作業延到 2A）；兩項都有強制測試。v1.8：§2 Phase 0 未結項①（CI 真實跑一次）結案並記下它兌現的方式——CI 自 1A-3 起連三次全紅無人察覺，根因是 workflow 缺 `make gen-jwt-keys`；§3.2 補上 1A-3/1A-5 的落地結果。v1.9：§3 新增「1A 結案」小節（**暫行**——Phase 1 的 DoD 是整期的，1A 單獨驗不了，1B–1D 完成後回頭修訂），含子項、驗收依據、帶進 1B 的四個已知缺口，以及過程中發現的兩個非原訂範圍問題。v2.0：新增 §3.3「1B 的範圍偏離紀錄」（PDF 解析器改 pdfplumber、xlsx/Markdown 自 2D 提前、Markdown 的定位、1B-4~1B-6 的子項切分），並同步 §4 的 2D 內容。v2.1：§3 新增「1B 結案」小節（**暫行**，同 1A 的理由），含驗收依據、帶進 1C 的五個缺口，以及過程中發現並修掉的七個非原訂範圍問題 |
 
 ---
 
@@ -116,6 +116,18 @@ gantt
 處置：把租戶改成**在 emit 時**讀 contextvar 的 structlog processor（掛進 `config/logging.py` 的 `_shared_processors`），這樣不論由哪一層、哪種機制設定租戶都一樣有效。同時補一條**不依賴 spike 標頭**的測試——以 route-level dependency 設定租戶，斷言 log 帶得到 `tenant_id`；那條測試在 spike 面刪除後仍然有效。
 
 **結果（2026-08-09）**：processor 於 1A-3 隨認證改造落地，middleware 同時從 `BaseHTTPMiddleware` 改為純 ASGI（`call_next` 會把下游丟到另一個 task，contextvar 回不到父 task）。1A-5 刪除 spike 面後，`tests/api/test_request_logging.py` 全檔的載具改為自掛路由，該處置的預測完全成立：靠 `X-Tenant-Id` 驅動的那幾條測試確實跟著消失，而 route-dependency 那條照樣綠。
+
+#### 1B 結案（2026-08-14）
+
+> 與 1A 的結案紀錄同樣是**暫行**：Phase 1 的 DoD 是整期的（上傳 → ready → 問答 → 引用），1B 單獨驗不了它——smoke 第 3 步現在斷言 `chunked`，第 4、5 步仍是 skip。下表記的是「1B 的內容做完了、且沒有把後面幾包的地基弄壞」。
+
+| 面向 | 內容 |
+|------|------|
+| 子項 | 1B-1 Knowledge 資料層與 RLS／1B-2 KB/Document CRUD 與權限碼／1B-3 單請求上傳與物件儲存／1B-4 三種 loader 與子行程隔離／1B-4b xlsx + Markdown loader／1B-4c PDF 解析器換 pdfplumber（大綱與表格）／1B-5 Clean 與 recursive chunker／1B-6 ETL 狀態機、Celery 佇列、冪等與 chunks 落地（含 DLQ 落地、re-ingest 端點、worker 納入一鍵啟停） |
+| 驗收依據 | `make test` **549 passed / 0 failed**（unit + integration + api）；`make lint` 全綠（ruff + format + mypy strict 151 files + import-linter **7/7**）；`make smoke` **3 passed / 2 skipped**（skip 皆為 1D）；前端 28 passed 含 typecheck；`make openapi-check` 無漂移；手動驗證 `make start` 三服務就緒、worker 實際消化佇列、`make stop` 無殘留 |
+| 對照工作包內容 | KB/Document CRUD ✅／單請求上傳 ✅／PDF·docx·txt 三種 loader ✅（**另加 xlsx 與 Markdown**，見 §3.3）／recursive chunker ✅／狀態機 + 重試 + 冪等 ✅（冪等鍵 `(doc_id, doc_version, stage)` 以 DB 唯一約束強制）／斷點續跑 ✅（cleaned 中間產物落物件儲存）／re-ingest ✅（09 §2.3 的端點，doc_version+1 + superseded） |
+| 帶進 1C 的已知缺口 | ① smoke 第 3 步停在 `chunked`，1C 落地時推到 `ready`；② `superseded` 舊 chunk 的清理 job（重嵌入完成後硬刪）→ 2A；③ DLQ 的**通知**與 per-tenant 公平佇列 → 2A；④ **enqueue 失敗沒有補償**：broker 掛掉時文件停在 `uploaded` 而沒有掃描器撿回來（需 Celery Beat，排 2A）；⑤ `_chunk_config_from` 的 KB 參數覆寫路徑尚無測試 |
+| 過程中發現並修掉（非原訂範圍） | ① **`make stop` 會永久卡在 flock**——`acquire_lock` 的 fd 被背景子行程繼承，而 flock 綁的是 open file description，服務跑著就永遠有人持有它（子行程改 `9>&-`）。② **Celery worker 缺 `django.setup()`**：smoke 因為 fixture 顯式設了 `DJANGO_SETTINGS_MODULE` 而看不出來，`make start` 起的 worker 直接 `ImproperlyConfigured`。③ **上傳第一次要 16 秒**：`autodiscover_tasks(force=True)` 讓 API 行程載入整個 ETL 堆疊；改 `force=False` 後仍有 10 秒，真正的大頭是 **boto3 建 client 15.6 秒**（WSL2 掛載磁碟），改為啟動時背景預熱。④ smoke 偶發在建租戶失敗：`token_urlsafe` 產生以 `-` 開頭的密碼被 argparse 當旗標。⑤ `test_logging.py` 兩條紅燈（`6b16b3a` 把 dev 指令搬進 `DEV_CMD` 後測試讀到字面值）。⑥ **失敗訊息外洩**：第三方例外的字串會經 `DocumentOut.error` 回到租戶手上（botocore 夾 endpoint 與 bucket 名），改成只有自家例外的訊息落地。⑦ 物件不存在被當成可重試，實際上永久失敗 |
 
 ### 3.3 1B 的範圍偏離紀錄（2026-08-12～14）
 

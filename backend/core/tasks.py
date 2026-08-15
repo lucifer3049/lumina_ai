@@ -35,7 +35,10 @@ def warm_up() -> None:
     try:
         from config.celery_app import celery_app
 
-        celery_app.connection().ensure_connection(max_retries=0, timeout=2.0)
+        # `with`：`connection()` 每次都建一條新的，不關的話會外流。API 行程只跑一次
+        # 感覺不出來，但測試會反覆建立 app——實測會累積上百條 Redis 連線。
+        with celery_app.connection() as connection:
+            connection.ensure_connection(max_retries=0, timeout=2.0)
     except Exception:
         get_logger(__name__).warning("celery_warm_up_failed", exc_info=True)
 
