@@ -71,6 +71,12 @@ _HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.RESOURCE_CONFLICT: 409,
     ErrorCode.UPLOAD_TOO_LARGE: 413,
     ErrorCode.UNSUPPORTED_MEDIA_TYPE: 415,
+    # AI provider（1C-1）。目前只有 worker 走得到（embedding），但 1D 的 chat 會讓
+    # 它們直接面向請求——先登錄，免得那時漏掉而全部掉進 500。
+    ErrorCode.RATE_LIMITED: 429,
+    ErrorCode.QUOTA_EXCEEDED: 429,
+    ErrorCode.MODEL_NOT_ENABLED: 422,
+    ErrorCode.PROVIDER_UNAVAILABLE: 503,
 }
 
 # HTTPException（路由不存在、方法不允許…）的 status → 契約 code。

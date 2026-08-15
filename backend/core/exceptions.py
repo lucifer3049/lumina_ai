@@ -38,6 +38,11 @@ class ErrorCode(StrEnum):
     # 上傳（1B-3）
     UPLOAD_TOO_LARGE = "UPLOAD_TOO_LARGE"  # 413：超過單請求大小上限
     UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"  # 415：MIME 白名單外（magic bytes 判定）
+    # AI provider（1C-1）。四個都對映 09 附錄 A。
+    RATE_LIMITED = "RATE_LIMITED"  # 429：頻率限制（可重試，帶 Retry-After）
+    QUOTA_EXCEEDED = "QUOTA_EXCEEDED"  # 429：配額用盡（重試無用；額度屬 2A）
+    MODEL_NOT_ENABLED = "MODEL_NOT_ENABLED"  # 422：模型未對本租戶啟用
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"  # 503：provider 不可用／fallback 鏈耗盡
     # ETL（1B-4）。09 附錄 A 標明它**不對映 HTTP**：抽取跑在 worker 裡，失敗會落到
     # `etl_jobs.error` 與通知，沒有一個等在旁邊的請求可以回。因此 api/main.py 的
     # `_HTTP_STATUS` 刻意不收這一條——真的漏到 HTTP 時走 500，那是程式錯誤。
@@ -201,6 +206,48 @@ class UploadTooLargeError(DomainError):
             f"檔案超過單請求上限 {limit_bytes // (1024 * 1024)}MB",
             details={"limit_bytes": limit_bytes},
         )
+
+
+class ProviderError(DomainError):
+    """AI provider 呼叫失敗的共同基底（06 §4）。
+
+    **可否重試由型別決定，不由訊息決定**：`retryable` 是 Gateway 唯一的判斷依據。
+    寫成屬性而不是每次去看 HTTP 狀態碼，是因為那個判斷只該做一次——散在各處的話，
+    總有一處會把「配額用盡」也拿去重試三次，而那三次都會失敗且都要付延遲。
+    """
+
+    code = ErrorCode.PROVIDER_UNAVAILABLE
+    retryable = True
+
+
+class ProviderTimeoutError(ProviderError):
+    """→ 503。逾時（11 §4.1：所有對外呼叫必有 timeout）。
+
+    可重試：慢的那一次不代表下一次也慢。上限由 Gateway 的重試次數控制。
+    """
+
+
+class ProviderUnavailableError(ProviderError):
+    """→ 503。連不上、5xx、fallback 鏈耗盡。"""
+
+
+class ProviderRateLimitedError(ProviderError):
+    """→ 429。provider 端的頻率限制——退避後重試是正確處置。"""
+
+    code = ErrorCode.RATE_LIMITED
+
+
+class ModelNotEnabledError(ProviderError):
+    """→ 422。指定的模型未對本租戶啟用（或 provider 不認得它）。
+
+    **不可重試**：模型不會因為再問一次就被啟用。這是設定問題，要讓它立刻浮上來。
+    """
+
+    code = ErrorCode.MODEL_NOT_ENABLED
+    retryable = False
+
+    def __init__(self, *, model: str) -> None:
+        super().__init__(f"模型未啟用：{model}", details={"model": model})
 
 
 class ExtractionFailedError(DomainError):

@@ -81,6 +81,21 @@ class AppSettings(BaseSettings):
     s3_bucket: str = "lumina"
     s3_timeout_seconds: int = 30  # 11 §4.1
 
+    # ── AI Gateway（06 §4；1C-1）──
+    # provider 與模型名稱一律來自設定（鐵則 9）：寫死的話，「本機用 mock、正式用
+    # OpenAI」這種再普通不過的需求會變成程式裡的一個分支，而換模型要改碼。
+    #
+    # 預設 `mock`：真 adapter 屬 1C-5，且**測試永遠不打真 API**（CLAUDE.md）。預設值
+    # 落在最安全的一邊——漏設環境變數時得到的是假向量而不是一筆真帳單。
+    ai_embedding_provider: Literal["mock", "openai", "ollama"] = "mock"
+    ai_embedding_model: str = "mock-embedding"
+    # 維度要與 05 §3.2 的 `halfvec(1536)` 一致。放進設定是因為換模型就會換維度，
+    # 而那時 migration 與這裡必須一起改——兩邊對不上時 INSERT 會被 DB 擋下。
+    ai_embedding_dimensions: int = 1536
+    # 06 §4 的 timeout 分三段（連線 10s / TTFT 30s / 整體 120s）是給串流用的；
+    # embedding 是一次性呼叫，只需要整體上限。批次 64 筆的 API 呼叫通常 < 5s。
+    ai_embedding_timeout_seconds: float = 30.0
+
     @property
     def redis_url(self) -> SecretStr:
         """`redis://:pw@host:port/db`；密碼經 percent-encoding，特殊字元不會拆壞 URL。"""

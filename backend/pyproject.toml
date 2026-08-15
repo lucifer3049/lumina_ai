@@ -221,7 +221,17 @@ markers = [
 # 違反，等於禁止分層本身。
 # ──────────────────────────────────────────────────────────────
 [tool.importlinter]
-root_packages = ["api", "apps", "common", "core", "etl", "repositories", "services", "worker"]
+root_packages = [
+    "ai",
+    "api",
+    "apps",
+    "common",
+    "core",
+    "etl",
+    "repositories",
+    "services",
+    "worker",
+]
 
 [[tool.importlinter.contracts]]
 name = "api 不碰 ORM（Controller 三行原則）"
@@ -249,7 +259,7 @@ name = "common 是純工具，不認識任何層"
 type = "forbidden"
 allow_indirect_imports = true
 source_modules = ["common"]
-forbidden_modules = ["api", "services", "repositories", "apps", "core", "etl", "worker"]
+forbidden_modules = ["api", "services", "repositories", "apps", "core", "etl", "worker", "ai"]
 
 [[tool.importlinter.contracts]]
 # etl 是內層（02 §2）：它只認得 core 的型別與例外。禁 repositories/apps 而不只是
@@ -259,6 +269,16 @@ name = "etl 不知道上層，也不碰 ORM"
 type = "forbidden"
 allow_indirect_imports = true
 source_modules = ["etl"]
+forbidden_modules = ["api", "services", "repositories", "apps"]
+
+[[tool.importlinter.contracts]]
+# ai 是內層（02 §2）：Gateway 只認得 core 的型別與例外，以及自己的 provider adapter。
+# 禁 repositories/apps 的理由與 etl 相同——usage 的落地由 service 負責（鐵則 2），
+# Gateway 直接寫 DB 就繞過了租戶 filter，而它跑在 worker 裡沒有請求上下文兜底。
+name = "ai 不知道上層，也不碰 ORM"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["ai"]
 forbidden_modules = ["api", "services", "repositories", "apps"]
 
 [[tool.importlinter.contracts]]

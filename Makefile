@@ -224,7 +224,7 @@ api-pinned: ## 啟動 API 並綁定 CPU $(API_CPUS)（基準線用）。log 導�
 # 新增頂層套件（common/、ai/、rag/…）時必須同步加進來，否則那個目錄的改動不會
 # 觸發重載——由 tests/unit/test_logging.py 的 DEV_RELOAD_DIRS 對帳測試擋住。
 # 若日後把 repo 搬進 WSL2 原生檔案系統（~/），兩項都可以拿掉。
-DEV_RELOAD_DIRS = api apps common config core etl repositories services worker
+DEV_RELOAD_DIRS = ai api apps common config core etl repositories services worker
 
 DEV_CMD = LOG_FORMAT=console WATCHFILES_FORCE_POLLING=1 \
 	$(UV_RUN) uvicorn config.asgi:app --host 127.0.0.1 --port $(DEV_PORT) \
