@@ -208,25 +208,23 @@ api-pinned: ## 啟動 API 並綁定 CPU $(API_CPUS)（基準線用）。log 導�
 #
 # --host 127.0.0.1（而非 api 的 0.0.0.0）：開發機不需要對區網開放。
 #
-# 熱重載在本專案的環境下需要兩項設定，**缺任一項都會靜默失效**（沒有錯誤訊息，
-# 只是改檔後永遠不重啟）。兩項都是實測出來的：
-#
-# 1. WATCHFILES_FORCE_POLLING=1
-#    uvicorn 的 --reload 交給 watchfiles，後者預設走 inotify；本 repo 位於
-#    /mnt/d（WSL2 的 DrvFs，Windows 檔案系統的轉接層）而 **DrvFs 不支援 inotify**
-#    ——事件永遠不會來。改成輪詢即可偵測。
-#
-# 2. --reload-dir 限定在原始碼目錄
-#    uvicorn 預設監看整個工作目錄，而 backend/ 底下 13,028 個檔案有 12,836 個
-#    在 .venv/ 裡（98.5%）。輪詢模式要逐一 stat，在 9p 上慢到形同沒有監看
-#    （實測：監看 . 時改檔 30 秒無反應；限定 api/ 後立即偵測到）。
+# 熱重載需要 --reload-dir 限定在原始碼目錄：uvicorn 預設監看整個工作目錄，而
+# backend/ 底下 13,028 個檔案有 12,836 個在 .venv/ 裡（98.5%）。inotify 是每個檔案
+# 一個 watch，而 watch 數有上限（fs.inotify.max_user_watches）——監看 .venv 等於把
+# 額度耗在永遠不會改的檔案上。
 #
 # 新增頂層套件（common/、ai/、rag/…）時必須同步加進來，否則那個目錄的改動不會
 # 觸發重載——由 tests/unit/test_logging.py 的 DEV_RELOAD_DIRS 對帳測試擋住。
-# 若日後把 repo 搬進 WSL2 原生檔案系統（~/），兩項都可以拿掉。
+#
+# **WATCHFILES_FORCE_POLLING 已移除**（2026-08-15，repo 從 /mnt/d 搬進 ~/ 之後）。
+# 它當初是必要的：DrvFs 不支援 inotify，事件永遠不會來，只能退回輪詢。代價是
+# 輪詢在沒有任何改動時也持續 stat 全部來源檔——那是 dev server 閒置時的固定 CPU
+# 佔用。ext4 上 inotify 正常運作，事件驅動、閒置時零成本。
+# 若哪天又在 /mnt/* 底下開發，這一項要加回來，否則熱重載會**靜默失效**
+# （沒有錯誤訊息，只是改檔後永遠不重啟）。
 DEV_RELOAD_DIRS = ai api apps common config core etl repositories services worker
 
-DEV_CMD = LOG_FORMAT=console WATCHFILES_FORCE_POLLING=1 \
+DEV_CMD = LOG_FORMAT=console \
 	$(UV_RUN) uvicorn config.asgi:app --host 127.0.0.1 --port $(DEV_PORT) \
 		--reload $(addprefix --reload-dir ,$(DEV_RELOAD_DIRS)) \
 		--log-config config/uvicorn_logging.json --no-access-log
@@ -293,18 +291,58 @@ demo-tenant: ## 建立本機實測用的租戶與 Owner（slug=$(DEMO_SLUG)；�
 		--exist-ok
 	@echo "登入用：tenant_slug=$(DEMO_SLUG)  email=$(DEMO_EMAIL)"
 
-test: ## 執行全部測試（需先 make up）
-	$(UV_RUN) pytest
+# 平行測試（pytest-xdist）。每個 worker 走自己的 test database（`_gwN` 後綴，靠
+# tests/conftest.py 的 `django_db_setup` 相依 `django_db_modify_db_settings`）。
+# `auto` = 邏輯核心數；`make test PYTEST_XDIST_N=1` 會**完全關掉** xdist 而不是開一個
+# worker——`-n 1` 仍走 worker 行程，pdb 與 `-s` 一樣接不到，而除錯要的是真的序列。
+#
+# **不加 `--reuse-db`**（試過，會壞）：transaction=True 的測試每條之後跑 Django 的
+# flush（TRUNCATE），連 migration 種的權限字典與四個系統角色一起清掉，而 session
+# 結束時沒有任何東西還原。留著資料庫等於把「被清空的狀態」交給下一次跑，於是
+# tests/integration/test_permission_seed.py 從第二次起永遠紅——而它紅的原因看起來
+# 像是 migration 寫錯。每次重建的代價實測只有 ~2s（migration 很快），遠低於這個。
+#
+# **不加 `--dist loadscope`**（試過，會壞）：pytest-django 會把非 transactional 的
+# 測試重排到 transactional 之前，正是為了讓前者看得到 migration 種的資料。
+# loadscope 整個 module 打包派發，那個全域排序就沒了——同一個 worker 可能先跑
+# test_uow.py 再跑 test_permission_seed.py。預設的 `load` 依收集順序逐條派發，
+# 每個 worker 拿到的子集保留相對順序，因此排序保證仍然成立。
+# 跨 worker 不需要擔心：各自是不同的資料庫。
+#
+# **上限是 14**（不是核心數）：worker 之間靠 Redis 的邏輯 DB 分開，而 Redis 預設
+# 只有 16 個（0 號留給序列跑）。超出會在 tests/conftest.py 明確 raise。
+#
+# 測試是 IO-bound（等 PostgreSQL 與 MinIO 的往返），所以超額訂閱有用，但報酬遞減。
+# 2026-08-15 於 6 核 i5-9400F 實測 576 條：
+#   序列 211s ／ n=6 76–85s（~2 核）／ n=12 71.6s（~3 核）／ n=14 67.5s
+# 預設留 `auto`（= 核心數）而不是釘死 12：CI runner 的核心數不同，釘死的值在那裡
+# 只會是錯的。本機想再快就 `make test PYTEST_XDIST_N=12`。
+PYTEST_XDIST_N ?= auto
+ifeq ($(PYTEST_XDIST_N),1)
+PYTEST_PARALLEL =
+else
+PYTEST_PARALLEL = -n $(PYTEST_XDIST_N)
+endif
+
+test: ## 執行全部測試（需先 make up）；平行度可用 PYTEST_XDIST_N 覆寫，=1 為序列
+	$(UV_RUN) pytest $(PYTEST_PARALLEL)
 
 # 分層目標對應 02 §2 的測試四層；CI 分階段跑（unit 最快，壞掉時最好定位）。
+# unit 沒有外部依賴，開 xdist 只賺行程啟動成本以外的部分——仍然值得（269 條）。
+#
+# **$(PYTEST_PARALLEL) 放在路徑後面，不要「整理」到前面**：
+# tests/unit/test_ci_pipeline.py 展開這幾行的 Makefile 變數後，比對子字串
+# `pytest tests/unit`（斷言 CI 確實跑得到 unit 層）。旗標插在中間會把那個子字串
+# 切斷，於是 CI 報「缺少階段 unit 測試」——而階段其實在跑，訊息指向完全錯的方向。
+# pytest 的選項放在位置參數之後同樣有效，所以這個順序沒有其他代價。
 test-unit: ## 只跑 unit（無外部依賴，不需 make up）
-	$(UV_RUN) pytest tests/unit
+	$(UV_RUN) pytest tests/unit $(PYTEST_PARALLEL)
 
 test-integration: ## 只跑 integration（Repository / 基礎設施；需先 make up）
-	$(UV_RUN) pytest tests/integration
+	$(UV_RUN) pytest tests/integration $(PYTEST_PARALLEL)
 
 test-api: ## 只跑 api（權限矩陣、錯誤格式、SSE 協定；需先 make up）
-	$(UV_RUN) pytest tests/api
+	$(UV_RUN) pytest tests/api $(PYTEST_PARALLEL)
 
 # smoke **不在 make test 裡**（pyproject 的 testpaths 排除 tests/e2e）：它要起一個
 # 真的 uvicorn 子行程並連開發資料庫，前置條件比其他三層多（make up + make migrate

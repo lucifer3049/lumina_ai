@@ -288,7 +288,12 @@ def test_system_roles_are_visible_to_every_tenant() -> None:
     **系統角色會對所有人隱形**——症狀是使用者明明被指派了 Owner，查出來卻沒有
     任何角色，而權限判定會安靜地退化成「什麼都不能做」。
     """
-    system_role = make_system_role(name="owner")
+    # 名字**刻意不用** migration 種的那四個（owner/admin/editor/viewer）：
+    # `uq_role_tenant_name` 是 (tenant_id, name) 的唯一約束，種子還在時這行會直接
+    # IntegrityError。序列跑之所以看不到，是因為排在前面的 transactional 測試已經
+    # 把種子 TRUNCATE 掉了——這條測試原本依賴「別人先破壞資料」才會過，而那個順序
+    # 在平行下不成立。斷言要的只是「一個 tenant_id IS NULL 的角色兩邊都看得到」。
+    system_role = make_system_role(name="system-role-rls-probe")
 
     with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
         cursor.execute("SELECT id FROM identity_role WHERE tenant_id IS NULL")

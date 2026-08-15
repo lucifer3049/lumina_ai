@@ -10,9 +10,38 @@ schema owner。見下方 :func:`django_db_setup` 的說明。
 
 from __future__ import annotations
 
+import os
 import sys
 import uuid
 from collections.abc import Iterator
+
+# ── pytest-xdist 的 worker 分割（必須在任何專案 import 之前）────────
+# test database 靠 pytest-django 的 `_gwN` 後綴自動分開，但那只涵蓋 PostgreSQL。
+# 另外兩個共用資源要在這裡處理，否則 worker 之間會互相踩：
+#
+# 1. Redis——登入失敗計數與 token 撤銷名單。每個 worker 一個邏輯 DB。
+# 2. 物件儲存——MinIO 只有一個 bucket，且應用角色**刻意沒有** s3:CreateBucket
+#    （docker/compose.yml 的 minio-init 有反向驗收測試守著），所以不能每個 worker
+#    一個 bucket。改為每個 worker 一組租戶 UUID：物件 key 是
+#    `tenant-{tenant_id}/kb/{kb_id}/{document_id}`，租戶一分開，前綴就分開了。
+#
+# 租戶分割同時也讓 Redis 的 key（`t:{tenant_id}:...`）天然分開；Redis 的邏輯 DB
+# 仍然留著，因為不是每個 key 都保證帶租戶前綴，而多這一層的成本是零。
+#
+# **只有 Redis 那一半必須早於 import**：`get_app_settings()` 帶 lru_cache，第一次讀
+# 到什麼就固定成什麼，而環境變數的優先序高於 .env（見
+# config/settings/app_settings.py）。租戶 UUID 是純常數，跟著其他常數放在 import
+# 之後即可——把賦值搬到這裡只會讓後面每一行 import 都吃 E402。
+#
+# 序列跑用 0 號。Redis 預設只有 16 個邏輯 DB，超出就明確失敗——不 fail 的話 worker
+# 會靜默共用 0 號，也就是回到這段要解決的問題本身。
+if _worker := os.environ.get("PYTEST_XDIST_WORKER"):
+    if int(_worker.removeprefix("gw")) + 1 > 15:
+        raise RuntimeError(
+            f"pytest-xdist worker {_worker} 超出 Redis 的 16 個邏輯 DB；"
+            "降低 PYTEST_XDIST_N，或改用獨立的 Redis 實例"
+        )
+    os.environ["REDIS_DB"] = str(int(_worker.removeprefix("gw")) + 1)
 
 import pytest
 from django.db import connections
@@ -38,8 +67,15 @@ if sys.platform == "win32":
         "Back in WSL2 the first command will rebuild it again (plain `uv sync`, no data loss)."
     )
 
-TENANT_A = uuid.UUID("11111111-1111-5111-8111-111111111111")
-TENANT_B = uuid.UUID("22222222-2222-5222-8222-222222222222")
+# 租戶 UUID 的最後兩碼是 worker 序號（序列跑為 00），理由見檔案開頭的 worker 分割
+# 說明：物件儲存只有一個 bucket，租戶前綴就是 worker 之間的邊界。
+# 其餘位元保持原樣，version（5）與 variant（8）兩個 nibble 也不動——這兩個欄位有
+# 語意，隨手改會讓「看起來像 UUID 的字串」變成不合法的 UUID，而 psycopg 與
+# pydantic 都會擋。
+_WORKER_INDEX = int(os.environ.get("PYTEST_XDIST_WORKER", "gw-1").removeprefix("gw")) + 1
+
+TENANT_A = uuid.UUID(f"11111111-1111-5111-8111-1111111111{_WORKER_INDEX:02x}")
+TENANT_B = uuid.UUID(f"22222222-2222-5222-8222-2222222222{_WORKER_INDEX:02x}")
 
 
 def _grant_truncate_for_transactional_tests() -> None:
@@ -72,6 +108,7 @@ def django_db_setup(
     django_test_environment: None,
     django_db_blocker: DjangoDbBlocker,
     django_db_keepdb: bool,
+    django_db_modify_db_settings: None,
 ) -> Iterator[None]:
     """建立 test database，且**以 owner 角色**建（13 §3.1 的 1A-P2）。
 
@@ -87,9 +124,13 @@ def django_db_setup(
     ``set_as_test_mirror`` 只複製 ``NAME``，**不動 USER**——兩條連線因此指向同一個
     test database 卻各自是不同角色，這正是 RLS 測試需要的形狀。
 
-    ``django_db_modify_db_settings`` 沒有列進相依（pytest-xdist 的資料庫名後綴靠
-    它）：本專案不跑 xdist；要跑的話這裡要一併處理，否則各 worker 會共用同一個
-    test database。
+    ``django_db_modify_db_settings`` **必須**列進相依：pytest-xdist 的每個 worker
+    要有自己的 test database，而那個 ``_gwN`` 後綴就是這個 fixture 加到
+    ``settings_dict`` 上的。少了它，六個 worker 會共用同一個 test database——症狀
+    不是報錯而是隨機失敗：A worker 的 ``transactional_db`` 在測試之間跑 TRUNCATE，
+    把 B worker 正在讀的資料清掉。它先於 ``setup_databases`` 求值，因此建出來的庫
+    名已經帶後綴；``set_as_test_mirror`` 隨後把同一個名字複製給 ``default``，兩條
+    連線仍落在同一個 worker 專屬的庫上。
     """
     from django.test.utils import setup_databases, teardown_databases
 

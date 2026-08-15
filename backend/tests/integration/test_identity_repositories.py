@@ -109,7 +109,13 @@ def test_role_repository_includes_system_roles(
     程式比 policy 窄 → 使用者看不到自己的角色。兩種都不會有錯誤訊息。
     """
     assert users_in_both_tenants
-    system_role = make_system_role(name="owner")
+    # 名字**刻意不用** SYSTEM_ROLE_PERMISSIONS 裡的四個（owner/admin/editor/viewer）：
+    # 那四個由 migration 種進去，`uq_role_tenant_name` 是 (tenant_id, name) 的唯一
+    # 約束，於是這行在種子還在的資料庫上會直接 IntegrityError。序列跑之所以看不到，
+    # 是因為排在前面的 transactional 測試已經把種子 TRUNCATE 掉了——也就是這條測試
+    # 原本依賴「別人先破壞資料」才會過，而那個順序在平行下不成立。
+    # 斷言要的只是「一個 tenant_id IS NULL 的角色查得到」，用哪個名字無關。
+    system_role = make_system_role(name="system-role-visibility-probe")
 
     with tenant_scope(TENANT_A):
         custom_role = make_tenant_role(tenant_id=TENANT_A, name="tenant-a-only")

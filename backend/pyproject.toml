@@ -62,6 +62,14 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "pytest-django>=4.9",
+    # 平行測試。理由是實測數字而不是「比較快」：576 條序列跑 211s，其中 CPU 只用掉
+    # 117s（單核 55%、六核 9%）——其餘全在等 PostgreSQL 與 MinIO 的往返。那種等待
+    # 可以重疊，而重疊它不必改任何一條測試。
+    # 每個 worker 走自己的 test database（`_gwN` 後綴，見 tests/conftest.py 的
+    # `django_db_setup`），因此租戶隔離與 RLS 的斷言在平行下與序列下形狀相同。
+    # **不寫進 addopts**：單檔除錯時 xdist 會吃掉 pdb 與 `-s`，而那正是最需要它們的
+    # 時候。平行只開在 Makefile 的 test 目標（PYTEST_XDIST_N 可覆寫）。
+    "pytest-xdist>=3.6",
     "httpx>=0.28",
     "ruff>=0.8",
     "mypy>=1.13",
