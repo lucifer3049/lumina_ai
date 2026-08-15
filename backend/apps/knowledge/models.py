@@ -28,6 +28,7 @@ from __future__ import annotations
 import uuid
 
 from django.db import models
+from pgvector.django import HalfVectorField, HnswIndex
 
 from apps.identity.models import Tenant
 
@@ -167,6 +168,61 @@ class Chunk(TimestampedModel):
 
     def __str__(self) -> str:
         return f"Chunk({self.document_id}#{self.seq})"
+
+
+class Embedding(TimestampedModel):
+    """chunk 的向量（05 §3.2）——檢索實際比對的東西。
+
+    **一個 chunk 可以有多份向量**：`(chunk, model, embedding_version)` 是唯一鍵，而
+    不是 `chunk` 本身。重嵌入的做法是「新版本算完 → 原子切換 → 清理舊版」（06 §2.2），
+    那需要兩個版本並存的那段時間；約束若只有 chunk，切換期間就得先刪再寫，而那幾分鐘
+    檢索會查不到任何東西。
+
+    ``vector`` 是 **halfvec**（fp16）而不是 vector（fp32）：儲存與記憶體減半，召回
+    差異依 pgvector 實測可忽略（05 §3.2 的 F-01 決議，Phase 2 golden set 覆核）。
+    代價是精度只到小數點後三位左右——寫入時 pgvector 自動轉換，讀回來的值會與寫進去的
+    略有差異，那是預期行為。
+
+    維度寫死 1536 是因為 migration 需要字面值，而它必須與 `ai_embedding_dimensions`
+    一致（`tests/integration/test_embeddings.py` 對帳）。換 embedding 模型時兩者要一起
+    改，並走 05 §5.6 的遷移流程——維度不同的向量無法共存於同一欄。
+
+    ``deleted_at`` 繼承自 `TimestampedModel` 但**沒有軟刪除流程**：版本化資料不可變
+    （05 §1），舊版本由清理 job 硬刪。欄位留著只為讓所有表形狀一致。
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="embeddings")
+    chunk = models.ForeignKey(Chunk, on_delete=models.PROTECT, related_name="embeddings")
+    # provider 回報的實際模型（含別名解析後的版本），不是請求時寫的那個字串。
+    model = models.TextField()
+    embedding_version = models.IntegerField(default=1)
+    vector = HalfVectorField(dimensions=1536)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["chunk", "model", "embedding_version"],
+                name="uq_embedding_chunk_model_version",
+            ),
+        ]
+        indexes = [
+            # 05 §4：HNSW + **halfvec** 的 ops。ops 與欄位型別不合時不會報錯，
+            # 索引只是永遠不會被選用——檢索從數十毫秒退化成整表掃描，而結果正確。
+            # m / ef_construction 取 05 §4 的值；建索引吃 maintenance_work_mem（§5.5）。
+            HnswIndex(
+                name="ix_embedding_vector_hnsw",
+                fields=["vector"],
+                m=16,
+                ef_construction=64,
+                opclasses=["halfvec_cosine_ops"],
+            ),
+            # 「這批 chunk 哪些已經有向量」——1C-3 的批次依據走這條。
+            models.Index(fields=["tenant", "chunk"], name="ix_embedding_tenant_chunk"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Embedding({self.chunk_id}/{self.model}v{self.embedding_version})"
 
 
 class EtlJob(TimestampedModel):

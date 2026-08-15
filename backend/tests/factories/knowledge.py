@@ -18,7 +18,8 @@ from typing import Any, cast
 import factory
 
 from apps.identity.models import Tenant
-from apps.knowledge.models import Chunk, Document, EtlJob, KnowledgeBase
+from apps.knowledge.models import Chunk, Document, Embedding, EtlJob, KnowledgeBase
+from config.settings.app_settings import get_app_settings
 
 
 class KnowledgeBaseFactory(factory.django.DjangoModelFactory[KnowledgeBase]):
@@ -88,6 +89,20 @@ class ChunkFactory(factory.django.DjangoModelFactory[Chunk]):
     superseded = False
 
 
+class EmbeddingFactory(factory.django.DjangoModelFactory[Embedding]):
+    class Meta:
+        model = Embedding
+
+    id = factory.LazyFunction(uuid.uuid4)
+    tenant = factory.SelfAttribute("chunk.tenant")
+    chunk = factory.SubFactory(ChunkFactory)
+    model = "mock-embedding"
+    embedding_version = 1
+    # 維度跟著設定走（見 apps/knowledge/models.py 的說明）：寫死在這裡的話，換模型時
+    # 每個測試都會以「expected N dimensions」失敗，而錯誤訊息指向 INSERT。
+    vector = factory.LazyFunction(lambda: [0.1] * get_app_settings().ai_embedding_dimensions)
+
+
 class EtlJobFactory(factory.django.DjangoModelFactory[EtlJob]):
     class Meta:
         model = EtlJob
@@ -118,6 +133,7 @@ def _resolve(kwargs: dict[str, Any]) -> dict[str, Any]:
         ("tenant_id", Tenant),
         ("kb_id", KnowledgeBase),
         ("document_id", Document),
+        ("chunk_id", Chunk),
     ):
         value = kwargs.pop(keyword, None)
         if value is not None:
@@ -135,6 +151,10 @@ def make_document(**kwargs: Any) -> Document:
 
 def make_chunk(**kwargs: Any) -> Chunk:
     return cast(Chunk, ChunkFactory(**_resolve(kwargs)))
+
+
+def make_embedding(**kwargs: Any) -> Embedding:
+    return cast(Embedding, EmbeddingFactory(**_resolve(kwargs)))
 
 
 def make_etl_job(**kwargs: Any) -> EtlJob:

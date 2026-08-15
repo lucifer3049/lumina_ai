@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from typing import TypedDict
 
 from django.db.models import Model, QuerySet
 from django.utils import timezone
 
-from apps.knowledge.models import Chunk, Document, EtlJob, KnowledgeBase
+from apps.knowledge.models import Chunk, Document, Embedding, EtlJob, KnowledgeBase
 from core.tenant import get_current_tenant_id
 from repositories.base import TenantScopedRepository
 
@@ -245,6 +246,90 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
             ]
         )
         return len(created)
+
+
+class EmbeddingRow(TypedDict):
+    """一列待寫入的向量。
+
+    ``model`` 與 ``embedding_version`` **不在這裡**：它們是整批共用的參數（一次
+    Gateway 呼叫對應一個模型），放進每一列只會讓「同一批混了兩個模型」變成可能，
+    而那是呼叫端組錯資料、不該由這一層容忍。
+    """
+
+    chunk_id: uuid.UUID
+    vector: Sequence[float]
+
+
+class EmbeddingRepository(TenantScopedRepository[Embedding]):
+    """向量的讀寫（05 §3.2）。檢索查詢本身屬 1C-4，這裡只有寫入與盤點。"""
+
+    model = Embedding
+
+    def upsert(
+        self,
+        rows: Sequence[EmbeddingRow],
+        *,
+        model: str,
+        embedding_version: int,
+    ) -> int:
+        """寫入或覆蓋一批向量；回傳處理筆數。
+
+        走唯一約束 + ``ON CONFLICT``（Django 的 ``update_conflicts``）而不是「先查再
+        寫」：重嵌入是 at-least-once 的背景工作，而併發的兩個 worker 都會查到「不存
+        在」，然後其中一個撞約束失敗——那一批的整份 API 呼叫（真的錢）就白做了。
+
+        ``model`` 與 ``embedding_version`` 是整批共用的參數而不是每列一份：一次呼叫
+        對應一個模型，混在同一批寫入代表呼叫端組錯了資料。
+        """
+        if not rows:
+            return 0
+
+        tenant_id = get_current_tenant_id(operation="EmbeddingRepository.upsert")
+        Embedding.objects.bulk_create(
+            [
+                Embedding(
+                    tenant_id=tenant_id,
+                    chunk_id=row["chunk_id"],
+                    model=model,
+                    embedding_version=embedding_version,
+                    vector=list(row["vector"]),
+                )
+                for row in rows
+            ],
+            update_conflicts=True,
+            unique_fields=["chunk", "model", "embedding_version"],
+            update_fields=["vector", "updated_at"],
+        )
+        return len(rows)
+
+    def for_chunks(
+        self, chunk_ids: Sequence[uuid.UUID], *, model: str, embedding_version: int
+    ) -> list[Embedding]:
+        return list(
+            self.get_queryset().filter(
+                chunk_id__in=list(chunk_ids),
+                model=model,
+                embedding_version=embedding_version,
+            )
+        )
+
+    def chunks_without_embedding(
+        self, chunk_ids: Sequence[uuid.UUID], *, model: str, embedding_version: int
+    ) -> list[uuid.UUID]:
+        """這批 chunk 裡還沒有向量的那些——1C-3 的批次依據。
+
+        少了它，重跑會把整份文件重算一次，而每個 chunk 都是一次真的 API 呼叫。
+        """
+        existing = set(
+            self.get_queryset()
+            .filter(
+                chunk_id__in=list(chunk_ids),
+                model=model,
+                embedding_version=embedding_version,
+            )
+            .values_list("chunk_id", flat=True)
+        )
+        return [chunk_id for chunk_id in chunk_ids if chunk_id not in existing]
 
 
 class EtlJobRepository(TenantScopedRepository[EtlJob]):

@@ -30,12 +30,16 @@ from tests.factories.knowledge import make_chunk, make_document, make_etl_job, m
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
-# 1B-1 建的四張表，全部需要隔離（沒有 identity 那種全域字典表的例外）。
+# Knowledge 的五張表，全部需要隔離（沒有 identity 那種全域字典表的例外）。
 KNOWLEDGE_TABLES = (
     "knowledge_knowledgebase",
     "knowledge_document",
     "knowledge_chunk",
     "knowledge_etljob",
+    # 1C-2 新增。**新表一律要加進這個清單**：漏掉的表不會有任何症狀——查詢照常
+    # 回傳，只是範圍變成整個資料庫。embeddings 的洩漏後果與 chunks 相同，而且它
+    # 是檢索**實際比對**的東西（chunk 的文字只是事後拿來顯示的）。
+    "knowledge_embedding",
 )
 
 

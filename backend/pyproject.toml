@@ -54,6 +54,7 @@ dependencies = [
     # 帶進 numpy（模型是矩陣運算）——1C 的向量處理本來就會需要它。
     "py3langid>=0.3",
     "celery[redis]>=5.6.3",
+    "pgvector>=0.5.0",
 ]
 
 [dependency-groups]
