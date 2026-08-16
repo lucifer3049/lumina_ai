@@ -47,6 +47,10 @@ class ErrorCode(StrEnum):
     # `etl_jobs.error` 與通知，沒有一個等在旁邊的請求可以回。因此 api/main.py 的
     # `_HTTP_STATUS` 刻意不收這一條——真的漏到 HTTP 時走 500，那是程式錯誤。
     ETL_FAILED = "ETL_FAILED"
+    # 串流對話（1D-3a）。同樣**不對映 HTTP**（09 附錄 A 的 HTTP 欄是「—」），理由與
+    # ETL_FAILED 相同但情境相反：不是沒有請求在等，而是那個請求**早就回了 200**——
+    # 中斷發生在第一個 token 之後，狀態碼已經送出去了。它只能是 SSE 的 error event。
+    STREAM_INTERRUPTED = "STREAM_INTERRUPTED"
 
 
 class DomainError(Exception):

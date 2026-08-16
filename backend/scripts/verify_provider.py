@@ -11,19 +11,27 @@ HTTP 層（CLAUDE.md），那驗得了「我們送出去的請求長什麼樣」
 
 用法：
 
-    make verify-provider PROVIDER=gemini
+    make verify-provider PROVIDER=gemini                  # embedding（預設）
+    make verify-provider PROVIDER=gemini CAPABILITY=chat   # 串流對話（1D-3a）
 
-金鑰取自 `AI_EMBEDDING_API_KEY`（Ollama 不需要）。它只印出維度、用量與耗時，
-**不印金鑰、也不印向量內容**。
+金鑰取自 `AI_EMBEDDING_API_KEY` / `AI_CHAT_API_KEY`（Ollama 不需要）。它只印出維度、
+用量與耗時，**不印金鑰、也不印向量內容**。
+
+串流那一條要驗的東西與 embedding 不同，而且更驗不出來：那家有沒有照 SSE 的格式送、
+`[DONE]` 是不是真的會到、`stream_options.include_usage` 那家認不認得（不認得的話每一次
+對話的成本都只能用估的）。這些在假的 HTTP 層之下全部是我們自己寫的預期值。
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+import dataclasses
 import os
 import sys
 import time
 from pathlib import Path
+from typing import cast
 
 # 直接執行時 sys.path[0] 是 scripts/，`import ai.gateway` 會失敗（pyproject 的
 # `pythonpath = ["."]` 只對 pytest 生效）。同 scripts/export_openapi.py。
@@ -34,7 +42,10 @@ if str(BACKEND_ROOT) not in sys.path:
 # 這支腳本在 Django 之外執行（它不碰 DB），但 AppSettings 要讀 .env。
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.dev")
 
-from ai.gateway.providers.openai_compatible import VENDORS, OpenAICompatibleProvider  # noqa: E402
+from ai.gateway.providers.openai_compatible import (  # noqa: E402
+    VENDORS,
+    OpenAICompatibleProvider,
+)
 from core.exceptions import ProviderError  # noqa: E402
 
 _SAMPLES = [
@@ -44,11 +55,31 @@ _SAMPLES = [
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="打一次真的 embedding API，確認 adapter 能用")
+    parser = argparse.ArgumentParser(description="打一次真的 API，確認 adapter 能用")
     parser.add_argument("--provider", required=True, choices=sorted(VENDORS))
-    parser.add_argument("--model", default=None, help="預設取 AI_EMBEDDING_MODEL")
-    parser.add_argument("--dimensions", type=int, default=None, help="預設取設定值")
+    parser.add_argument("--capability", default="embedding", choices=("embedding", "chat"))
+    parser.add_argument("--model", default=None, help="預設取 AI_EMBEDDING_MODEL／AI_CHAT_MODEL")
+    parser.add_argument("--dimensions", type=int, default=None, help="預設取設定值（embedding）")
+    parser.add_argument(
+        "--reasoning",
+        default="off",
+        choices=("off", "low", "medium", "high"),
+        help="chat：試送 reasoning_effort，用來決定 VendorSpec 的旗標能不能打開",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="chat：試送 response_format=json_object"
+    )
     args = parser.parse_args()
+
+    if args.capability == "chat":
+        return asyncio.run(
+            _verify_chat(
+                vendor=args.provider,
+                model=args.model,
+                reasoning=args.reasoning,
+                json_mode=args.json,
+            )
+        )
 
     from config.settings.app_settings import get_app_settings
 
@@ -99,6 +130,110 @@ def main() -> int:
 
     norm = sum(value * value for value in result.vectors[0]) ** 0.5
     print(f"  單位長度={norm:.6f}（應為 1.0）")
+    print("✓ 通過")
+    return 0
+
+
+async def _verify_chat(
+    *, vendor: str, model: str | None, reasoning: str = "off", json_mode: bool = False
+) -> int:
+    """打一次真的串流生成（1D-3a）。
+
+    印**首 token 延遲**而不只是總耗時：11 §1 的 latency budget 管的是 TTFT，而它與
+    總時長沒有固定比例——一個 TTFT 很久但吐得很快的模型，總耗時看起來完全正常。
+
+    `--reasoning` / `--json` 是**用來蒐證的**：`VendorSpec` 的那兩個旗標預設 False
+    （見那裡的說明），要打開得先在這裡對那一家實測通過。所以這兩個旗標刻意**繞過**
+    adapter 的降級判斷直接送出去——降級判斷正是這支腳本要驗的對象。
+    """
+    from ai.gateway.chat import (
+        ChatMessage,
+        ChatRequest,
+        ChatTimeouts,
+        ReasoningEffort,
+        TextDelta,
+        UsageDelta,
+    )
+    from ai.gateway.providers.openai_compatible import OpenAICompatibleChatProvider
+    from config.settings.app_settings import get_app_settings
+
+    settings = get_app_settings()
+    spec = VENDORS[vendor]
+    key = settings.ai_chat_api_key
+    if spec.requires_api_key and not (key and key.get_secret_value()):
+        print(f"✗ {vendor} 需要金鑰：請設定 AI_CHAT_API_KEY", file=sys.stderr)
+        return 2
+
+    chat_model = model or settings.ai_chat_model
+    provider = OpenAICompatibleChatProvider(
+        vendor=vendor,
+        api_key=key.get_secret_value() if key else None,
+        base_url=settings.ai_chat_base_url or None,
+    )
+    if reasoning != "off" or json_mode:
+        # **刻意打開旗標再送**：adapter 的降級判斷（那家沒實測過就不送）正是這裡要
+        # 驗的對象，照它的判斷走就永遠送不出去，也就永遠拿不到可以改旗標的證據。
+        # 這是診斷工具的權限，不是 production 路徑——因此覆寫發生在腳本裡，而不是
+        # 在 adapter 上開一個只有腳本會用的參數。
+        provider._spec = dataclasses.replace(
+            VENDORS[vendor], supports_reasoning_effort=True, supports_response_format=True
+        )
+
+    request = ChatRequest(
+        messages=[
+            ChatMessage(role="system", content="用一句話回答，不要解釋。"),
+            ChatMessage(role="user", content="台灣的首都是哪裡？"),
+        ],
+        model=chat_model,
+        # argparse 的 `choices` 已經把值限定成那四個，但型別上仍是 str。
+        reasoning_effort=cast("ReasoningEffort", reasoning),
+        response_format={"type": "json_object"} if json_mode else None,
+    )
+
+    print(f"provider={vendor}  model={chat_model}  reasoning={reasoning}  json={json_mode}")
+    started = time.monotonic()
+    first_token_at: float | None = None
+    text: list[str] = []
+    usage: UsageDelta | None = None
+    try:
+        async for delta in provider.stream_chat(request, timeouts=ChatTimeouts.from_settings()):
+            if isinstance(delta, TextDelta):
+                if first_token_at is None:
+                    first_token_at = time.monotonic()
+                text.append(delta.text)
+            elif isinstance(delta, UsageDelta):
+                usage = delta
+    except ProviderError as exc:
+        # 同 embedding：只印我們自己的訊息，provider 的原文可能夾著金鑰。
+        print(f"✗ {exc}  (retryable={exc.retryable})", file=sys.stderr)
+        return 1
+
+    elapsed = time.monotonic() - started
+    answer = "".join(text)
+    ttft = f"{first_token_at - started:.2f}s" if first_token_at else "（沒有收到任何 token）"
+    print(f"  首 token={ttft}")
+    print(f"  總耗時={elapsed:.2f}s")
+    print(f"  回答長度={len(answer)} 字元")
+    print(f"  回答={answer[:120]}")
+
+    if not answer:
+        print("✗ 一個 token 都沒收到", file=sys.stderr)
+        return 1
+    if usage is None:
+        # 不是致命錯誤，但要說出來：那家不認得 `stream_options.include_usage`，於是
+        # 這條路徑上的成本統計會全部退回估算值（2A 對帳時會對不上真帳單）。
+        print("⚠ 沒有 usage：那家不吃 stream_options.include_usage，成本只能估")
+    else:
+        print(f"  用量 prompt={usage.prompt_tokens} output={usage.billable_output_tokens}")
+
+    if reasoning != "off" or json_mode:
+        # 走到這裡代表那家收下了那些參數（不收的話上面早就以 400 失敗了）。
+        flags = []
+        if reasoning != "off":
+            flags.append("supports_reasoning_effort=True")
+        if json_mode:
+            flags.append("supports_response_format=True")
+        print(f"  → 可將 VENDORS[{vendor!r}] 的 {'、'.join(flags)} 打開（本次實測通過）")
     print("✓ 通過")
     return 0
 
