@@ -41,6 +41,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from api.background import SHUTDOWN_DRAIN_SECONDS, drain
 from api.schemas.problem import PROBLEM_JSON, ProblemDetail
 from config.logging import bind_request_context, clear_request_context, get_logger
 from core.exceptions import DomainError, ErrorCode
@@ -69,6 +70,8 @@ _HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.ACCOUNT_LOCKED: 423,
     ErrorCode.PERMISSION_DENIED: 403,
     ErrorCode.RESOURCE_CONFLICT: 409,
+    # 續傳緩衝區過期（1D-4b）。09 附錄 A 標的就是 409：client 該做的是改抓最終訊息。
+    ErrorCode.RESUME_EXPIRED: 409,
     ErrorCode.UPLOAD_TOO_LARGE: 413,
     ErrorCode.UNSUPPORTED_MEDIA_TYPE: 415,
     # AI provider（1C-1）。目前只有 worker 走得到（embedding），但 1D 的 chat 會讓
@@ -449,7 +452,7 @@ def create_app() -> FastAPI:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """啟動時在**背景**預熱外部 client（物件儲存、Celery broker）。
+    """啟動時在**背景**預熱外部 client；關機時等背景生成收工。
 
     兩者的第一次使用都很貴（boto3 建 client 要載入數百個描述檔，在 WSL2 掛載磁碟上
     實測 15.6 秒；Celery 要 import 整個套件並連上 broker），而那筆成本原本會落在重啟
@@ -461,6 +464,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     threading.Thread(target=_warm_up_clients, name="warm-up", daemon=True).start()
     yield
+    # 關機：等進行中的生成收工（11 §196、1D-4b）。不等的話，那些回答直接蒸發，而
+    # 資料庫裡對應的訊息永遠停在 `streaming`——重整也不會變，因為沒有人會再去動它。
+    unfinished = await drain(timeout_seconds=SHUTDOWN_DRAIN_SECONDS)
+    if unfinished:
+        logger.warning("shutdown_left_generations_unfinished", count=unfinished)
 
 
 @cache

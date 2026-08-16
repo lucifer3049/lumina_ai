@@ -23,6 +23,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -59,6 +62,11 @@ __all__ = ["ChatService", "TurnStarted"]
 # 直接失去更早的內容。這是**刻意的**：沒有摘要時的正確行為是「記得最近的」，而不是
 # 「把全部塞進 context 直到爆掉」。
 HISTORY_WINDOW_MESSAGES = 20
+
+# 中止旗標的輪詢間隔（1D-4b）。**不是每個 token 問一次**：那是每個 token 一趟 Redis
+# 往返，而 token 是以百計的。0.2 秒是「使用者按下停止到真的停下來」的上限，那遠低於
+# 人的感知門檻，而省下來的是幾百趟往返。
+STOP_POLL_SECONDS = 0.2
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,7 +171,26 @@ class ChatService:
                 },
             )
 
+            stop_checked_at = time.monotonic()
             async for delta in self.gateway.stream_chat(request):
+                now = time.monotonic()
+                if now - stop_checked_at >= STOP_POLL_SECONDS:
+                    stop_checked_at = now
+                    if await buffer.stop_requested():
+                        # 使用者自己按的停止**不是錯誤**：他剛剛得到的正是他要的結果。
+                        # 送 error 的話前端會顯示一個紅色的失敗訊息（09 §1.3）。
+                        await self._complete(
+                            buffer,
+                            turn,
+                            tenant_id,
+                            finish_reason="stopped",
+                            status="interrupted",
+                            text=text,
+                            usage=usage,
+                            model=model,
+                            prompt_version=prompt_version,
+                        )
+                        return
                 if isinstance(delta, TextDelta):
                     text.append(delta.text)
                     await buffer.append("delta", {"text": delta.text})
@@ -216,6 +243,31 @@ class ChatService:
                         prompt_version=prompt_version,
                     )
                     return
+        except asyncio.CancelledError:
+            # 關機時被 `drain()` 取消（11 §196）。**要留下痕跡再走**：不留的話，使用者
+            # 的畫面停在半句話、而資料庫裡那一則永遠是 `streaming`——重整也不會變，
+            # 因為沒有人會再去動它。
+            #
+            # 收尾用 `shield` 包住：這個 task 已經被要求取消，接下來的每一個 await 都
+            # 可能立刻再收到 CancelledError，而那會讓收尾只做一半（事件送了、狀態沒改）。
+            with contextlib.suppress(Exception):
+                await asyncio.shield(
+                    self._fail(
+                        buffer,
+                        turn,
+                        tenant_id,
+                        code=ErrorCode.STREAM_INTERRUPTED,
+                        message="伺服器正在重啟，生成已中斷",
+                        retryable=True,
+                        status="interrupted",
+                        text=text,
+                        usage=usage,
+                        model=model,
+                        prompt_version=prompt_version,
+                        cause="shutdown",
+                    )
+                )
+            raise
         except ProviderError as exc:
             # 第一個 token 之前就失敗（1D-3a 的分水嶺之前是例外）。一個字都沒產生，
             # 所以重試是乾淨的——code 與中斷那一種必須分得開。
@@ -256,8 +308,12 @@ class ChatService:
         user_id: uuid.UUID,
         conversation_id: uuid.UUID,
         message_id: uuid.UUID,
-    ) -> None:
-        """串流端點的守門：這則訊息在他自己的對話裡嗎？
+    ) -> str:
+        """串流端點的守門：這則訊息在他自己的對話裡嗎？回傳它的狀態。
+
+        **回狀態是給續傳判斷用的**（1D-4b）：緩衝區不在時，「還在生成」與「早就結束」
+        要走不同的路——前者是「第一個事件還沒寫進來」（正常，繼續等），後者是
+        「緩衝區過期了」（409，改抓最終訊息）。
 
         **拆成兩步之後多了一個入口，而這個入口最容易漏掉判定。** RLS 只擋租戶，擋不了
         同租戶的另一個使用者（1D-2 已經踩過），而 `message_id` 會出現在前端的網址與
@@ -267,13 +323,14 @@ class ChatService:
             conversation = self._conversations.get_by_id(conversation_id)
             if conversation is None or conversation.user_id != user_id:
                 raise NotFoundError("對話不存在")
-            belongs = (
+            message = (
                 self._messages.get_queryset()
                 .filter(id=message_id, conversation_id=conversation_id)
-                .exists()
+                .first()
             )
-            if not belongs:
+            if message is None:
                 raise NotFoundError("訊息不存在")
+            return str(message.status)
 
     async def wait_for_result(self, tenant_id: uuid.UUID, message_id: uuid.UUID) -> MessageView:
         """非串流模式（`?stream=false`）用：生成跑完之後把訊息讀回來。
@@ -330,12 +387,15 @@ class ChatService:
         usage: dict[str, Any],
         model: str,
         prompt_version: int | None,
+        status: str = "completed",
     ) -> None:
+        """正常收尾。`status` 只有中止時不是 `completed`——那時 `finish_reason` 是
+        `stopped`，讓前端分得出「講完了」與「被停下來」（05 §3.4 的 `interrupted`）。"""
         await run_orm(
             self._persist,
             tenant_id,
             turn.message_id,
-            status="completed",
+            status=status,
             content="".join(text),
             usage=usage,
             model=model,
@@ -347,6 +407,7 @@ class ChatService:
         logger.info(
             "chat_turn_completed",
             message_id=str(turn.message_id),
+            finish_reason=finish_reason,
             model=model,
             prompt_version=prompt_version,
             prompt_tokens=usage.get("prompt_tokens"),

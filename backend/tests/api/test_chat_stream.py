@@ -35,7 +35,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -73,11 +72,11 @@ async def _drain_background_generation() -> AsyncIterator[None]:
     屬 1D-4b。這裡先讓測試本身是確定性的。
     """
     yield
-    from api.v1 import conversations as endpoint
+    # 登記表在 1D-4b 搬到 `api/background.py` 並長出 `drain()`（graceful shutdown 要用
+    # 同一份）。測試沿用它，兩邊因此不會各有一套「等背景收工」的邏輯。
+    from api.background import drain
 
-    pending = set(endpoint._running)
-    if pending:
-        await asyncio.wait(pending, timeout=10)
+    await drain(timeout_seconds=10)
 
 
 @pytest.fixture(autouse=True)

@@ -178,7 +178,9 @@ stream_chat／1D-3b PromptBuilder／1D-4a 端點與生成／1D-4b resume 與 sto
 | 4 | 記憶視窗 | 06 §5：視窗 + 摘要 | 1D-4a **只做視窗**（近 10 輪原文） | 摘要壓縮屬 Phase 3C。沒有摘要時的正確行為是「記得最近的」，而不是把全部塞進 context |
 | 5 | Redis client | `core/redis.py`：只用同步 client | SSE 串流路徑**加一個 async client** | 該規則的理由是「service 層是同步的」，而 SSE 是 transport 層：讀取端要等下一個事件，跑在 threadpool 上就是一條串流佔一條執行緒，與 11 §26 的 200 併發串流相矛盾 |
 
-**1D-4a 帶進 1D-4b 的已知缺口**：① graceful shutdown（11 §196：SIGTERM → 送 `error(retryable)` → 等 ≤30s）尚未實作，目前行程結束會讓進行中的生成消失；② 串流讀取端一律從第 0 號事件開始，`Last-Event-ID` 尚未接上；③ `stop` 端點與跨行程的中止旗標未做；④ 心跳已實作，但「client 斷線後伺服器繼續收完」只是**天然成立**，尚未有測試釘住（1D-4b 補）。
+**1D-4a 帶進 1D-4b 的已知缺口（四項均於 1D-4b 結案）**：① graceful shutdown（11 §196）→ `api/background.py` 的登記表 + `drain()`，由 lifespan 在關機時呼叫；被取消的生成會留下 `error(retryable)` 事件與 `interrupted` 狀態。② `Last-Event-ID` → 已接上；壞值回 422，緩衝區過期回 409 `RESUME_EXPIRED`。③ `stop` 端點 → `POST .../stop` 回 202，旗標放 Redis（跨行程）；中止以 `done(finish_reason="stopped")` 收尾而不是 `error`——使用者自己按的停止不是失敗，送 error 會讓前端顯示一個紅色的失敗訊息。④ G-06 → 已有測試釘住（斷線後仍完整持久化，且緩衝區補得回中間那一段）。
+
+**1D-4b 的兩個決定值得記**：中止旗標**必須跨行程**——11 §45 的部署形狀下，停止請求幾乎不會落回產生它的那個行程，放在記憶體裡的旗標只停得了剛好接到請求的那一台，而使用者按了停止、帳單繼續跑；因此有一條測試直接盯著那個 Redis key。以及 `RESUME_EXPIRED` **對映 HTTP 409**，與 `STREAM_INTERRUPTED` 相反——它發生在還沒送出任何位元組的時候，那時回一個真正的狀態碼是可能的，也是必要的。
 
 ## 4. Phase 2：多租戶營運能力（5 週，~13 pw）
 

@@ -1799,9 +1799,91 @@
         ]
       }
     },
+    "/api/v1/conversations/{conversation_id}/messages/{message_id}/stop": {
+      "post": {
+        "description": "中止生成（09 §2.4）。\n\n**202 而不是 204**：真正停下來的是**另一個行程**裡的那個 task（11 §45：每 replica\n兩個 worker × N replica），這裡只是把旗標放上去。09 §3.3 的 202 慣例講的就是這種\n「已受理、還沒發生」。\n\n已經結束的生成照樣回 202：使用者在最後一個 token 到達的同一瞬間按下停止，那是他\n躲不掉的競態，不該因此看到錯誤。",
+        "operationId": "conversations_stop_message",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "請求格式錯誤"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "不存在或無權可見"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "語意驗證失敗"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "內部錯誤"
+          }
+        },
+        "summary": "Stop Message",
+        "tags": [
+          "conversations"
+        ]
+      }
+    },
     "/api/v1/conversations/{conversation_id}/messages/{message_id}/stream": {
       "get": {
-        "description": "讀一則訊息的生成串流（09 §3.2）。\n\n**這是第二個入口，而它最容易漏掉擁有者判定**：RLS 只擋租戶，擋不了同租戶的另一個\n使用者（1D-2 已經踩過這條），而 `message_id` 會出現在前端的網址與 log 裡。",
+        "description": "讀一則訊息的生成串流（09 §3.2）。**帶 `Last-Event-ID` 就是續傳。**\n\n**這是第二個入口，而它最容易漏掉擁有者判定**：RLS 只擋租戶，擋不了同租戶的另一個\n使用者（1D-2 已經踩過這條），而 `message_id` 會出現在前端的網址與 log 裡。",
         "operationId": "conversations_stream_message",
         "parameters": [
           {
@@ -1822,6 +1904,22 @@
               "format": "uuid",
               "title": "Message Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
             }
           }
         ],

@@ -92,6 +92,33 @@ class StreamBuffer:
         _, rows = cast("Any", result)[0]
         return [_decode(entry_id, fields) for entry_id, fields in rows]
 
+    async def exists(self) -> bool:
+        """緩衝區還在嗎？TTL 過期之後就不在了（09 §3.2 的 5 分鐘）。
+
+        續傳前要問這件事：不在的話，client 要求接續的那些事件已經沒了，正確的回應是
+        `409 RESUME_EXPIRED` 而不是一條空的串流——空串流對 client 的意思是「這則訊息
+        沒有內容」，而它其實有，只是要改用 `GET /messages` 去抓。
+        """
+        return bool(await get_async_redis().exists(self.key))
+
+    async def request_stop(self) -> None:
+        """標記「這則生成要停下來」（1D-4b 的中止）。
+
+        **旗標放 Redis 而不是行程記憶體**：正式環境是每 replica 兩個 uvicorn worker ×
+        N replica（11 §45），中止請求幾乎不會落回產生那則訊息的行程。放在記憶體裡的話，
+        它只停得了剛好接到請求的那一台——使用者按了停止，而帳單繼續跑。
+
+        TTL 與緩衝區相同：生成最長也就跑那麼久，留著只會累積垃圾。
+        """
+        await get_async_redis().set(self._stop_key, "1", ex=BUFFER_TTL_SECONDS)
+
+    async def stop_requested(self) -> bool:
+        return bool(await get_async_redis().exists(self._stop_key))
+
+    @property
+    def _stop_key(self) -> str:
+        return f"{self.key}:stop"
+
     async def ttl_seconds(self) -> int:
         return int(await get_async_redis().ttl(self.key))
 

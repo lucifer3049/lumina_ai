@@ -47,6 +47,11 @@ class ErrorCode(StrEnum):
     # `etl_jobs.error` 與通知，沒有一個等在旁邊的請求可以回。因此 api/main.py 的
     # `_HTTP_STATUS` 刻意不收這一條——真的漏到 HTTP 時走 500，那是程式錯誤。
     ETL_FAILED = "ETL_FAILED"
+    # 續傳（1D-4b）。**這一個對映 HTTP**（409）——與下面的 STREAM_INTERRUPTED 相反：
+    # 它發生在 client 要求續傳、而伺服器還沒送出任何位元組的時候，那時回一個真正的
+    # 狀態碼是可能的，也是必要的（回 200 + 空串流的話，client 會以為那則訊息沒有內容，
+    # 而它其實有——只是要改用 GET /messages 去抓最終結果）。
+    RESUME_EXPIRED = "RESUME_EXPIRED"
     # 串流對話（1D-3a）。同樣**不對映 HTTP**（09 附錄 A 的 HTTP 欄是「—」），理由與
     # ETL_FAILED 相同但情境相反：不是沒有請求在等，而是那個請求**早就回了 200**——
     # 中斷發生在第一個 token 之後，狀態碼已經送出去了。它只能是 SSE 的 error event。
@@ -347,3 +352,18 @@ class CrossTenantTransactionError(DomainError):
             f"交易已綁定租戶 {active}，不得在其中改用租戶 {requested}——跨租戶操作請各自開交易",
             details={"active_tenant": active, "requested_tenant": requested},
         )
+
+
+class ResumeExpiredError(DomainError):
+    """SSE 的續傳緩衝區已過期（09 §3.2、附錄 A：409）。
+
+    ``retryable`` 為假：同樣的續傳請求再送一次結果不會不同，緩衝區不會回來。client 的
+    正確處置是**改抓最終訊息**（`GET /conversations/{id}/messages`），而那是一個不同的
+    請求，不是重試。
+    """
+
+    code = ErrorCode.RESUME_EXPIRED
+    retryable = False
+
+    def __init__(self) -> None:
+        super().__init__("串流緩衝區已過期，請改讀最終訊息")
