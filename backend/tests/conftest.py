@@ -161,6 +161,53 @@ def django_db_setup(
             teardown_databases(db_cfg, verbosity=verbosity)
 
 
+def _wipe_tenant_redis() -> None:
+    from core.redis import get_redis, tenant_key
+
+    client = get_redis()
+    for tenant_id in (TENANT_A, TENANT_B):
+        keys = list(client.scan_iter(match=tenant_key(tenant_id, "*")))
+        if keys:
+            client.delete(*keys)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_redis(request: pytest.FixtureRequest) -> Iterator[None]:
+    """每條測試**前後**都清掉本 worker 兩個租戶的 Redis key。
+
+    **Redis 是同一個 worker 內唯一沒有人幫我們回滾的共用狀態。** DB 有 pytest-django
+    的交易回滾與 flush，物件儲存靠租戶前綴分開（見檔案開頭），而 Redis 裡的登入失敗
+    計數（15 分鐘 TTL）、jti 撤銷名單與 refresh 家族全部是**跨測試存活**的——同一個
+    worker 的下一條測試會直接看到它們。
+
+    在這之前，這件事是由各個測試檔各自寫一份 teardown fixture 處理的（十來份幾乎一樣
+    的程式碼）。那個做法有兩個問題，而且第二個更嚴重：
+
+    1. **新檔案必須記得抄一份**，忘了就沒有；而忘了的症狀不會出現在那個檔案上。
+    2. **只清 teardown 等於假設「別人也都有清」**。一條測試若在髒的狀態下開始，受害的
+       是它，而肇事的是別人——排錯時看到的堆疊完全指向錯的地方。
+
+    **清在進入時而不是離開時**：那是這條測試自己控制得了的一端。每條測試都清進入端
+    之後，離開端就是多餘的（下一條進來時反正會再清一次），而它要付的是每條測試多一
+    次 Redis 往返——全套 800 多條測試量得出來（實測約 +5 秒）。既有的各檔 teardown
+    fixture 因此不必動，但新檔案**不需要**再抄一份。
+
+    這是針對**這一類**問題的處置，不是針對某一次的重現：2026-08-16 的一次全套執行有
+    兩條互不相關的測試同時紅（`test_refresh_rotation` 與 `test_knowledge_permissions`
+    的權限矩陣），而該次沒有任何 teardown ERROR（因此不是 1D-2 修掉的 flush 那一類），
+    之後六次重跑全綠、未能重現。共通點是兩者都依賴「登入拿得到 token」，而那正好是
+    Redis 裡唯一跨測試存活的狀態。
+
+    unit 層跳過：`make test-unit` 明說不需要 `make up`（無外部依賴），而連 Redis 就是
+    給它加一個依賴。
+    """
+    if "unit" in request.node.path.parts:
+        yield
+        return
+    _wipe_tenant_redis()
+    yield
+
+
 @pytest.fixture
 def two_empty_tenants(transactional_db: object) -> Iterator[tuple[uuid.UUID, uuid.UUID]]:
     """只建兩個租戶列，不建任何使用者。

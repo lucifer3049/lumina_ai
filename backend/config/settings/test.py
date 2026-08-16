@@ -77,6 +77,14 @@ os.environ["AI_EMBEDDING_PROVIDER"] = "mock"
 os.environ["AI_EMBEDDING_MODEL"] = "mock-embedding"
 os.environ["AI_EMBEDDING_API_KEY"] = ""
 
+# chat 同理，而且更重要：一次對話的成本比一次 embedding 高一到兩個數量級，且 1D-4
+# 之後每一條 SSE 測試都會觸發一次生成。fallback 鏈一併清空——鏈上的模型同樣是真的
+# 會被呼叫到的（primary 失敗時），只清 primary 等於留了一條沒人看守的路。
+os.environ["AI_CHAT_PROVIDER"] = "mock"
+os.environ["AI_CHAT_MODEL"] = "mock-chat"
+os.environ["AI_CHAT_API_KEY"] = ""
+os.environ["AI_CHAT_FALLBACK_MODELS"] = ""
+
 # 這個模組在 `django.setup()` 期被 import，通常早於第一次 `get_app_settings()`——但
 # 「通常」不夠：只要有任何一條 import 路徑先讀過設定，上面三行就白寫了，而症狀是
 # 測試偶爾會打真 API。清一次快取讓它與時序無關。
