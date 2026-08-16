@@ -136,7 +136,8 @@ pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `1637
 | `make image` | 建置 backend image（與 CI 同一份 Dockerfile） |
 | `make minio-init` | 重建 bucket / 版本化 / 關閉匿名存取（冪等） |
 | `make db-timeouts` | 重新套用 role 層級 `statement_timeout`（冪等） |
-| `make lint` | ruff check + ruff format --check + mypy strict |
+| `make lint` | 後端 + 前端全部靜態檢查（`lint-backend` + `fe-lint`；前端需先 `make fe-install`） |
+| `make lint-backend` | 只跑後端：ruff check + ruff format --check + mypy strict + import-linter |
 | `make fe-install` / `fe-lint` / `fe-test` / `fe-build` / `fe-dev` | 前端相依 / eslint+vue-tsc / vitest / build / dev server |
 | `make openapi` | 由 FastAPI 匯出 API 契約到 `openapi.json` |
 | `make gen-api` | 由契約重新產生前端 typed client（`frontend/src/api/generated/`） |
@@ -199,7 +200,7 @@ make fe-test
 
 | Job | 內容 |
 |-----|------|
-| quality | `make lint`（ruff + mypy strict + import-linter）、`make test-unit` |
+| quality | `make lint-backend`（ruff + mypy strict + import-linter）、`make test-unit`。**不是 `make lint`**：那個連前端一起跑，而本 job 沒有 Node |
 | tests | `make up` 起真實 PG/Redis/MinIO → `make migrate` → integration + api 測試 |
 | frontend | `make fe-lint`（eslint + vue-tsc）、`make fe-test`（vitest）、`make openapi-check` |
 | image | `make image` → 驗證以非 root 執行 → trivy 掃描（HIGH/CRITICAL 有修補版即擋 PR） |

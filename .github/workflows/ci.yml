@@ -74,8 +74,11 @@ jobs:
       - name: uv.lock 與 pyproject 一致
         run: make lock-check
 
+      # `lint-backend` 而不是 `lint`：後者連前端的 eslint + vue-tsc 一起跑（本機一個
+      # 指令檢查兩端），而本 job 沒有 setup-node 也沒有 node_modules，會停在
+      # `eslint: not found`。前端由下方的 frontend job 跑。
       - name: ruff + mypy + import-linter
-        run: make lint
+        run: make lint-backend
 
       - name: unit 測試（無外部依賴）
         run: make test-unit
