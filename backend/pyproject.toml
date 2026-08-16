@@ -55,6 +55,15 @@ dependencies = [
     "py3langid>=0.3",
     "celery[redis]>=5.6.3",
     "pgvector>=0.5.0",
+    # Prompt 模板渲染（BSD-3）。02 §2 就指名它，而挑它的理由是**沙箱**：模板在
+    # Phase 5 是租戶可編輯的資產（09 §2.5 的 /prompts），而 `SandboxedEnvironment`
+    # 是少數經過長期實戰的「使用者可寫模板」執行環境。自己做字串替換的話，
+    # 迴圈與條件遲早要補，而那時就是在寫一個沒有沙箱的模板引擎。
+    "jinja2>=3.1",
+    # `variables_schema` 與（3A 的）tool `params_schema` 都是 JSON Schema（05 §3.3、
+    # 07 §2）。手寫驗證在扁平物件上看起來夠用，但巢狀與 anyOf 一出現就會與規格漂開，
+    # 而漂開的方向是「該擋的沒擋」。MIT。
+    "jsonschema>=4.23",
 ]
 
 [dependency-groups]
@@ -74,6 +83,10 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "django-stubs[compatible-mypy]>=5.1",
+    # jsonschema 的 typeshed stub。裝 stub 而不是 `ignore_missing_imports`（同 openpyxl
+    # 的理由）：這個模組的典型錯誤是「以為某個欄位一定有值」，而那正是型別檢查抓得到
+    # 的一類。
+    "types-jsonschema>=4.23",
     # 分層依賴的強制工具（02 §3）；contracts 見本檔 [tool.importlinter]
     "import-linter>=2.0",
     # tests/unit/test_ci_pipeline.py 解析 workflow YAML 用

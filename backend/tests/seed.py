@@ -16,6 +16,8 @@ migration 的產物，那正是 `tests/integration/test_permission_seed.py` 要�
 
 from __future__ import annotations
 
+from importlib import import_module
+
 from django.db import connections
 
 from services.identity.permissions import PERMISSION_CODES, SYSTEM_ROLE_PERMISSIONS
@@ -62,4 +64,50 @@ def ensure_identity_seed() -> None:
             JOIN identity_permission p ON p.code = v.code
             ON CONFLICT DO NOTHING;
             """  # noqa: S608
+        )
+
+
+def ensure_prompt_seed() -> None:
+    """補回系統 RAG 模板（`apps/ai/migrations/0004_seed_rag_prompt.py` 種的那一列）。
+
+    理由與 `ensure_identity_seed` 完全相同（TRUNCATE 會清掉 migration 的產物），但這裡
+    多一個限制：**那一列的 `tenant_id` 是 NULL，而應用角色寫不出 NULL 的列**——
+    `ai_prompt` 的 RLS `WITH CHECK` 只放行自己的租戶（1D-3b 的決定：租戶寫得出系統模板
+    就等於改得動所有人的 prompt）。所以這裡走 ``admin`` 連線，那也是 migration 用的角色。
+
+    **內容直接取自那個 migration 模組**，不另抄一份：抄一份就是第二個真相來源，而
+    「測試看到的模板」與「正式環境種下的模板」不一致時完全沒有症狀——測試全綠，而
+    線上的回答依據的是另一份規則。
+    """
+    seed_migration = import_module("apps.ai.migrations.0004_seed_rag_prompt")
+
+    with connections["admin"].cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO ai_prompt
+                (id, tenant_id, key, name, description, created_at, updated_at)
+            VALUES (%s, NULL, %s, 'RAG 問答主模板', '', now(), now())
+            ON CONFLICT DO NOTHING;
+            """,
+            [str(seed_migration.PROMPT_ID), seed_migration.SYSTEM_RAG_PROMPT_KEY],
+        )
+        cursor.execute(
+            """
+            INSERT INTO ai_promptversion
+                (id, prompt_id, version, status, template, variables_schema, model_hint,
+                 published_at, change_note, created_at, updated_at)
+            VALUES (%s, %s, 1, 'published', %s, '{}', '{}', now(), '1D-3b 初版', now(), now())
+            ON CONFLICT DO NOTHING;
+            """,
+            [
+                str(seed_migration.VERSION_ID),
+                str(seed_migration.PROMPT_ID),
+                seed_migration.TEMPLATE,
+            ],
+        )
+        # 分開一步：`active_version_id` 指向的是上面那一列，而 Prompt 與 PromptVersion
+        # 互相指涉（見 models.py），插入時還沒有版本可指。
+        cursor.execute(
+            "UPDATE ai_prompt SET active_version_id = %s WHERE id = %s",
+            [str(seed_migration.VERSION_ID), str(seed_migration.PROMPT_ID)],
         )
