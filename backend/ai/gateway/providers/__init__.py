@@ -11,8 +11,11 @@ fallback 全在 Gateway。分散到 adapter 的話，每接一家就要重寫一
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+
+from ai.gateway.chat import ChatRequest, ChatTimeouts, ProviderDelta
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,3 +48,27 @@ class EmbeddingProvider(Protocol):
     def embed(
         self, texts: list[str], *, model: str, timeout_seconds: float
     ) -> ProviderEmbedding: ...
+
+
+@runtime_checkable
+class ChatProvider(Protocol):
+    """串流對話 adapter（1D-3a）。
+
+    介面比 embedding 更窄：**adapter 只管「把位元組翻成 delta」**。重試、fallback、
+    牆鐘逾時、用量補估全在 Gateway——散到 adapter 的話，每接一家就要重寫一次那些規則，
+    而其中一家寫錯只在切換到那家時才走得到，也就是沒有人測的時候。
+
+    **失敗一律用例外表達**，不吐 `ErrorDelta`：只有 Gateway 知道現在在不在分水嶺之後
+    （第一個 token 有沒有交付出去），而那件事決定失敗該長成例外還是 delta。
+
+    `timeouts` 由 Gateway 傳入（同 embedding 的 `timeout_seconds`）：11 §4.1 的 timeout
+    字典是全域的，adapter 各自訂一個值會讓那份字典失去意義。adapter 負責的是 socket
+    層（連線與「下一段一直不來」），整體上限由 Gateway 的牆鐘管——adapter 是第三方
+    程式碼，它有沒有把 timeout 真的傳到底層不是我們能保證的。
+    """
+
+    name: str
+
+    def stream_chat(
+        self, request: ChatRequest, *, timeouts: ChatTimeouts
+    ) -> AsyncGenerator[ProviderDelta, None]: ...

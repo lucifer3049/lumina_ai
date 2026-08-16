@@ -376,9 +376,12 @@ smoke: ## E2E smoke suite（登入→上傳→ready→問答→引用；需先 m
 # 而紅——那種紅燈與改動無關，久了就沒有人看紅燈了。
 # 守門：tests/unit/test_dev_launcher.py::TestProviderVerification
 PROVIDER ?= gemini
+# embedding（預設）或 chat。chat 走 /chat/completions 的串流，驗的是 SSE 格式、
+# `[DONE]` 與 `stream_options.include_usage`——假的 HTTP 層之下那些全是我們自己的預期值。
+CAPABILITY ?= embedding
 
-verify-provider: ## 手動打一次真的 embedding API（需 AI_EMBEDDING_API_KEY；用 PROVIDER= 指定廠商）
-	$(UV_RUN) python scripts/verify_provider.py --provider $(PROVIDER)
+verify-provider: ## 手動打一次真的 API（PROVIDER= 指定廠商、CAPABILITY=embedding|chat）
+	$(UV_RUN) python scripts/verify_provider.py --provider $(PROVIDER) --capability $(CAPABILITY)
 
 # 只挑 test_infra_*.py（-k 會比對 module 名，不用 shell glob——glob 會在 repo 根展開，
 # 而 pytest 的工作目錄是 backend/，路徑對不上）。與 test-integration 的差別在此：

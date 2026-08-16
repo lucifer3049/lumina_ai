@@ -108,6 +108,32 @@ class AppSettings(BaseSettings):
     # embedding 是一次性呼叫，只需要整體上限。批次 64 筆的 API 呼叫通常 < 5s。
     ai_embedding_timeout_seconds: float = 30.0
 
+    # ── AI Gateway：串流對話（06 §4；1D-3a）──
+    # **與 embedding 是兩組獨立的設定**，即使兩邊常常是同一家。理由是它們的選型依據
+    # 完全不同：embedding 綁著整個知識庫的向量（換了就要重算），chat 換一家是換一次
+    # 請求。共用一組的話，想換聊天模型就得連帶動到 embedding，而那是重嵌入。
+    ai_chat_provider: Literal["mock", "gemini", "openai", "openrouter", "nvidia", "ollama"] = "mock"
+    ai_chat_api_key: SecretStr | None = None
+    ai_chat_base_url: str = ""
+    ai_chat_model: str = "mock-chat"
+    # fallback 鏈（06 §4）：primary 在**尚未輸出任何 token** 時失敗才會往下走。
+    # 逗號分隔而不是 list：它來自環境變數，而 pydantic 對 list 的環境變數要求 JSON
+    # 字面值（`["a","b"]`），在 .env 裡貼那個很容易貼壞，且錯的形狀會讓服務起不來。
+    # 預設空字串 = 沒有 fallback：鏈上的每一個模型都要有人確認過它答得出同樣品質的
+    # 東西，而那是產品決策，不該由一個預設值代做。
+    ai_chat_fallback_models: str = ""
+    # 三層逾時，各自擋不同的故障（06 §4）：
+    #   connect —— 連不上（DNS、TLS、對方沒開）。
+    #   ttft    —— 連上了但第一個字遲遲不來（對方塞車）。這一段還在分水嶺之前，
+    #              所以逾時可以安全地換一個模型重來。
+    #   total   —— 吐得很慢但一直沒停。沒有它的話，一個壞掉的 provider 可以讓一條
+    #              連線與一份 quota 保留量停在那裡好幾個小時，而監控上只看得到
+    #              「有一個請求還在跑」。
+    # reasoning 模型的 TTFT 天然更長，06 §4 已載明啟用時由 model_config 覆寫（2A）。
+    ai_chat_connect_timeout_seconds: float = 10.0
+    ai_chat_ttft_timeout_seconds: float = 30.0
+    ai_chat_total_timeout_seconds: float = 120.0
+
     @property
     def redis_url(self) -> SecretStr:
         """`redis://:pw@host:port/db`；密碼經 percent-encoding，特殊字元不會拆壞 URL。"""

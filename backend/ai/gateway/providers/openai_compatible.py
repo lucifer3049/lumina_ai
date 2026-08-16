@@ -19,12 +19,23 @@ REST，直接用已有的 httpx。裝五個 SDK 是五個相依、五組版本�
 
 from __future__ import annotations
 
+import json
 import math
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
+from ai.gateway.chat import (
+    ChatRequest,
+    ChatTimeouts,
+    DoneDelta,
+    ProviderDelta,
+    TextDelta,
+    ToolCallDelta,
+    UsageDelta,
+)
 from ai.gateway.providers import ProviderEmbedding
 from core.exceptions import (
     ModelNotEnabledError,
@@ -51,6 +62,19 @@ class VendorSpec:
     # 送了會被退整批（400）——「支不支援」是廠商的性質，寫在呼叫端就是每個呼叫端
     # 各判斷一次，而漏掉的那個只在切到那家時才會壞。
     supports_dimensions: bool
+    # ── chat 的兩個選配參數（06 §4 的介面預留）───────────────────
+    #
+    # **預設一律 False，而那不是「那家做不到」，是「我們還沒實測過」。**
+    # 06 §4 定的降級模式是「不支援的 provider 靜默忽略」——而「靜默」只有在**我們**
+    # 不送的時候才成立：真的送給一個不認得它的端點，回來的是 400，那是整個請求失敗，
+    # 不是忽略。所以判斷必須發生在送出之前，也就是這張表。
+    #
+    # 開成 True 的條件是 `make verify-provider CAPABILITY=chat --reasoning/--json` 對
+    # 那一家實測通過（同 `supports_dimensions` 的定案方式：那個旗標當初也是實測才敢
+    # 寫死的）。憑記憶或憑文件填 True 的代價是不對稱的——填錯成 False 只是少一個
+    # 選配功能，填錯成 True 是那家的每一次請求都失敗。
+    supports_reasoning_effort: bool = False
+    supports_response_format: bool = False
 
 
 VENDORS: dict[str, VendorSpec] = {
@@ -62,10 +86,15 @@ VENDORS: dict[str, VendorSpec] = {
         requires_api_key=True,
         supports_dimensions=True,
     ),
+    # **唯一兩個旗標開著的**：`reasoning_effort` 與 `response_format` 就是 OpenAI 自己
+    # 定義的參數，其餘四家是「相容端點」——相容的是哪幾個欄位由那家決定，而那正是
+    # 1C-5 在 `dimensions` 上實測到差異的地方（Gemini 吃、NVIDIA 與 Ollama 不吃）。
     "openai": VendorSpec(
         base_url="https://api.openai.com/v1",
         requires_api_key=True,
         supports_dimensions=True,
+        supports_reasoning_effort=True,
+        supports_response_format=True,
     ),
     # 一把金鑰通到多家（含 OpenAI、Cohere、Google、Mistral 的 embedding 模型）。
     # 支不支援 `dimensions` 其實取決於底層模型，這裡取「送得出去」的一邊——不支援的
@@ -91,7 +120,36 @@ VENDORS: dict[str, VendorSpec] = {
 }
 
 
-class OpenAICompatibleProvider:
+class _VendorClient:
+    """廠商解析與憑證處理 —— embedding 與 chat 兩個 adapter 共用。
+
+    **共用的是「哪一家、位址在哪、金鑰怎麼帶」**，不是呼叫本身：那三件事在兩條路徑上
+    完全相同，而寫兩份的話，加一家廠商就有一半的機會只改到一邊——症狀是「embedding
+    切過去了、聊天還在打舊位址」，而兩邊都不會報錯。
+    """
+
+    def __init__(self, *, vendor: str, api_key: str | None, base_url: str | None) -> None:
+        if vendor not in VENDORS:
+            raise ProviderUnavailableError(f"未知的 provider：{vendor}")
+        self.name = vendor
+        self._spec = VENDORS[vendor]
+        self._base_url = base_url or self._spec.base_url
+        # 私有且不進 __repr__（見下）。provider 物件會整個被丟進 log 的情況很常見
+        # ——設定 dump、例外的 locals、除錯時的 print。
+        self._api_key = api_key
+
+    def __repr__(self) -> str:
+        """**不含金鑰**。預設的 dataclass/物件 repr 會把它整串印出來。"""
+        return f"{type(self).__name__}(vendor={self.name!r}, base_url={self._base_url!r})"
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
+
+
+class OpenAICompatibleProvider(_VendorClient):
     """把一批文字送去 `/embeddings`，回傳向量、實際模型與用量。"""
 
     def __init__(
@@ -103,20 +161,9 @@ class OpenAICompatibleProvider:
         base_url: str | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        if vendor not in VENDORS:
-            raise ProviderUnavailableError(f"未知的 provider：{vendor}")
-        self.name = vendor
-        self._spec = VENDORS[vendor]
-        self._base_url = base_url or self._spec.base_url
+        super().__init__(vendor=vendor, api_key=api_key, base_url=base_url)
         self._dimensions = dimensions
         self._transport = transport
-        # 私有且不進 __repr__（見下）。provider 物件會整個被丟進 log 的情況很常見
-        # ——設定 dump、例外的 locals、除錯時的 print。
-        self._api_key = api_key
-
-    def __repr__(self) -> str:
-        """**不含金鑰**。預設的 dataclass/物件 repr 會把它整串印出來。"""
-        return f"OpenAICompatibleProvider(vendor={self.name!r}, base_url={self._base_url!r})"
 
     def embed(self, texts: list[str], *, model: str, timeout_seconds: float) -> ProviderEmbedding:
         if not texts:
@@ -136,9 +183,7 @@ class OpenAICompatibleProvider:
     # ── HTTP ────────────────────────────────────────────────
 
     def _post(self, payload: dict[str, Any], *, timeout_seconds: float) -> dict[str, Any]:
-        headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        headers = self._headers()
 
         try:
             with httpx.Client(
@@ -156,7 +201,7 @@ class OpenAICompatibleProvider:
             raise ProviderUnavailableError(f"{self.name} 連線失敗：{type(exc).__name__}") from exc
 
         if response.status_code >= 400:
-            raise self._error_for(response)
+            raise _error_for(response, vendor=self.name)
 
         try:
             body = response.json()
@@ -165,29 +210,6 @@ class OpenAICompatibleProvider:
         if not isinstance(body, dict):
             raise ProviderUnavailableError(f"{self.name} 回應格式非預期")
         return body
-
-    def _error_for(self, response: httpx.Response) -> ProviderError:
-        """HTTP 狀態 → 我們的例外型別。**可否重試由型別決定**（1C-1 定案）。
-
-        **訊息一律由我們自己組**，絕不回貼 provider 的原文（鐵則 9）：那些訊息常把整個
-        請求（含 Authorization 標頭或帶 key 的 URL）回貼回來，而 `document.error` 會經
-        `DocumentOut` 回到租戶手上。狀態碼留著——分類與統計要用它，而它不洩漏內容。
-        """
-        status = response.status_code
-        detail = {"status": status, "vendor": self.name}
-
-        if status == 429:
-            return ProviderRateLimitedError(f"{self.name} 頻率限制", details=detail)
-        if status in (401, 403):
-            return ProviderAuthError(f"{self.name} 拒絕了我們的憑證", details=detail)
-        if status == 404:
-            # 模型不存在／那家沒有這個模型。1C-5 之後最可能的設定錯誤——KB 的
-            # `embedding_model` 是 per-KB 的，而 provider 是全域的，兩者對不上就走到這。
-            return ModelNotEnabledError(model=str(response.request.url.path))
-        if status == 400:
-            # 參數被退（例如對固定維度的模型送了 dimensions）。重試不會有不同結果。
-            return ModelNotEnabledError(model=str(response.request.url.path))
-        return ProviderUnavailableError(f"{self.name} 回應 {status}", details=detail)
 
     # ── 解析 ────────────────────────────────────────────────
 
@@ -215,6 +237,234 @@ class OpenAICompatibleProvider:
             model=str(body.get("model") or requested_model),
             prompt_tokens=_usage_tokens(body, texts),
         )
+
+
+class OpenAICompatibleChatProvider(_VendorClient):
+    """把一次生成請求送去 `/chat/completions`，並把回來的位元組翻成 delta（1D-3a）。
+
+    **同一張 `VENDORS` 表**：五家的 `/chat/completions` 也都是 OpenAI 格式，差別仍然
+    只有位址與金鑰。第二張表會與第一張漂，而漏改的那一份只在切到那家時才走得到。
+
+    這裡只做「翻譯」：重試、fallback、牆鐘逾時與用量補估都在 Gateway（見
+    `ChatProvider` 的 docstring）。
+    """
+
+    def __init__(
+        self,
+        *,
+        vendor: str,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        super().__init__(vendor=vendor, api_key=api_key, base_url=base_url)
+        self._transport = transport
+
+    def timeout_for(self, timeouts: ChatTimeouts) -> httpx.Timeout:
+        """三層逾時 → httpx 的四個旋鈕。
+
+        **`read` 對映的是 TTFT 而不是整體上限**：串流的每一段到達都會重置 read 逾時，
+        所以它擋的是「一直沒有下一個 token」——正是 TTFT 要擋的那件事。整體上限沒有
+        對應的 httpx 旋鈕（httpx 沒有「整條回應的總時長」），由 Gateway 的牆鐘管。
+
+        寫 `connect` 而不是一個總 timeout：連不上（對方沒開、DNS 壞了）通常一兩秒內
+        就知道結果，讓它等 30 秒只是把一個確定的失敗拖慢，而 fallback 在後面排隊。
+        """
+        return httpx.Timeout(
+            connect=timeouts.connect_seconds,
+            read=timeouts.ttft_seconds,
+            write=timeouts.connect_seconds,
+            pool=timeouts.connect_seconds,
+        )
+
+    async def stream_chat(
+        self, request: ChatRequest, *, timeouts: ChatTimeouts
+    ) -> AsyncGenerator[ProviderDelta, None]:
+        payload = self._payload(request)
+        try:
+            async with (
+                httpx.AsyncClient(
+                    base_url=self._base_url,
+                    transport=self._transport,
+                    timeout=self.timeout_for(timeouts),
+                ) as client,
+                client.stream(
+                    "POST", "/chat/completions", json=payload, headers=self._headers()
+                ) as response,
+            ):
+                if response.status_code >= 400:
+                    # 讀完才拿得到 `response.request`／狀態以外的東西；內容一律不落地
+                    # （見 `_error_for`），讀它只是為了讓連線乾淨地結束。
+                    await response.aread()
+                    raise _error_for(response, vendor=self.name)
+
+                async for delta in _parse_stream(response.aiter_lines(), vendor=self.name):
+                    yield delta
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError(f"{self.name} 逾時") from exc
+        except httpx.HTTPError as exc:
+            # 連不上、DNS、TLS、連線中途斷掉——下一次通常就好了。
+            raise ProviderUnavailableError(f"{self.name} 連線失敗：{type(exc).__name__}") from exc
+
+    def _payload(self, request: ChatRequest) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": request.model,
+            "messages": [
+                {"role": message.role, "content": message.content} for message in request.messages
+            ],
+            "stream": True,
+            # **不送這個就完全沒有 usage**：OpenAI 在 `stream=true` 時預設不回用量。
+            # 漏送不會有任何錯誤，只會讓每一次對話的成本都變成估算值——而 2A 是拿它
+            # 去跟真帳單對帳的，估算對不上時沒有人分得出是我們算錯還是被多收了。
+            "stream_options": {"include_usage": True},
+        }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        if request.max_output_tokens is not None:
+            payload["max_tokens"] = request.max_output_tokens
+        # 兩個選配參數：**那家沒實測過就不送**（06 §4 的「不支援就靜默忽略」）。
+        # 送出去才被 400 退回的話，失敗的是整個請求——那不是忽略，是故障，而且只在
+        # 切到那一家時才會出現。旗標的定義見 `VendorSpec`。
+        if request.reasoning_effort != "off" and self._spec.supports_reasoning_effort:
+            payload["reasoning_effort"] = request.reasoning_effort
+        if request.response_format is not None and self._spec.supports_response_format:
+            payload["response_format"] = request.response_format
+        return payload
+
+
+async def _parse_stream(
+    lines: AsyncIterator[str], *, vendor: str
+) -> AsyncGenerator[ProviderDelta, None]:
+    """SSE 的位元組流 → delta。
+
+    **`done` 押到最後才吐**，即使 `finish_reason` 早就到了：OpenAI 的順序是
+    「finish_reason 的事件 → usage 的事件 → [DONE]」，照收到的順序轉發的話 `usage`
+    會排在 `done` 之後，而那違反 Gateway 對上層的順序保證（1D-4 靠它收尾）。
+    """
+    tool_calls: dict[int, dict[str, str]] = {}
+    usage: dict[str, int] | None = None
+    finish_reason: str | None = None
+    model: str = ""
+    completed = False
+
+    async for raw in lines:
+        line = raw.rstrip("\r")
+        # 空行是事件分隔，`:` 開頭是註解（SSE 的心跳就長這樣）。兩者都不是資料。
+        if not line or line.startswith(":"):
+            continue
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:") :].strip()
+        if payload == "[DONE]":
+            completed = True
+            break
+        try:
+            event = json.loads(payload)
+        except ValueError:
+            # 中間的 proxy、免費額度用完的擋板都會塞進非 JSON 的行。整條串流因為一行
+            # 而炸掉的話，使用者看到的是講到一半突然斷掉；跳過它最多少一個字。
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        model = str(event.get("model") or model)
+        if isinstance(event.get("usage"), dict):
+            usage = event["usage"]
+
+        choices = event.get("choices")
+        if not isinstance(choices, list) or not choices:
+            # usage 事件的 `choices` 是**空陣列**——照 `choices[0]` 取會 IndexError，
+            # 而它正好發生在整段回答都送完之後。
+            continue
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            continue
+        if choice.get("finish_reason"):
+            finish_reason = str(choice["finish_reason"])
+
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+        content = delta.get("content")
+        if isinstance(content, str) and content:
+            yield TextDelta(text=content)
+        _accumulate_tool_calls(tool_calls, delta.get("tool_calls"))
+
+    if not completed and finish_reason is None:
+        # 連線在講完之前就斷了。當成正常結束的話，1D-4 會把一則被截斷的回答標成
+        # completed，而使用者不會知道自己看到的是半篇。
+        raise ProviderUnavailableError(f"{vendor} 的回應在結束前中斷")
+
+    for call in tool_calls.values():
+        yield ToolCallDelta(
+            call_id=call.get("id", ""),
+            name=call.get("name", ""),
+            arguments=call.get("arguments", ""),
+            status="done",
+        )
+    if usage is not None:
+        # **`reasoning_tokens` 留 0 是對的，不是漏掉**：OpenAI 格式的
+        # `completion_tokens` 已經含推理 token（`completion_tokens_details` 只是它的
+        # 明細），而 `UsageDelta.reasoning_tokens` 的口徑是「尚未計入 completion 的
+        # 部分」。照抄明細會讓 `billable_output_tokens` 把同一批 token 加第二次，
+        # 而那個高估在推理模型上可以是好幾倍。
+        yield UsageDelta(
+            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+            completion_tokens=int(usage.get("completion_tokens", 0)),
+            model=model,
+            provider=vendor,
+        )
+    yield DoneDelta(finish_reason=finish_reason or "stop")
+
+
+def _accumulate_tool_calls(sink: dict[int, dict[str, str]], fragments: Any) -> None:
+    """把逐字元串流的工具參數依 `index` 歸戶並串起來。
+
+    不組回去就往上丟的話，上層拿到的是一堆解不開的 JSON 碎片——而 `index` 是唯一能
+    分辨「同一個呼叫的下一段」與「另一個呼叫」的東西（同一則回應可以有多個呼叫）。
+    """
+    if not isinstance(fragments, list):
+        return
+    for fragment in fragments:
+        if not isinstance(fragment, dict):
+            continue
+        index = int(fragment.get("index", 0))
+        call = sink.setdefault(index, {"id": "", "name": "", "arguments": ""})
+        if fragment.get("id"):
+            call["id"] = str(fragment["id"])
+        function = fragment.get("function")
+        if not isinstance(function, dict):
+            continue
+        if function.get("name"):
+            call["name"] = str(function["name"])
+        if isinstance(function.get("arguments"), str):
+            call["arguments"] += function["arguments"]
+
+
+def _error_for(response: httpx.Response, *, vendor: str) -> ProviderError:
+    """HTTP 狀態 → 我們的例外型別。**可否重試由型別決定**（1C-1 定案）。
+
+    **訊息一律由我們自己組**，絕不回貼 provider 的原文（鐵則 9）：那些訊息常把整個
+    請求（含 Authorization 標頭或帶 key 的 URL）回貼回來，而它們會經 `document.error`
+    或 SSE 的 error event 回到租戶手上。狀態碼留著——分類與統計要用它，而它不洩漏內容。
+    """
+    status = response.status_code
+    detail = {"status": status, "vendor": vendor}
+
+    if status == 429:
+        return ProviderRateLimitedError(f"{vendor} 頻率限制", details=detail)
+    if status in (401, 403):
+        return ProviderAuthError(f"{vendor} 拒絕了我們的憑證", details=detail)
+    if status == 404:
+        # 模型不存在／那家沒有這個模型。1C-5 之後最可能的設定錯誤——KB 的
+        # `embedding_model` 是 per-KB 的，而 provider 是全域的，兩者對不上就走到這。
+        return ModelNotEnabledError(model=str(response.request.url.path))
+    if status == 400:
+        # 參數被退（固定維度的模型送了 dimensions、context 超過模型上限）。
+        # 重試不會有不同結果，而在 chat 這條路徑上，重試要重送整份 context——
+        # 那是整條讀路徑上最貴的一種重試。
+        return ModelNotEnabledError(model=str(response.request.url.path))
+    return ProviderUnavailableError(f"{vendor} 回應 {status}", details=detail)
 
 
 def _ordered(rows: list[Any]) -> list[Any]:

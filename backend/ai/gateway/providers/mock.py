@@ -1,4 +1,4 @@
-"""MockProvider —— 測試與本機開發的預設 embedding provider。
+"""MockProvider —— 測試與本機開發的預設 provider（embedding 與 chat 各一個）。
 
 **LLM 呼叫在測試裡一律 mock**（CLAUDE.md）。但這個 mock 不是「回一堆零」：向量由內容
 的雜湊決定，因此具備兩個真 embedding 才有的性質，而 1C-4 的檢索測試需要它們：
@@ -16,7 +16,17 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
+from collections.abc import AsyncGenerator
 
+from ai.gateway.chat import (
+    ChatRequest,
+    ChatTimeouts,
+    DoneDelta,
+    ProviderDelta,
+    TextDelta,
+    UsageDelta,
+)
 from ai.gateway.providers import ProviderEmbedding
 
 # 一個 token 大約幾個字元（估算用，理由同 etl/tokens.py）。provider 沒回報用量時
@@ -36,6 +46,68 @@ class MockEmbeddingProvider:
             model=model,
             prompt_tokens=max(1, sum(len(text) for text in texts) // _CHARS_PER_TOKEN),
         )
+
+
+class MockChatProvider:
+    """決定性的假串流（1D-3a）。
+
+    性質與 `MockEmbeddingProvider` 要求的一樣，理由也一樣：**同樣的請求永遠得到同樣的
+    字**。少了決定性，1D-4 的 SSE 測試只能斷言「有收到東西」，而那等於沒驗——事件順序、
+    分段邊界、resume 之後接得上不接得上，全都需要一個對得起來的預期值。
+
+    **它會把 context 裡的引用標記照抄回來**（`[c:...]`）。這不是為了好看：1D-5 的引用
+    驗證要能走完「LLM 輸出標記 → 後處理比對本次 context → 組出 citations」整條路，而
+    永遠不吐標記的 mock 會讓那條路的測試全部退化成「沒有引用也算通過」。它當然不理解
+    問題——語意品質要等真模型與 Phase 2 的 golden set，這裡只驗機制。
+    """
+
+    name = "mock"
+
+    async def stream_chat(
+        self, request: ChatRequest, *, timeouts: ChatTimeouts
+    ) -> AsyncGenerator[ProviderDelta, None]:
+        answer = _answer(request)
+        # 切成幾段吐出去。串流的呼叫端（1D-4 的 SSE、前端的逐字顯示）處理的是「一段
+        # 一段到達」，一次吐完的 mock 驗不到那件事——而分段的邊界正是最容易寫錯的地方。
+        for piece in _pieces(answer):
+            yield TextDelta(text=piece)
+        yield UsageDelta(
+            prompt_tokens=_estimate("".join(message.content for message in request.messages)),
+            completion_tokens=_estimate(answer),
+            model=request.model,
+            provider=self.name,
+        )
+        yield DoneDelta(finish_reason="stop")
+
+
+# 06 §3.1 的引用標記格式。
+_CITATION = re.compile(r"\[c:[^\]\s]+\]")
+_PIECE_SIZE = 8
+
+
+def _answer(request: ChatRequest) -> str:
+    """問句 + context 裡的第一個引用標記 → 一段決定性的回答。"""
+    question = next(
+        (message.content for message in reversed(request.messages) if message.role == "user"),
+        "",
+    )
+    markers = [
+        marker
+        for message in request.messages
+        for marker in _CITATION.findall(message.content)
+        # system 的模板本身可能含格式說明，那不是真的 context 標記。
+        if message.role != "system"
+    ]
+    citation = f" {markers[0]}" if markers else ""
+    return f"（mock）關於「{question.strip()}」，依據提供的內容回答如下。{citation}"
+
+
+def _pieces(text: str) -> list[str]:
+    return [text[index : index + _PIECE_SIZE] for index in range(0, len(text), _PIECE_SIZE)] or [""]
+
+
+def _estimate(text: str) -> int:
+    return max(1, len(text) // _CHARS_PER_TOKEN)
 
 
 def _dimensions() -> int:
