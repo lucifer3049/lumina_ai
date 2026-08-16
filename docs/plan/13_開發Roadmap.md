@@ -164,6 +164,22 @@ gantt
 
 **帶進 1C-4／1C-5 的已知缺口**：① embedding cache 未做（見上表）；② `superseded` 舊 chunk 的清理 job 仍排 2A，而 1C-3 之後那些舊 chunk 確定不會再被算向量，清理的價值變成純儲存空間；③ 全域的停滯掃描排 2A（見上一段）。
 
+### 3.5 1D 的範圍偏離紀錄
+
+1D 是 Phase 1 最大的一包（6 pw），切成五個子項（1D-1 資料層／1D-2 CRUD／1D-3a
+stream_chat／1D-3b PromptBuilder／1D-4a 端點與生成／1D-4b resume 與 stop／1D-5 RAG 編排
+與 citation）。以下是與原文件不同的決定，各自的理由記在對應的 commit 與程式碼註解。
+
+| # | 項目 | 原文件 | 實際 | 理由 |
+|---|------|--------|------|------|
+| 1 | 發送訊息的端點形狀 | 09 §2.4：單一 `POST` 直接回 SSE | **拆兩步**：`POST` 建立回合回 201、`GET .../stream` 讀串流 | 正確性而非形式：單一 POST 同時做建立與串流，網路閃斷時 client 分不出請求送達與否，重送即兩則訊息、兩次生成、兩次帳單，而該端點原未標冪等鍵。拆開後 resume 與初次串流共用同一條路徑，G-06 天然成立 |
+| 2 | 前端 SSE client | 03 §2：`EventSource` 封裝 | **fetch + ReadableStream** | `EventSource` 不能帶自訂 header，而憑證是 `Authorization: Bearer`（09 §1.2）——與 GET/POST 無關，該路徑本來就走不通。代價：自動重連與 `Last-Event-ID` 要自己維護 |
+| 3 | 系統 prompt 的儲存與 RLS | 05 §3.3：`tenant_id IS NULL` = 系統模板 | 同上，但**讀寫條件不對稱**＋owner 專用 policy | 讀放行 NULL、寫只准自己的租戶：一個租戶寫得出系統模板就等於改得動所有人的 prompt（Phase 5 有 `/prompts` 寫入端點）。seed 由 owner 專用 policy 放行 |
+| 4 | 記憶視窗 | 06 §5：視窗 + 摘要 | 1D-4a **只做視窗**（近 10 輪原文） | 摘要壓縮屬 Phase 3C。沒有摘要時的正確行為是「記得最近的」，而不是把全部塞進 context |
+| 5 | Redis client | `core/redis.py`：只用同步 client | SSE 串流路徑**加一個 async client** | 該規則的理由是「service 層是同步的」，而 SSE 是 transport 層：讀取端要等下一個事件，跑在 threadpool 上就是一條串流佔一條執行緒，與 11 §26 的 200 併發串流相矛盾 |
+
+**1D-4a 帶進 1D-4b 的已知缺口**：① graceful shutdown（11 §196：SIGTERM → 送 `error(retryable)` → 等 ≤30s）尚未實作，目前行程結束會讓進行中的生成消失；② 串流讀取端一律從第 0 號事件開始，`Last-Event-ID` 尚未接上；③ `stop` 端點與跨行程的中止旗標未做；④ 心跳已實作，但「client 斷線後伺服器繼續收完」只是**天然成立**，尚未有測試釘住（1D-4b 補）。
+
 ## 4. Phase 2：多租戶營運能力（5 週，~13 pw）
 
 | 工作包 | 內容 | 估算 |

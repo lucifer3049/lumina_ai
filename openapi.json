@@ -398,6 +398,20 @@
         "title": "LoginIn",
         "type": "object"
       },
+      "MessageCreateIn": {
+        "description": "送出一個問題（1D-4a）。",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "MessageCreateIn",
+        "type": "object"
+      },
       "MessageListOut": {
         "properties": {
           "items": {
@@ -756,6 +770,38 @@
           "expires_in"
         ],
         "title": "TokenPairOut",
+        "type": "object"
+      },
+      "TurnStartedOut": {
+        "description": "建立回合的回應（09 §2.4，1D-4a 拆成兩步後的第一步）。\n\n**client 在收到任何一個位元組之前就拿到 `message_id`。** 它是後續三件事唯一的\n定位鍵：讀串流、按停止（1D-4b）、以及斷線後直接抓最終訊息。只靠 `meta` 事件的話，\n生成失敗時那個事件永遠不會來，而 client 手上沒有任何東西可以查。",
+        "properties": {
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "stream_url": {
+            "title": "Stream Url",
+            "type": "string"
+          },
+          "user_message_id": {
+            "format": "uuid",
+            "title": "User Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "user_message_id",
+          "conversation_id",
+          "stream_url"
+        ],
+        "title": "TurnStartedOut",
         "type": "object"
       },
       "UserCreateIn": {
@@ -1646,6 +1692,188 @@
           }
         },
         "summary": "List Messages",
+        "tags": [
+          "conversations"
+        ]
+      },
+      "post": {
+        "description": "送出一個問題（09 §2.4）。**建立回合就回，生成跑在背景。**\n\n串流本身在 `GET .../stream`。拆成兩步的理由見 `services/conversation/chat.py`\n——一句話版本：這個 POST 若同時回串流，網路閃斷時 client 分不出單子送出去了沒，\n重送一次就是兩則訊息、兩次生成、兩次帳單。",
+        "operationId": "conversations_send_message",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "false = 等生成完成再回完整訊息",
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "false = 等生成完成再回完整訊息",
+              "title": "Stream",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/TurnStartedOut"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageOut"
+                    }
+                  ],
+                  "title": "Response Conversations Send Message"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "請求格式錯誤"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "不存在或無權可見"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "語意驗證失敗"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "內部錯誤"
+          }
+        },
+        "summary": "Send Message",
+        "tags": [
+          "conversations"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/messages/{message_id}/stream": {
+      "get": {
+        "description": "讀一則訊息的生成串流（09 §3.2）。\n\n**這是第二個入口，而它最容易漏掉擁有者判定**：RLS 只擋租戶，擋不了同租戶的另一個\n使用者（1D-2 已經踩過這條），而 `message_id` 會出現在前端的網址與 log 裡。",
+        "operationId": "conversations_stream_message",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {}
+            },
+            "description": "SSE 事件串流"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "請求格式錯誤"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "不存在或無權可見"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "語意驗證失敗"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "內部錯誤"
+          }
+        },
+        "summary": "Stream Message",
         "tags": [
           "conversations"
         ]

@@ -171,7 +171,7 @@ class ConversationService:
                 conversation_id, limit=limit, cursor=_decode(cursor)
             )
             return Page(
-                items=[_message_view(row) for row in rows],
+                items=[message_view(row) for row in rows],
                 next_cursor=encode_cursor(next_key) if next_key else None,
             )
 
@@ -219,7 +219,8 @@ def _conversation_view(conversation: Any) -> ConversationView:
     )
 
 
-def _message_view(message: Any) -> MessageView:
+def message_view(message: Any) -> MessageView:
+    """model → DTO。**`chat.py` 也用它**：兩份對映會漂，而漂掉時 API 少一個欄位。"""
     return MessageView(
         id=message.id,
         role=message.role,

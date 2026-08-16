@@ -103,7 +103,8 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 |--------|------|------|------|
 | GET/POST ★ | /conversations | 列表 / 建立（kb_ids、model、prompt_key） | chat:use |
 | GET/PATCH/DELETE | /conversations/{id} | 詳情（含訊息分頁）/ 改名/釘選/封存 / 刪除 | 擁有者 |
-| **POST** | **/conversations/{id}/messages** | **發送訊息 → SSE 串流回應**（`Accept: text/event-stream`）；非串流模式 `?stream=false` | chat:use |
+| **POST ★** | **/conversations/{id}/messages** | **發送訊息 → 201 `{message_id, stream_url}`**（建立回合並開始生成）；非串流模式 `?stream=false` 回完整訊息 | chat:use |
+| **GET** | **/conversations/{id}/messages/{mid}/stream** | **讀該則訊息的 SSE 串流**（`Accept: text/event-stream`）；斷線重連帶 `Last-Event-ID` | 擁有者 |
 | POST | /conversations/{id}/messages/{mid}/stop | 中止生成 | 擁有者 |
 | POST | /conversations/{id}/messages/{mid}/regenerate | 重新生成 | 擁有者 |
 | GET | /conversations/{id}/export | 匯出 markdown/json | 擁有者 |
@@ -148,7 +149,7 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 ### 3.2 SSE 事件協定
 
 ```
-POST /api/v1/conversations/{id}/messages
+GET /api/v1/conversations/{id}/messages/{mid}/stream
 Accept: text/event-stream
 
 ← id: 1            event: meta       data: {"message_id","model","conversation_id"}
@@ -161,7 +162,9 @@ Accept: text/event-stream
 （每 15s）         : heartbeat
 ```
 
-- 斷線重連：`Last-Event-ID` header → 從 Redis resume buffer 續傳（TTL 5min，過期回 `409 RESUME_EXPIRED`，client 改抓最終 message）。
+- 斷線重連：**再 GET 一次同一個網址**並帶 `Last-Event-ID` header → 從 Redis resume buffer 續傳（TTL 5min，過期回 `409 RESUME_EXPIRED`，client 改抓最終 message）。
+- **發送與串流拆成兩步（2026-08-16，1D-4a 定案；原設計是單一 POST 直接回串流）**。理由是正確性而非形式：單一 POST 同時做「建立訊息」與「串流」，網路閃斷時 client 分不出請求送達與否，重送即產生兩則訊息、兩次生成、兩次帳單，而本端點原本未標冪等鍵。拆開後建立是普通 JSON 請求（★ 冪等鍵適用），串流是可重複讀的資源；連帶：生成前的錯誤是普通 HTTP 狀態碼、resume 與初次串流共用同一條路徑、client 斷線後生成續行（§4 的 G-06）天然成立。
+- **前端不使用 `EventSource`**：它無法帶自訂 header，而本 API 的憑證是 `Authorization: Bearer`（§1.2）——與 GET/POST 無關。前端一律 fetch + ReadableStream，`Last-Event-ID` 由 client 自行維護（03 §3.2 同步修訂）。
 - 所有 SSE 錯誤皆為 event（HTTP 已 200），錯誤碼與 §1.3 共用 code 字典。
 
 ### 3.3 非同步任務慣例（202 模式）

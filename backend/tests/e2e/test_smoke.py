@@ -13,6 +13,7 @@ bug」，是「尚未存在的功能」——reason 欄直接寫明等哪個工�
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 
@@ -26,6 +27,9 @@ _TIMEOUT_S = 10.0
 # 一份小文件的 ETL 應在數秒內完成；60 秒是「worker 沒起來 / 卡住」的止血點，
 # 不是效能目標（那是 11_NFR 的事）。
 _ETL_TIMEOUT_S = 60.0
+
+# 一次生成（MockProvider）應在一秒內結束；30 秒是「背景 task 沒跑起來」的止血點。
+_STREAM_TIMEOUT_S = 30.0
 
 _SMOKE_DOCUMENT = """# Smoke 測試文件
 
@@ -49,11 +53,34 @@ class _SmokeState:
     tenant: SmokeTenant
     token: str = ""
     document_id: str = ""
+    conversation_id: str = ""
+    message_id: str = ""
 
 
 @pytest.fixture(scope="session")
 def smoke_state(smoke_tenant: SmokeTenant) -> _SmokeState:
     return _SmokeState(tenant=smoke_tenant)
+
+
+def _read_stream(
+    api_server: str, headers: dict[str, str], stream_url: str
+) -> list[tuple[str, dict[str, object]]]:
+    """把 SSE 讀成 [(事件名, payload)]。心跳（`:` 開頭）與空行直接略過。"""
+    events: list[tuple[str, dict[str, object]]] = []
+    with httpx.stream(
+        "GET",
+        f"{api_server}{stream_url}",
+        headers={**headers, "Accept": "text/event-stream"},
+        timeout=_STREAM_TIMEOUT_S,
+    ) as response:
+        assert response.status_code == 200, response.read()
+        name = ""
+        for line in response.iter_lines():
+            if line.startswith("event: "):
+                name = line.removeprefix("event: ")
+            elif line.startswith("data: "):
+                events.append((name, json.loads(line.removeprefix("data: "))))
+    return events
 
 
 def _login(api_server: str, tenant: SmokeTenant) -> str:
@@ -158,8 +185,49 @@ class TestSmokeLoop:
 
         assert document["status"] == "ready", document
 
-    @pytest.mark.skip(reason="等 1D：Chat SSE 問答")
-    def test_step_4_ask_question(self) -> None: ...
+    def test_step_4_ask_question(self, api_server: str, smoke_state: _SmokeState) -> None:
+        """建立對話 → 送出問題 → 讀完串流（1D-4a）。
 
-    @pytest.mark.skip(reason="等 1D：回答含 citation 且指向已上傳文件")
+        **這一步走的是真的部署形狀**：POST 建立回合之後，生成跑在伺服器的背景 task 上，
+        而我們從另一個請求（GET）把事件讀回來。在測試行程內直接呼叫 service 驗不到
+        「背景 task 沒被 GC 掉」「緩衝區跨請求讀得到」這兩種故障，而它們的症狀都是
+        「訊息永遠停在 streaming」。
+        """
+        headers = {"Authorization": f"Bearer {smoke_state.token}"}
+
+        created = httpx.post(
+            f"{api_server}/api/v1/conversations",
+            headers=headers,
+            json={"title": "smoke"},
+            timeout=_TIMEOUT_S,
+        )
+        assert created.status_code == 201, created.text
+        conversation_id = created.json()["id"]
+
+        turn = httpx.post(
+            f"{api_server}/api/v1/conversations/{conversation_id}/messages",
+            headers=headers,
+            json={"content": "這份文件在說什麼？"},
+            timeout=_TIMEOUT_S,
+        )
+        assert turn.status_code == 201, turn.text
+        smoke_state.conversation_id = conversation_id
+        smoke_state.message_id = turn.json()["message_id"]
+
+        events = _read_stream(api_server, headers, turn.json()["stream_url"])
+
+        assert events[0][0] == "meta"
+        assert events[-1][0] == "done", f"串流沒有正常收尾：{events[-1]}"
+        answer = "".join(str(data["text"]) for name, data in events if name == "delta")
+        assert answer.strip(), "回答是空的"
+
+        message = httpx.get(
+            f"{api_server}/api/v1/conversations/{conversation_id}/messages",
+            headers=headers,
+            timeout=_TIMEOUT_S,
+        ).json()["items"][-1]
+        assert message["status"] == "completed", message
+        assert message["content"] == answer, "串流看到的與存下來的不一致"
+
+    @pytest.mark.skip(reason="等 1D-5：RAG 編排與 citation")
     def test_step_5_answer_has_citation(self) -> None: ...

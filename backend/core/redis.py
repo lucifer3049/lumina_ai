@@ -10,15 +10,24 @@
 threadpool 執行緒上，所以同步 client 不會阻塞 event loop；混用兩套 client 反而
 會讓「這段程式跑在哪一側」變得難以推理。
 
+**唯一的例外是 SSE 串流（1D-4a），見 :func:`get_async_redis`。** 那條路徑不是
+service 層，是 transport 層：它要「等下一個事件到達」，而那個等待若發生在
+threadpool 上就是一條串流佔一條執行緒——11 §26 的容量規劃是每個 replica 200 條
+併發串流，而 §45 明寫「SSE 為 IO-bound，async 原生擅長」。上面那條規則的理由
+（讓「跑在哪一側」可推理）在這裡反而指向 async：串流的每一段都跑在 event loop 上。
+
 連線池由 redis-py 內建管理，模組層單例即可——每次 ``Redis(...)`` 都會建一個新池。
 """
 
 from __future__ import annotations
 
 import uuid
+import weakref
+from asyncio import AbstractEventLoop, get_running_loop
 from functools import lru_cache
 
 from redis import Redis
+from redis.asyncio import Redis as AsyncRedis
 
 from config.settings.app_settings import get_app_settings
 
@@ -38,6 +47,38 @@ def get_redis() -> Redis:
         socket_connect_timeout=settings.redis_timeout_seconds,
         decode_responses=True,
     )
+
+
+# 一個 event loop 一個 client（見 `get_async_redis`）。**弱參考鍵**：loop 結束後這一
+# 筆要能被回收，否則測試每跑一條就留下一個永遠不會再用的連線池。
+_async_clients: weakref.WeakKeyDictionary[AbstractEventLoop, AsyncRedis] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def get_async_redis() -> AsyncRedis:
+    """SSE 串流專用的非同步 client（1D-4a）。**其他地方一律用 `get_redis()`。**
+
+    **不是模組層單例，而是「每個 event loop 一個」**：`redis.asyncio` 的連線與
+    `asyncio.Future` 綁在建立它的那個 loop 上，跨 loop 使用會丟
+    ``got Future attached to a different loop``。正式環境只有一個 loop，所以這與
+    單例等價；但測試每一條都跑在自己的 loop 上，單例會在第二條測試就炸——而那個
+    錯誤訊息完全不會指向這裡。
+    """
+    loop = get_running_loop()
+    client = _async_clients.get(loop)
+    if client is None:
+        settings = get_app_settings()
+        client = AsyncRedis.from_url(
+            settings.redis_url.get_secret_value(),
+            # **不設 socket_timeout**：這個 client 的用途是 `XREAD BLOCK`，也就是
+            # 「沒有事件時就等著」。設了逾時的話，等待本身會被當成故障中斷——而
+            # 那正是它該做的事。逾時由 `block_ms` 在每次呼叫上決定（core/streams.py）。
+            socket_connect_timeout=settings.redis_timeout_seconds,
+            decode_responses=True,
+        )
+        _async_clients[loop] = client
+    return client
 
 
 def tenant_key(tenant_id: uuid.UUID, *parts: str) -> str:
