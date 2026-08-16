@@ -334,10 +334,16 @@ def test_permission_dictionary_is_readable_by_every_tenant() -> None:
     這條驗實際查詢確實通得過——若哪天有人替它加了 policy，症狀會是權限判定
     全面失效（查不到任何 permission code），而那個原因很難聯想到這張表。
     """
-    permission = make_permission(code="knowledge:write")
+    # **不能用真實存在的碼**（原本是 `knowledge:write`）。字典表由 data migration 種
+    # 資料，而 transactional 測試會 TRUNCATE 掉它——於是這條測試的成敗取決於「同一個
+    # worker 在它之前有沒有跑過別的 transactional 測試」：跑過就空表、通過；單獨跑就
+    # 撞唯一鍵。1C-5 加了第三支 seed migration 之後，這個潛在的順序相依真的翻出來了。
+    #
+    # 這條測試要驗的是「字典表沒有 RLS」，與碼的內容無關，因此用一個不可能被種下的碼。
+    permission = make_permission(code="test:dictionary-visibility")
 
     with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
         cursor.execute("SELECT code FROM identity_permission WHERE id = %s", [permission.id])
         row = cursor.fetchone()
 
-    assert row is not None and row[0] == "knowledge:write"
+    assert row is not None and row[0] == "test:dictionary-visibility"

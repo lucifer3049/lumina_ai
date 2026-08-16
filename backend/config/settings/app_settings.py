@@ -87,7 +87,19 @@ class AppSettings(BaseSettings):
     #
     # 預設 `mock`：真 adapter 屬 1C-5，且**測試永遠不打真 API**（CLAUDE.md）。預設值
     # 落在最安全的一邊——漏設環境變數時得到的是假向量而不是一筆真帳單。
-    ai_embedding_provider: Literal["mock", "openai", "ollama"] = "mock"
+    # 1C-5：五家真 provider。全部提供 OpenAI 相容的 `/v1/embeddings`，因此共用一個
+    # adapter（`ai/gateway/providers/openai_compatible.py` 的 VENDORS 表）。
+    ai_embedding_provider: Literal["mock", "gemini", "openai", "openrouter", "nvidia", "ollama"] = (
+        "mock"
+    )
+    # **只有一組金鑰**：同一時間只有一家在服務 embedding（同一個 KB 的向量必須來自
+    # 同一個模型，否則距離沒有意義），所以設定「正在用的那一家」就夠了。
+    # `None` 是合法的——本機 Ollama 沒有金鑰概念；缺金鑰而那家需要時，
+    # `build_gateway()` 會在**啟動當下**失敗（Fail Fast，理由同 1A 的 JWT 金鑰）。
+    ai_embedding_api_key: SecretStr | None = None
+    # 空字串 = 用 VENDORS 表裡的預設位址。留這個覆寫是因為 Ollama 的位址隨部署而異
+    # （本機 / 區網 / 容器內），而那不該逼人去改程式碼。
+    ai_embedding_base_url: str = ""
     ai_embedding_model: str = "mock-embedding"
     # 維度要與 05 §3.2 的 `halfvec(1536)` 一致。放進設定是因為換模型就會換維度，
     # 而那時 migration 與這裡必須一起改——兩邊對不上時 INSERT 會被 DB 擋下。

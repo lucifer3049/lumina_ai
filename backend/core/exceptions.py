@@ -237,6 +237,35 @@ class ProviderRateLimitedError(ProviderError):
     code = ErrorCode.RATE_LIMITED
 
 
+class ProviderDimensionMismatchError(ProviderError):
+    """→ 503。provider 回傳的向量維度與 `halfvec(N)` 欄位不合（1C-5）。
+
+    **不可重試**：這是設定問題（adapter 沒送 `dimensions`、或 KB 指定了維度不同的
+    模型），重試三次結果一樣，而每一次都要再付一批 embedding 的錢。
+
+    刻意獨立成一個型別而不是沿用 `ProviderUnavailableError`：處置完全不同——後者是
+    「等一下再試」，這個是「去把設定改對」，而 DLQ 上兩者長得一樣的話，維運分不出
+    該修什麼。
+    """
+
+    code = ErrorCode.PROVIDER_UNAVAILABLE
+    retryable = False
+
+
+class ProviderAuthError(ProviderError):
+    """→ 503。provider 拒絕我們的憑證（401／403）。
+
+    **不可重試**：金鑰打錯、過期、被撤銷——重試三次還是同一個結果，只是把六分鐘的
+    延遲加在一個確定的結論上，而那六分鐘裡 worker 一直被佔著。
+
+    對外仍是 `PROVIDER_UNAVAILABLE`（503）而不是 401：這是**我們的**設定問題，租戶既
+    看不懂也修不了。回 401 會讓他以為是自己的登入出了事。
+    """
+
+    code = ErrorCode.PROVIDER_UNAVAILABLE
+    retryable = False
+
+
 class ModelNotEnabledError(ProviderError):
     """→ 422。指定的模型未對本租戶啟用（或 provider 不認得它）。
 

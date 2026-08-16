@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -27,6 +28,7 @@ from ai.gateway import AIGateway, EmbedResult
 from ai.gateway.providers import EmbeddingProvider
 from core.exceptions import (
     ModelNotEnabledError,
+    ProviderError,
     ProviderRateLimitedError,
     ProviderTimeoutError,
     ProviderUnavailableError,
@@ -40,10 +42,18 @@ class _RecordingProvider:
 
     name = "recording"
 
-    def __init__(self, *, failures: list[Exception] | None = None, dimensions: int = 8) -> None:
+    def __init__(
+        self, *, failures: list[Exception] | None = None, dimensions: int | None = None
+    ) -> None:
         self.calls: list[list[str]] = []
         self._failures = list(failures or [])
-        self._dimensions = dimensions
+        # 預設用設定的維度。1C-5 之前這裡是 8（短向量比較好讀），但 Gateway 現在會
+        # 驗維度——不合的一律擋下，而那正是 TestDimensionGuard 要的行為。
+        from config.settings.app_settings import get_app_settings
+
+        self._dimensions = (
+            dimensions if dimensions is not None else get_app_settings().ai_embedding_dimensions
+        )
 
     def embed(self, texts: list[str], *, model: str, timeout_seconds: float) -> Any:
         self.calls.append(list(texts))
@@ -198,6 +208,170 @@ class TestConfiguration:
 
         assert settings.ai_embedding_model
         assert settings.ai_embedding_dimensions > 0
+
+
+class TestRealProviderWiring:
+    """設定名稱 → 真 adapter（1C-5）。`build_gateway()` 是那個對照的唯一位置。"""
+
+    @staticmethod
+    def _rebuild(monkeypatch: pytest.MonkeyPatch, **env: str) -> AIGateway:
+        from ai.gateway import build_gateway
+        from config.settings.app_settings import get_app_settings
+
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        get_app_settings.cache_clear()
+        return build_gateway()
+
+    @pytest.fixture(autouse=True)
+    def _reset_settings_cache(self) -> Iterator[None]:
+        from config.settings.app_settings import get_app_settings
+
+        yield
+        # 這一組測試會改環境變數。不清快取的話，**後面所有測試**都會拿到被改過的
+        # 設定——而症狀出現在別的檔案裡，看起來與這裡無關。
+        get_app_settings.cache_clear()
+
+    @pytest.mark.parametrize("vendor", ["gemini", "openai", "openrouter", "nvidia"])
+    def test_each_vendor_builds_from_settings(
+        self, vendor: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gateway = self._rebuild(
+            monkeypatch,
+            AI_EMBEDDING_PROVIDER=vendor,
+            AI_EMBEDDING_API_KEY="sk-test-key",
+        )
+
+        assert gateway.provider_name == vendor
+
+    def test_ollama_needs_no_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """本機 Ollama 沒有金鑰概念——硬性要求會讓最容易上手的那條路走不通。"""
+        gateway = self._rebuild(
+            monkeypatch, AI_EMBEDDING_PROVIDER="ollama", AI_EMBEDDING_API_KEY=""
+        )
+
+        assert gateway.provider_name == "ollama"
+
+    def test_a_missing_api_key_fails_at_startup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """缺金鑰要在**建立 Gateway 時**炸，不是在第一次呼叫時。
+
+        與 1A 的 JWT 金鑰同一個道理（13 §2 未結項①的教訓）：延到第一次呼叫才失敗的話，
+        服務起得來、健康檢查是綠的，而第一份上傳的文件會在 worker 裡以一個看起來像
+        provider 故障的錯誤失敗——然後被重試三次。
+        """
+        # **設空字串而不是 delenv**：`AppSettings` 的 `env_file` 直接讀 repo 根的
+        # `.env`，刪掉環境變數之後 pydantic 仍會從那個檔案讀到金鑰——開發者機器上
+        # 有真金鑰時，這條測試就會安靜地失去意義（實測如此）。
+        with pytest.raises(ProviderError, match="AI_EMBEDDING_API_KEY"):
+            self._rebuild(monkeypatch, AI_EMBEDDING_PROVIDER="gemini", AI_EMBEDDING_API_KEY="")
+
+    def test_an_unknown_provider_still_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """退回 mock 的話，正式環境會產出一整個知識庫的假向量，而症狀只是
+        「檢索品質很差」（1C-1 已定案，這裡確認 1C-5 沒有把它改鬆）。"""
+        import pydantic
+
+        with pytest.raises((ProviderError, pydantic.ValidationError)):
+            self._rebuild(monkeypatch, AI_EMBEDDING_PROVIDER="not-a-vendor")
+
+
+class TestDimensionGuard:
+    """維度不符要**在 Gateway 就攔下來**（1C-5）。
+
+    不攔的話，錯的向量會一路走到 `EmbeddingRepository.upsert`，由 PostgreSQL 以
+    ``expected 1536 dimensions, not 3072`` 擋下——那個錯誤指向 INSERT，而真正的原因在
+    幾層之外（adapter 沒送 `dimensions`、或 KB 設了一個維度不同的模型）。更糟的是它
+    只在寫入的那一刻才發生，那時 embedding 的 API 錢已經付掉了。
+
+    放在 Gateway 而不是 adapter：這是**跨 provider 的規則**（05 §3.2 的欄位只有一個
+    寬度），而 Gateway 是所有呼叫的唯一出口（鐵則 5）。放進 adapter 就是五份。
+    """
+
+    def test_a_wrong_dimension_fails_loudly(self) -> None:
+        from config.settings.app_settings import get_app_settings
+
+        configured = get_app_settings().ai_embedding_dimensions
+        provider = _RecordingProvider(dimensions=configured + 1)
+        gateway = AIGateway(embedding_provider=provider, retry_backoff_seconds=())
+
+        with pytest.raises(ProviderError) as caught:
+            gateway.embed(["a"], model=_MODEL)
+
+        message = str(caught.value)
+        assert str(configured) in message and str(configured + 1) in message, (
+            f"錯誤訊息要同時說出「要幾維」與「拿到幾維」，否則查不出是哪邊錯：{message}"
+        )
+
+    def test_a_dimension_mismatch_is_not_retryable(self) -> None:
+        """設定錯了，重試三次還是一樣——而每一次都要付一批 embedding 的錢。"""
+        from config.settings.app_settings import get_app_settings
+
+        provider = _RecordingProvider(dimensions=get_app_settings().ai_embedding_dimensions + 1)
+
+        with pytest.raises(ProviderError) as caught:
+            AIGateway(embedding_provider=provider, retry_backoff_seconds=()).embed(
+                ["a"], model=_MODEL
+            )
+
+        assert caught.value.retryable is False
+        assert len(provider.calls) == 1, "維度錯不該重試"
+
+    def test_the_configured_dimension_passes(self) -> None:
+        from config.settings.app_settings import get_app_settings
+
+        configured = get_app_settings().ai_embedding_dimensions
+        gateway = AIGateway(
+            embedding_provider=_RecordingProvider(dimensions=configured),
+            retry_backoff_seconds=(),
+        )
+
+        result = gateway.embed(["a"], model=_MODEL)
+
+        assert len(result.vectors[0]) == configured
+
+
+class TestNoRealApiInTests:
+    """**測試永遠不打真 API**（CLAUDE.md 鐵則）——而這件事必須被強制，不能靠慣例。
+
+    `make test` 帶 `--env-file ../.env`，而 `AppSettings` 讀的就是那些環境變數。所以
+    只要有人在 `.env` 裡設了真 provider 與金鑰（那是使用它的**正常做法**），整個測試
+    套件就會開始打真的 API。1C-5 加金鑰當天就撞到：10 條紅燈，而它們是真的送出去的
+    網路請求。
+
+    三個代價任一個都足以否決它：測試會花錢；會因為別人的服務中斷而紅；而 MockProvider
+    的決定性（同樣的文字永遠得到同樣的向量）是檢索測試的前提，真 provider 沒有那性質。
+    """
+
+    def test_the_configured_provider_is_mock(self) -> None:
+        from config.settings.app_settings import get_app_settings
+
+        assert get_app_settings().ai_embedding_provider == "mock"
+
+    def test_no_usable_api_key_is_available_to_tests(self) -> None:
+        """就算哪天有人繞過上一條，也沒有東西可以拿去花。
+
+        判「可不可用」而不是 `is None`：`AppSettings` 的 `env_file` 直接讀 repo 根的
+        `.env`，刪掉環境變數蓋不掉它，只能覆寫成空字串（見 config/settings/test.py）。
+        """
+        from config.settings.app_settings import get_app_settings
+
+        key = get_app_settings().ai_embedding_api_key
+
+        assert not (key and key.get_secret_value())
+
+    def test_the_test_settings_pin_it_unconditionally(self) -> None:
+        """來源層級的守門：那三行被刪掉時，上面兩條會在**別人**的 .env 之下才紅。
+
+        也就是說在沒設金鑰的機器上（例如 CI）刪掉它是全綠的，而問題會在下一個設了
+        金鑰的人身上出現——所以這裡直接盯住那份設定檔。
+        """
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[2] / "config" / "settings" / "test.py"
+        ).read_text(encoding="utf-8")
+
+        assert 'os.environ["AI_EMBEDDING_PROVIDER"] = "mock"' in source
+        assert 'os.environ["AI_EMBEDDING_API_KEY"] = ""' in source
 
 
 class TestProviderSdkIsolation:

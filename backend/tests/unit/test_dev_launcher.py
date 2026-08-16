@@ -110,6 +110,38 @@ class TestWorkerPool:
         )
 
 
+class TestProviderVerification:
+    """`make verify-provider` —— 唯一一條會打真 API 的路（1C-5）。
+
+    **自動測試永遠不打真 API**（CLAUDE.md），所以 adapter 的驗收全是假的 HTTP 層：它驗
+    得了「我們送出去的請求長什麼樣」，驗不了「那家真的收不收」。base_url 打錯一個字、
+    認證標頭格式不對、Gemini 的相容端點吃不吃 `dimensions`——這幾類都要真的打一次才知道。
+
+    折衷是把它做成**手動指令**：帶自己的金鑰跑，不進 CI、不進 `make test`。這裡守的是
+    那條界線——它一旦被接進自動測試，CI 就會開始花錢，而且會因為別人的服務中斷而紅。
+    """
+
+    def test_the_target_exists(self) -> None:
+        assert "verify-provider:" in _MAKEFILE
+
+    def test_it_is_not_wired_into_the_automated_suites(self) -> None:
+        """`make test` / `make lint` / CI 都不得依賴它。"""
+        import re
+
+        for target in ("test", "lint", "smoke"):
+            match = re.search(rf"^{target}:.*$", _MAKEFILE, re.MULTILINE)
+            assert match is not None, f"找不到 {target} 目標"
+            assert "verify-provider" not in match.group(0)
+
+    def test_ci_does_not_call_it(self) -> None:
+        workflow = (_REPO_ROOT / ".github" / "workflows").glob("*.yml")
+
+        for path in workflow:
+            assert "verify-provider" not in path.read_text(encoding="utf-8"), (
+                f"{path.name} 會打真 API——CI 會開始花錢，且會因為別人的服務中斷而紅"
+            )
+
+
 class TestObservability:
     def test_status_lists_every_service(self) -> None:
         listed = _DEV_SH.split("for name in ", 1)[1].split(";", 1)[0].split()

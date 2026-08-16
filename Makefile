@@ -108,7 +108,8 @@ DEMO_PASSWORD ?= demo-password-1234
 .NOTPARALLEL:
 .PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys migrate \
         dev api api-pinned start stop restart status demo-tenant app-logs \
-        test test-unit test-integration test-api smoke verify-infra image lock-check lint \
+        test test-unit test-integration test-api smoke verify-infra verify-provider \
+        image lock-check lint \
         fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
         loadtest-report clean
 
@@ -366,6 +367,18 @@ test-api: ## 只跑 api（權限矩陣、錯誤格式、SSE 協定；需先 make
 # 與被測的東西無關。13 §1.2：**每次任務結束必跑**，不過視同任務未完成。
 smoke: ## E2E smoke suite（登入→上傳→ready→問答→引用；需先 make up / migrate / gen-jwt-keys）
 	$(UV_RUN) pytest tests/e2e
+
+# **唯一會打真 API 的目標**，而且只在人手動執行時（1C-5）。自動測試一律用假的 HTTP
+# 層（CLAUDE.md），那驗得了「請求長什麼樣」，驗不了「那家真的收不收」——base_url 少一
+# 個字、認證標頭格式不對、Gemini 的相容端點吃不吃 dimensions，都要真的打一次才知道。
+#
+# **不准接進 make test / lint / smoke 或 CI**：CI 會開始花錢，且會因為別人的服務中斷
+# 而紅——那種紅燈與改動無關，久了就沒有人看紅燈了。
+# 守門：tests/unit/test_dev_launcher.py::TestProviderVerification
+PROVIDER ?= gemini
+
+verify-provider: ## 手動打一次真的 embedding API（需 AI_EMBEDDING_API_KEY；用 PROVIDER= 指定廠商）
+	$(UV_RUN) python scripts/verify_provider.py --provider $(PROVIDER)
 
 # 只挑 test_infra_*.py（-k 會比對 module 名，不用 shell glob——glob 會在 repo 根展開，
 # 而 pytest 的工作目錄是 backend/，路徑對不上）。與 test-integration 的差別在此：

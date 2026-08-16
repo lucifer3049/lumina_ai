@@ -23,7 +23,12 @@ from dataclasses import dataclass
 from ai.gateway.providers import EmbeddingProvider
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
-from core.exceptions import ProviderError, ProviderTimeoutError, ProviderUnavailableError
+from core.exceptions import (
+    ProviderDimensionMismatchError,
+    ProviderError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+)
 
 logger = get_logger(__name__)
 
@@ -80,12 +85,41 @@ class AIGateway:
             return EmbedResult(vectors=[], model=model, provider=self.provider_name, usage=Usage(0))
 
         embedding = self._call_with_retry(texts, model=model)
+        vectors = [list(vector) for vector in embedding.vectors]
+        self._check_dimensions(vectors, model=embedding.model)
         return EmbedResult(
-            vectors=[list(vector) for vector in embedding.vectors],
+            vectors=vectors,
             model=embedding.model,
             provider=self.provider_name,
             usage=Usage(prompt_tokens=embedding.prompt_tokens),
         )
+
+    def _check_dimensions(self, vectors: list[list[float]], *, model: str) -> None:
+        """維度不符**在這裡就攔下來**（1C-5）。
+
+        不攔的話，錯的向量會一路走到 `EmbeddingRepository.upsert`，由 PostgreSQL 以
+        ``expected 1536 dimensions, not 3072`` 擋下——那個錯誤指向 INSERT，而真正的原因
+        在幾層之外（adapter 沒送 `dimensions`、或 KB 設了維度不同的模型）。更糟的是它只
+        在寫入的那一刻才發生，那時這一批 embedding 的錢已經付掉了。
+
+        **不可重試**：設定錯了，重試三次還是一樣，而每一次都要再付一批的錢。
+
+        放在 Gateway 而不是 adapter：欄位只有一個寬度（05 §3.2），這是**跨 provider 的
+        規則**，而 Gateway 是所有呼叫的唯一出口（鐵則 5）。放進 adapter 就是五份。
+        """
+        expected = get_app_settings().ai_embedding_dimensions
+        for vector in vectors:
+            if len(vector) != expected:
+                raise ProviderDimensionMismatchError(
+                    f"{self.provider_name} 的 {model} 回傳 {len(vector)} 維，"
+                    f"但本系統的向量欄位是 {expected} 維",
+                    details={
+                        "provider": self.provider_name,
+                        "model": model,
+                        "expected": expected,
+                        "actual": len(vector),
+                    },
+                )
 
     # ── 內部 ────────────────────────────────────────────────
 
@@ -152,14 +186,37 @@ def build_gateway() -> AIGateway:
 
 
 def _embedding_provider(name: str) -> EmbeddingProvider:
-    """名稱 → adapter。
+    """名稱 → adapter（1C-5）。
 
-    真 adapter（OpenAI／Ollama）屬 1C-5；在那之前指定它們會明確失敗，而不是安靜地
-    退回 mock——退回的話，正式環境會產出一整個知識庫的假向量，而檢索結果看起來只是
-    「品質很差」。
+    未知的名稱**明確失敗**，不退回 mock：退回的話，正式環境會產出一整個知識庫的假
+    向量，而症狀只是「檢索品質很差」——沒有任何錯誤訊息會指向這裡。
     """
     if name == "mock":
         from ai.gateway.providers.mock import MockEmbeddingProvider
 
         return MockEmbeddingProvider()
-    raise ProviderUnavailableError(f"embedding provider 尚未實作：{name}（1C-5）")
+
+    from ai.gateway.providers.openai_compatible import VENDORS, OpenAICompatibleProvider
+
+    if name not in VENDORS:
+        raise ProviderUnavailableError(f"未知的 embedding provider：{name}")
+
+    settings = get_app_settings()
+    spec = VENDORS[name]
+    key = settings.ai_embedding_api_key
+    # **空字串等同沒有金鑰**：`AI_EMBEDDING_API_KEY=` 這種寫法（變數在、值是空的）
+    # 是最常見的設定失誤之一，而它與完全沒設一樣不能用。只判 `is None` 的話，空值會
+    # 一路送到 provider 並以 401 回來——那是一個繞了一圈才出現、且看起來像對方問題
+    # 的錯誤。測試設定也靠這個行為把 `.env` 裡的真金鑰蓋掉（見 config/settings/test.py）。
+    if spec.requires_api_key and not (key and key.get_secret_value()):
+        # **在建立 Gateway 時就炸**，不是等第一次呼叫（Fail Fast，理由同 1A 的 JWT
+        # 金鑰）。延後的話服務起得來、健康檢查是綠的，而第一份上傳的文件會在 worker
+        # 裡以一個看起來像 provider 故障的錯誤失敗——然後被退避重試三次。
+        raise ProviderUnavailableError(f"{name} 需要金鑰，請設定 AI_EMBEDDING_API_KEY")
+
+    return OpenAICompatibleProvider(
+        vendor=name,
+        api_key=key.get_secret_value() if key else None,
+        dimensions=settings.ai_embedding_dimensions,
+        base_url=settings.ai_embedding_base_url or None,
+    )
