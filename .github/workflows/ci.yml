@@ -173,6 +173,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # 本 job 不建 app、不跑測試，照理不需要金鑰——**這一步是為了讓下面的 trivy
+      # 掃得到東西**。`backend/.secrets/` 在 gitignore 之內，不產生的話 build context
+      # 裡根本沒有私鑰，secret 掃描永遠是綠的，而它綠得毫無意義：2026-08-17 發現
+      # backend/.dockerignore 漏列 `.secrets/`，所有人本機建的 image 都把 ES256 私鑰
+      # 烘了進去，CI 卻一次都沒紅過。守門要能失敗才算守門。
+      - name: 產生 JWT 簽章金鑰（讓 trivy 的 secret 掃描有東西可掃）
+        run: make gen-jwt-keys
+
       - name: 建置 backend image
         run: make image BACKEND_IMAGE="${BACKEND_IMAGE}"
 

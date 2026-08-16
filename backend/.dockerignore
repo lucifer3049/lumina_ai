@@ -17,6 +17,20 @@ htmlcov/
 .env
 .env.*
 
+# JWT 簽章私鑰（`make gen-jwt-keys` 的產出，JWT_KEY_DIR 預設就是這裡）。
+#
+# 上面那三行只擋了 .env，而 .secrets/ 漏列——於是 2026-08-17 以前，**任何做過
+# gen-jwt-keys 的人（也就是所有開發者）本機 `make image` 建出來的 image 都帶著自己的
+# ES256 私鑰**，trivy 掃本機 image 時報 HIGH: AsymmetricPrivateKey。
+#
+# CI 一直是綠的，而那是巧合不是把關：image job 沒有 gen-jwt-keys 那一步，
+# `.secrets/` 又在 gitignore 之內，於是 CI 的 build context 裡根本沒有這個檔案可掃。
+# 該 job 現在會先產生金鑰，讓這道守門真的驗得到東西（.github/workflows/ci.yml）。
+#
+# 拿到這把私鑰就能簽出任意租戶、任意角色的 token（10 §2.1），而 image 本身跑起來
+# 完全正常——沒有任何症狀會提醒你它在裡面。
+.secrets/
+
 # 壓測產出（可重現）
 loadtest/results/
 loadtest/tenants.json
