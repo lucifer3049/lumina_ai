@@ -10,13 +10,29 @@
  */
 import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
 const read = (relative: string): string => readFileSync(`${ROOT}${relative}`, 'utf-8')
+
+// package.json 走嚴格 JSON——它必須是嚴格 JSON，npm/pnpm 的讀取器不接受註解，
+// 因此這裡的 JSON.parse 本身就是一條斷言。
 const readJson = (relative: string): Record<string, unknown> =>
   JSON.parse(read(relative)) as Record<string, unknown>
+
+// tsconfig **不是** JSON 而是 JSONC：TypeScript 官方接受註解與尾逗號，vue-tsc、
+// vite、eslint 都用 ts 自己的解析器讀它。這裡若改用 JSON.parse，一則寫在 tsconfig
+// 裡的說明註解就會讓這條測試爆掉，而 typecheck / build / lint 全部照樣全綠——
+// 症狀完全不指向真因（2026-08-17 CI 前端 job 全紅即是此事）。
+// 用 ts.parseConfigFileTextToJson 而不是自己剝註解：字串裡的 `//`（例如 URL）
+// 會讓手寫的剝除器切錯位置，而那種錯誤只在特定內容下出現。
+const readTsconfig = (relative: string): Record<string, unknown> => {
+  const parsed = ts.parseConfigFileTextToJson(relative, read(relative))
+  expect(parsed.error, `${relative} 不是合法的 tsconfig`).toBeUndefined()
+  return (parsed.config ?? {}) as Record<string, unknown>
+}
 
 describe('package.json', () => {
   const pkg = readJson('package.json')
@@ -59,7 +75,10 @@ describe('tsconfig', () => {
   // 因此掃全部：只要有一份開了、且沒有任何一份把它關掉即可。
   const configs = readdirSync(ROOT)
     .filter((name) => name.startsWith('tsconfig') && name.endsWith('.json'))
-    .map((name) => ({ name, options: (readJson(name).compilerOptions ?? {}) as Record<string, unknown> }))
+    .map((name) => ({
+      name,
+      options: (readTsconfig(name).compilerOptions ?? {}) as Record<string, unknown>,
+    }))
 
   it.each(['strict', 'noUncheckedIndexedAccess'])('enable `%s` (03 §6)', (flag) => {
     expect(configs.length, '找不到任何 tsconfig*.json').toBeGreaterThan(0)
