@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+
 from api.background import SHUTDOWN_DRAIN_SECONDS, drain, pending_count, spawn
 
 
