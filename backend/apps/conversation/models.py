@@ -18,6 +18,7 @@ import uuid
 
 from django.contrib.postgres.fields import ArrayField
 from django.db import models
+from django.db.models.functions import Coalesce
 
 from apps.identity.models import Tenant, User
 
@@ -64,10 +65,22 @@ class Conversation(TimestampedModel):
     class Meta:
         db_table = "conversation_conversation"
         indexes = [
-            # 05 §4：對話列表。partial index——列表永遠只看未刪除的，把已刪除的排除在
-            # 索引外可觀縮小它，而軟刪除的資料會累積 30 天。
+            # 05 §4：對話列表。三件事必須與 `ConversationRepository.list_for_tenant`
+            # 的 ORDER BY **逐字對應**，否則索引建了也用不到：
+            #
+            # 1. partial（只含未刪除的）——列表永遠只看未刪除的，而軟刪除的資料會
+            #    累積 30 天。
+            # 2. 排序鍵是 `COALESCE(last_message_at, created_at)` 而不是
+            #    `last_message_at`。**1D-1 原本寫後者，那是錯的**：`last_message_at`
+            #    可為 NULL（剛建立、還沒發言），而列表要的是 NULLS LAST（空對話排
+            #    後面）——PostgreSQL 的 DESC 預設卻是 NULLS FIRST，兩者對不上時
+            #    planner 會放棄這個索引改做排序，而結果完全正確。
+            # 3. COALESCE 同時讓游標只需要一個排序鍵（見 common/cursors.py 的呼叫端）
+            #    ——三段式的 NULL 比較寫得出來，但每一段都是一次出錯的機會。
             models.Index(
-                fields=["tenant", "user", "-last_message_at"],
+                models.F("tenant"),
+                models.F("user"),
+                Coalesce("last_message_at", "created_at").desc(),
                 condition=models.Q(deleted_at__isnull=True),
                 name="ix_conv_tenant_user_recent",
             ),

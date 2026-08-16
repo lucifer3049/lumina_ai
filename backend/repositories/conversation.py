@@ -17,14 +17,49 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from collections.abc import Callable
+from datetime import datetime
+from typing import Any, cast
 
-from django.db.models import F
+from django.db.models import F, Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.conversation.models import Conversation, MemorySnapshot, Message
+from common.cursors import CursorError
 from core.tenant import get_current_tenant_id
 from repositories.base import SoftDeletableRepository, TenantScopedRepository
+
+
+def _cursor_key(cursor: dict[str, Any]) -> tuple[datetime, uuid.UUID]:
+    """游標 dict → (排序鍵, id)。內容壞掉一律 `CursorError`。
+
+    游標可能來自舊版前端存的 localStorage、被截斷的網址、或使用者手改——因此
+    **不能假設欄位存在或型別正確**，而錯誤要是呼叫端轉得成 422 的那一種。
+    """
+    try:
+        return datetime.fromisoformat(str(cursor["k"])), uuid.UUID(str(cursor["id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CursorError("游標內容不正確") from exc
+
+
+def _split_page[T](
+    rows: list[T], *, limit: int, cursor_of: Callable[[T], dict[str, Any]]
+) -> tuple[list[T], dict[str, Any] | None]:
+    """把「多取一筆」的結果切成一頁 + 下一頁的游標。
+
+    **多取一筆是判斷「還有沒有下一頁」唯一可靠的方法**。用 `count()` 另外查一次的話，
+    兩次查詢之間新增的資料會讓「有沒有下一頁」與實際內容對不上；而只憑「這頁滿了」
+    來推斷，會在資料剛好是頁大小整數倍時多給一個永遠回空清單的游標。
+
+    `cursor_of` 由呼叫端提供而不是在這裡讀欄位：排序鍵每個查詢不同，而
+    `Conversation` 的鍵是 `COALESCE(last_message_at, created_at)`——在 Python 端算
+    （`a or b`）與 SQL 的 COALESCE 等價，且不必把 annotate 出來的欄位帶進型別系統。
+    """
+    if len(rows) <= limit:
+        return rows, None
+    page = rows[:limit]
+    return page, cursor_of(page[-1])
 
 
 class ConversationRepository(SoftDeletableRepository[Conversation]):
@@ -36,18 +71,39 @@ class ConversationRepository(SoftDeletableRepository[Conversation]):
         """不存在或屬於別的租戶都回 ``None``——API 層一律轉 404（09 §2.3）。"""
         return self.get_queryset().filter(id=conversation_id).first()
 
-    def list_for_tenant(self, *, user_id: uuid.UUID | None = None) -> list[Conversation]:
-        """對話列表，最近有訊息的排前面。
+    def page_for_user(
+        self, *, user_id: uuid.UUID, limit: int, cursor: dict[str, Any] | None = None
+    ) -> tuple[list[Conversation], dict[str, Any] | None]:
+        """使用者自己的對話，一頁；回傳 (這一頁, 下一頁的游標鍵)。
 
-        排序條件與 ``ix_conv_tenant_user_recent`` 逐字對應（含 partial 的
-        ``deleted_at IS NULL``），查詢才吃得到那個索引。``last_message_at`` 可能是
-        NULL（剛建立、還沒發言），``F(...).desc(nulls_last=True)`` 讓那些排在後面
-        而不是最前面——預設的 NULLS FIRST 會讓空對話霸佔列表頂端。
+        **排序鍵是 ``COALESCE(last_message_at, created_at)``**，與
+        ``ix_conv_tenant_user_recent`` 逐字對應（見 model 的 Meta 註解）。用它而不是
+        ``last_message_at`` 有兩個理由：NULL（剛建立、還沒發言）要排在後面，而
+        PostgreSQL 的 DESC 預設是 NULLS FIRST；以及它讓游標只需要一個排序鍵。
+
+        **`id` 是必要的第二排序鍵**：同一毫秒建立的兩場對話若只比第一個鍵，翻頁時
+        會互相擠掉——那是分頁最常見的漏資料方式，而且只在資料剛好跨頁時出現。
+
+        `user_id` 是**必填**：對話是擁有者制（09 §2.4），列表漏掉這個條件的話，
+        使用者會在自己的列表上看到別人的對話標題——而標題本身就已經是洩漏。
+        RLS 在這裡幫不上忙，它是租戶級的。
         """
-        queryset = self.get_queryset()
-        if user_id is not None:
-            queryset = queryset.filter(user_id=user_id)
-        return list(queryset.order_by(F("last_message_at").desc(nulls_last=True), "-created_at"))
+        ordering = Coalesce("last_message_at", "created_at")
+        queryset = self.get_queryset().filter(user_id=user_id).annotate(_sort_key=ordering)
+        if cursor is not None:
+            key, last_id = _cursor_key(cursor)
+            queryset = queryset.filter(Q(_sort_key__lt=key) | Q(_sort_key=key, id__lt=last_id))
+        rows = cast("list[Conversation]", list(queryset.order_by("-_sort_key", "-id")[: limit + 1]))
+        return _split_page(
+            rows,
+            limit=limit,
+            # `a or b` 與 SQL 的 COALESCE 等價——在 Python 端算，游標值就不必經過
+            # annotate 出來的欄位（那個欄位在型別系統裡不存在）。
+            cursor_of=lambda row: {
+                "k": (row.last_message_at or row.created_at).isoformat(),
+                "id": str(row.id),
+            },
+        )
 
     def create(
         self,
@@ -85,9 +141,30 @@ class MessageRepository(TenantScopedRepository[Message]):
         """
         queryset = self.get_queryset().filter(conversation_id=conversation_id)
         if limit is None:
-            return list(queryset.order_by("created_at"))
-        newest = list(queryset.order_by("-created_at")[:limit])
-        return sorted(newest, key=lambda message: message.created_at)
+            return list(queryset.order_by("created_at", "id"))
+        newest = list(queryset.order_by("-created_at", "-id")[:limit])
+        return sorted(newest, key=lambda message: (message.created_at, str(message.id)))
+
+    def page_for_conversation(
+        self, conversation_id: uuid.UUID, *, limit: int, cursor: dict[str, Any] | None = None
+    ) -> tuple[list[Message], dict[str, Any] | None]:
+        """一頁訊息，**時間正序**；回傳 (這一頁, 下一頁的游標鍵)。
+
+        正序而不是倒序：對話要照順序讀，而 1D-5 會用同一條路徑組 context——倒著給
+        LLM 會直接改變語意。前端要「最新的在下面」本來就是正序。
+
+        `id` 是必要的第二排序鍵，理由同 `page_for_user`。
+        """
+        queryset = self.get_queryset().filter(conversation_id=conversation_id)
+        if cursor is not None:
+            key, last_id = _cursor_key(cursor)
+            queryset = queryset.filter(Q(created_at__gt=key) | Q(created_at=key, id__gt=last_id))
+        rows = list(queryset.order_by("created_at", "id")[: limit + 1])
+        return _split_page(
+            rows,
+            limit=limit,
+            cursor_of=lambda row: {"k": row.created_at.isoformat(), "id": str(row.id)},
+        )
 
     def append(
         self,

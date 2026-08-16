@@ -77,6 +77,20 @@ class NotFoundError(DomainError):
     code = ErrorCode.RESOURCE_NOT_FOUND
 
 
+class ValidationFailedError(DomainError):
+    """→ 422。語意層面的輸入不合法（09 附錄 A 的 `VALIDATION_FAILED`）。
+
+    與 FastAPI 的 `RequestValidationError` 分工：那個管**型別與格式**（pydantic 擋得
+    住的），這個管**只有業務邏輯知道**的規則——1D-2 的第一個用例是「游標解不開」，
+    而游標的合法性要拆開來看才知道。
+
+    不用它的話，這類錯誤會掉進兜底的 `Exception` handler 變成 500——把 client 的
+    錯誤記成我們的錯誤，而且 500 會進錯誤率告警。
+    """
+
+    code = ErrorCode.VALIDATION_FAILED
+
+
 class TenantContextMissingError(DomainError):
     """→ 500 + P1 告警。
 

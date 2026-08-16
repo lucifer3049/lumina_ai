@@ -22,14 +22,28 @@ def test_statement_timeout_matches_spec() -> None:
 
     失敗時多半是沒跑過 ``make db-timeouts``（`make up` 會自動帶）。
     """
+    # **查 role 上的設定，不是當前 session 的生效值**（1D-2 改）。
+    #
+    # 測試連線刻意用 startup 參數放寬 statement_timeout（見 config/settings/test.py：
+    # TRUNCATE 分區表會超過 5 秒），所以 `SHOW statement_timeout` 在測試裡看到的是那個
+    # 放寬值，不是 `make db-timeouts` 設進去的。
+    #
+    # 而這條測試真正要驗的本來就是後者——「ALTER ROLE 有沒有跑、值跟 settings 合不合」
+    # ——那是持久設定，查 `pg_roles.rolconfig` 才問得到，且不受任何 session 覆寫影響。
     with connection.cursor() as cursor:
-        cursor.execute("SHOW statement_timeout")
+        cursor.execute(
+            "SELECT rolconfig FROM pg_roles WHERE rolname = %s",
+            [str(settings.DATABASES["default"]["USER"])],
+        )
         row = cursor.fetchone()
 
-    assert row is not None
-    effective = row[0]
+    assert row is not None, "查不到應用角色——role 拆分（13 §3.1 的 1A-P1）沒跑？"
+    configured = dict(
+        entry.split("=", 1) for entry in (row[0] or []) if entry.startswith("statement_timeout=")
+    )
+    effective = configured.get("statement_timeout")
     assert effective == settings.DB_STATEMENT_TIMEOUT, (
-        f"DB 上生效的是 {effective}，settings 宣告的是 {settings.DB_STATEMENT_TIMEOUT}"
+        f"role 上設定的是 {effective}，settings 宣告的是 {settings.DB_STATEMENT_TIMEOUT}"
         "——跑 `make db-timeouts` 或修正兩邊的值（規格出自 11 §4.1：DB 5s）"
     )
 
@@ -39,3 +53,36 @@ def test_connect_timeout_is_declared() -> None:
     options = settings.DATABASES["default"]["OPTIONS"]
     assert isinstance(options, dict)
     assert options.get("connect_timeout"), "DATABASES OPTIONS 缺 connect_timeout"
+
+
+# 正式值是 5s（11 §4.1）。測試至少要這個數字才擋得住併發 TRUNCATE 的尖峰；
+# 訂成下限而不是等值，是為了讓 config/settings/test.py 之後調大不必回來改測試。
+_MIN_TEST_TIMEOUT_MS = 30_000
+
+
+@pytest.mark.django_db
+def test_test_connections_widen_the_statement_timeout() -> None:
+    """測試連線的 statement_timeout 必須比正式值寬（1D-2）。
+
+    **這條守的是一個已經發生過的不穩定**：`transaction=True` 的測試在每條結束後
+    `TRUNCATE` 全部的表，而 `conversation_message` 是分區表——那一次要鎖父表加 12 個
+    分區。六個 xdist worker 同時做時偶爾超過正式值的 5 秒，flush 失敗，上一條測試的
+    資料留在庫裡，於是**下一條**測試撞 `duplicate key ... identity_tenant_pkey`。
+
+    受害者是隨機的、單獨跑都會過，所以查起來非常花時間（實測六次全套跑才定位到）。
+    把覆寫拿掉會讓它回來，而回來的樣子不會指向這裡——因此需要一條直接盯著它的測試。
+    """
+    # 比毫秒而不是比字串：PostgreSQL 會把 `60s` 正規化成 `1min`，`SHOW` 回的是
+    # 正規化後的樣子。`pg_settings.setting` 對 statement_timeout 一律是毫秒，
+    # 不受寫法影響。
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT setting FROM pg_settings WHERE name = 'statement_timeout'")
+        row = cursor.fetchone()
+
+    assert row is not None
+    effective_ms = int(row[0])
+    assert effective_ms >= _MIN_TEST_TIMEOUT_MS, (
+        f"測試連線的 statement_timeout 只有 {effective_ms}ms，"
+        f"至少要 {_MIN_TEST_TIMEOUT_MS}ms——TRUNCATE 分區表會偶發超時，"
+        "而症狀是別的測試隨機撞唯一鍵（見本函式 docstring）"
+    )

@@ -211,8 +211,15 @@ class TestSchema:
 
         assert "conversation_id, created_at" in definitions, "缺對話載入用的索引"
         assert "tenant_id, created_at" in definitions, "缺租戶查詢用的索引"
-        # 對話列表：只列未刪除的，依最後訊息時間排序（partial index）。
-        assert "last_message_at DESC" in definitions, "缺對話列表用的索引"
+        # 對話列表：只列未刪除的（partial），依「最後活動時間」排序。
+        #
+        # **排序鍵是 COALESCE(last_message_at, created_at) 而不是 last_message_at**
+        # （1D-2 改）：後者可為 NULL（剛建立、還沒發言），而列表要 NULLS LAST——
+        # PostgreSQL 的 DESC 預設卻是 NULLS FIRST。兩者對不上時 planner 會放棄這個
+        # 索引改做排序，而結果完全正確，所以只會表現成「列表越來越慢」。
+        assert "COALESCE(last_message_at, created_at) DESC" in definitions, (
+            "對話列表索引的排序鍵與 ConversationRepository.page_for_user 的 ORDER BY 對不上"
+        )
         assert "deleted_at IS NULL" in definitions, "對話列表索引不是 partial"
 
 
@@ -225,7 +232,8 @@ class TestConversationRepository:
         with tenant_scope(TENANT_A):
             make_conversation(tenant_id=TENANT_A, user_id=tenants[TENANT_A], title="A 的對話")
 
-            titles = [c.title for c in ConversationRepository().list_for_tenant()]
+            rows, _ = ConversationRepository().page_for_user(user_id=tenants[TENANT_A], limit=20)
+            titles = [c.title for c in rows]
 
         assert titles == ["A 的對話"]
 
@@ -243,8 +251,9 @@ class TestConversationRepository:
 
             repository.soft_delete(conversation.id)
 
+            rows, _ = repository.page_for_user(user_id=tenants[TENANT_A], limit=20)
             assert repository.get_by_id(conversation.id) is None
-            assert repository.list_for_tenant() == []
+            assert rows == []
             # 列還在，只是看不到——30 天後由清理 job 硬刪。
             assert repository.including_deleted().filter(id=conversation.id).exists()
 

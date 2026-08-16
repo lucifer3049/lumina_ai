@@ -18,6 +18,7 @@ tool…）就要回頭改 identity——ADR-006 的模組邊界說「新增來�
 
 from __future__ import annotations
 
+from services.conversation.permissions import CHAT_PERMISSIONS, CHAT_ROLE_PERMISSIONS
 from services.identity.permissions import PERMISSION_CODES, SYSTEM_ROLE_PERMISSIONS, SystemRole
 from services.knowledge.permissions import KNOWLEDGE_PERMISSIONS, KNOWLEDGE_ROLE_PERMISSIONS
 from services.rag.permissions import RAG_PERMISSIONS, RAG_ROLE_PERMISSIONS
@@ -27,6 +28,11 @@ EXPECTED_KNOWLEDGE_CODES = {"knowledge:read", "knowledge:write", "knowledge:admi
 
 # 1C-4 進來的碼（09 §2.3 的 `POST /rag/query`）。
 EXPECTED_RAG_CODES = {"rag:query"}
+
+# 1D-2 進來的碼（09 §2.4）。**只有一個**：對話的詳情／修改／刪除走的是「擁有者」
+# 判定而不是權限碼——那是資源權限，不是角色權限
+# （見 tests/api/test_conversation_permissions.py）。
+EXPECTED_CHAT_CODES = {"chat:use"}
 
 
 def test_knowledge_declares_its_own_codes() -> None:
@@ -158,3 +164,43 @@ def test_rag_query_is_granted_to_every_role() -> None:
     actual = {role: set(codes) for role, codes in RAG_ROLE_PERMISSIONS.items()}
 
     assert actual == expected, f"rag 的角色矩陣與產品決策不符：{actual}"
+
+
+# ── chat（1D-2）────────────────────────────────────────────────
+
+
+def test_chat_declares_its_own_codes() -> None:
+    assert {code for code, _ in CHAT_PERMISSIONS} == EXPECTED_CHAT_CODES
+
+
+def test_every_chat_code_has_a_description() -> None:
+    missing = [code for code, description in CHAT_PERMISSIONS if not description.strip()]
+
+    assert not missing, f"以下權限碼沒有描述：{missing}"
+
+
+def test_chat_codes_are_aggregated() -> None:
+    assert EXPECTED_CHAT_CODES <= PERMISSION_CODES, (
+        f"匯總後缺少 chat 的權限碼：{sorted(EXPECTED_CHAT_CODES - PERMISSION_CODES)}"
+    )
+
+
+def test_chat_use_is_granted_to_every_role() -> None:
+    """`chat:use` 四個角色都有（2026-08-16 產品決策）。
+
+    問答就是這個產品本身——Viewer 用不了的話那個角色沒有意義（同 `rag:query`）。
+
+    **這個碼只管「能不能用聊天」，不管「能不能碰這一場對話」**：後者是擁有者判定，
+    與角色完全無關（Owner 也讀不到別人的）。兩者混為一談的後果是同租戶內全員互通，
+    而 RLS 是租戶級的、擋不住那件事。
+    """
+    expected = {
+        SystemRole.OWNER: {"chat:use"},
+        SystemRole.ADMIN: {"chat:use"},
+        SystemRole.EDITOR: {"chat:use"},
+        SystemRole.VIEWER: {"chat:use"},
+    }
+
+    actual = {role: set(codes) for role, codes in CHAT_ROLE_PERMISSIONS.items()}
+
+    assert actual == expected, f"chat 的角色矩陣與產品決策不符：{actual}"

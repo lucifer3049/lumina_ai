@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from services.conversation.permissions import CHAT_PERMISSIONS, CHAT_ROLE_PERMISSIONS
 from services.knowledge.permissions import KNOWLEDGE_PERMISSIONS, KNOWLEDGE_ROLE_PERMISSIONS
 from services.rag.permissions import RAG_PERMISSIONS, RAG_ROLE_PERMISSIONS
 
@@ -52,6 +53,7 @@ _CONTRIBUTIONS: tuple[tuple[tuple[tuple[str, str], ...], dict[str, frozenset[str
     (IDENTITY_PERMISSIONS, {}),  # identity 的角色綁定在下方直接列出，見 _IDENTITY_ROLES
     (KNOWLEDGE_PERMISSIONS, KNOWLEDGE_ROLE_PERMISSIONS),
     (RAG_PERMISSIONS, RAG_ROLE_PERMISSIONS),
+    (CHAT_PERMISSIONS, CHAT_ROLE_PERMISSIONS),
 )
 
 # 全系統的權限碼字典（= 各 context 的聯集）。
