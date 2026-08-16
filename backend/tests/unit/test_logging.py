@@ -373,6 +373,30 @@ class TestRedaction:
         assert event["authorization"] == "***"
         assert event["model"] == "gpt-4o-mini", "非敏感欄位不得被誤遮，否則 log 失去用處"
 
+    def test_usage_counters_are_not_masked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """用量計數不是秘密——它是 2A 計費的原料（06 §4）。
+
+        ``token`` 在敏感 key 清單裡而比對是子字串的，所以 ``prompt_tokens`` 會整個
+        被遮成 ``***``。那個欄位因此永遠印不出數字，而它存在的唯一理由就是那個數字；
+        更糟的是它看起來像有在記錄，於是沒有人會發現用量其實查不到。
+        """
+        configure_logging(level="INFO", fmt="json")
+        get_logger("test").info(
+            "embedding_completed",
+            prompt_tokens=1234,
+            total_tokens=1234,
+            token_count=88,
+            access_token="sk-live-should-be-masked",
+        )
+
+        event = _log_lines(capsys.readouterr().out)[0]
+
+        assert event["prompt_tokens"] == 1234
+        assert event["total_tokens"] == 1234
+        assert event["token_count"] == 88
+        # 例外清單是逐項列舉的——不在清單上的 token 欄位仍然要遮。
+        assert event["access_token"] == "***"
+
     def test_nested_values_are_masked(self, capsys: pytest.CaptureFixture[str]) -> None:
         """設定物件常整包被丟進 log，敏感值藏在第二層。"""
         configure_logging(level="INFO", fmt="json")

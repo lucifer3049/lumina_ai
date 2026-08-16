@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from config.celery_app import celery_app
-from core.tasks import INGEST_DOCUMENT_TASK
+from core.tasks import EMBED_DOCUMENT_TASK, INGEST_DOCUMENT_TASK
 
 
 class TestQueues:
@@ -25,6 +25,19 @@ class TestQueues:
     def test_the_default_queue_is_not_etl(self) -> None:
         """預設佇列不得是 etl：沒有指定路由的任務不該落進吃資源的那條。"""
         assert celery_app.conf.task_default_queue != "etl"
+
+    def test_embedding_has_its_own_queue(self) -> None:
+        """embedding 與 etl **分開**（06 §2 的 Q2、08 §1）。
+
+        兩者的資源特性相反：ETL 吃 CPU 與記憶體，embedding 吃的是外部 API 的等待
+        時間。合在一條佇列時，一份 500 頁 PDF 的解析會擋住所有租戶已經切好塊、只差
+        算向量的文件——而那些文件明明不需要 CPU。症狀是「佇列深度正常，但東西就是
+        不會變 ready」。
+        """
+        routes = celery_app.conf.task_routes or {}
+
+        assert routes[EMBED_DOCUMENT_TASK]["queue"] == "embedding"
+        assert routes[EMBED_DOCUMENT_TASK]["queue"] != routes[INGEST_DOCUMENT_TASK]["queue"]
 
 
 class TestBroker:
@@ -107,5 +120,54 @@ class TestTaskIsThin:
         monkeypatch.setattr(etl_tasks, "IngestionService", _MissingService)  # type: ignore[attr-defined]
 
         result = etl_tasks.ingest_document.run(str(uuid.uuid4()), str(uuid.uuid4()))
+
+        assert result["status"] == "missing"
+
+    def test_the_embedding_task_delegates_to_the_service(self, monkeypatch: object) -> None:
+        """embedding task 同樣是薄包裝——批次、冪等、失敗分類全在 service。
+
+        寫進 task 的話，重算一份文件就得發一個訊息、測試得起 broker，而 1C-4 的檢索
+        評測需要在行程內反覆重算。
+        """
+        import uuid
+
+        from worker import embedding_tasks
+
+        calls: list[tuple[uuid.UUID, uuid.UUID]] = []
+
+        from services.knowledge.embedding import EmbeddingResult
+
+        class _FakeService:
+            def embed_document(
+                self, tenant_id: uuid.UUID, document_id: uuid.UUID
+            ) -> EmbeddingResult:
+                calls.append((tenant_id, document_id))
+                return EmbeddingResult(
+                    document_id=document_id, status="ready", embedded_count=3, stats={}
+                )
+
+        monkeypatch.setattr(embedding_tasks, "EmbeddingService", _FakeService)  # type: ignore[attr-defined]
+        tenant_id, document_id = uuid.uuid4(), uuid.uuid4()
+
+        embedding_tasks.embed_document.run(str(tenant_id), str(document_id))
+
+        assert calls == [(tenant_id, document_id)]
+
+    def test_a_missing_document_is_not_retried_by_the_embedding_task(
+        self, monkeypatch: object
+    ) -> None:
+        """理由與 ETL 那條相同：刪除是正常操作，不該在 DLQ 長得像事故。"""
+        import uuid
+
+        from core.exceptions import NotFoundError
+        from worker import embedding_tasks
+
+        class _MissingService:
+            def embed_document(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> object:
+                raise NotFoundError("文件不存在")
+
+        monkeypatch.setattr(embedding_tasks, "EmbeddingService", _MissingService)  # type: ignore[attr-defined]
+
+        result = embedding_tasks.embed_document.run(str(uuid.uuid4()), str(uuid.uuid4()))
 
         assert result["status"] == "missing"

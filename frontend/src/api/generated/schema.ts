@@ -183,6 +183,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/rag/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rag Query
+         * @description 檢索（不生成）。查不到東西是 200 + 空清單，不是 404。
+         *
+         *     404 的意思是「這個 KB 不存在」，而「存在但沒有相關內容」是完全不同的情況——
+         *     1D 對後者有自己的處置（06 §3.1：回「知識庫無相關內容」而不是硬答）。
+         */
+        post: operations["rag_query"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/current": {
         parameters: {
             query?: never;
@@ -446,6 +469,55 @@ export interface components {
              * @description 錯誤類型的 URI reference；無額外語意時為 about:blank
              */
             type: string;
+        };
+        /** RagQueryIn */
+        RagQueryIn: {
+            /**
+             * Kb Id
+             * Format: uuid
+             */
+            kb_id: string;
+            /** Query */
+            query: string;
+            /**
+             * Top K
+             * @default 40
+             */
+            top_k?: number;
+        };
+        /** RagQueryOut */
+        RagQueryOut: {
+            /** Items */
+            items: components["schemas"]["RetrievedChunkOut"][];
+        };
+        /**
+         * RetrievedChunkOut
+         * @description 一筆檢索命中。
+         *
+         *     **欄位剛好足以組出一則引用**：哪個 chunk、出自哪份文件、第幾頁、哪一節。少了它們，
+         *     這個端點就只是「回一堆文字」，而呼叫端無從得知那些文字是哪來的，也就無法驗證答案。
+         *
+         *     ``score`` 是**相似度**（越大越相關，0~1），不是距離。
+         */
+        RetrievedChunkOut: {
+            /**
+             * Chunk Id
+             * Format: uuid
+             */
+            chunk_id: string;
+            /** Content */
+            content: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Heading Path */
+            heading_path: string[];
+            /** Page */
+            page: number | null;
+            /** Score */
+            score: number;
         };
         /** TenantOut */
         TenantOut: {
@@ -1320,6 +1392,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DocumentOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    rag_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RagQueryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RagQueryOut"];
                 };
             };
             /** @description 請求格式錯誤 */

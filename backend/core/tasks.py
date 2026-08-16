@@ -17,6 +17,9 @@ import uuid
 
 # worker/etl_tasks.py 以這個名字註冊；config/celery_app.py 以它設定路由。
 INGEST_DOCUMENT_TASK = "etl.ingest_document"
+# worker/embedding_tasks.py 同理。**佇列與 ETL 分開**（06 §2 的 Q2）：兩者的資源特性
+# 相反，ETL 吃 CPU 與記憶體，embedding 吃的是外部 API 的等待時間。
+EMBED_DOCUMENT_TASK = "embedding.embed_document"
 
 
 def warm_up() -> None:
@@ -53,6 +56,29 @@ def enqueue_ingestion(*, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str | 
     `uploaded`，重跑的入口本來就存在（08 §2 的狀態機允許從失敗的階段續跑）。讓使用者
     的上傳因為背景設施而失敗，是把一個可回復的問題變成不可回復的。
     """
+    return _send(INGEST_DOCUMENT_TASK, tenant_id=tenant_id, document_id=document_id)
+
+
+def enqueue_embedding(*, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str | None:
+    """把一份已切塊的文件排進 embedding 佇列（06 §2 的 Q2），回傳 task id。
+
+    **在 chunk 落地並提交之後才呼叫**，理由與 `enqueue_ingestion` 相同：worker 可能
+    在 COMMIT 之前就開始處理，而它查到的是零個 chunk——那會把文件標成 ready，而它
+    一個向量都沒有。那種錯誤不會有例外，只會讓這份文件永遠查不到。
+
+    送不出去同樣不讓 ETL 失敗：chunk 已經在 DB 裡，文件停在 ``chunked``，重跑的入口
+    存在。**代價要記著**：目前沒有掃描器會把停在 chunked 的文件撿回來（與 1B 帶進來
+    的 enqueue 補償缺口是同一個，需 Celery Beat，排 2A）。
+    """
+    return _send(EMBED_DOCUMENT_TASK, tenant_id=tenant_id, document_id=document_id)
+
+
+def _send(task_name: str, *, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str | None:
+    """送一個以 (tenant, document) 為參數的任務；送不出去回 None。
+
+    兩個 enqueue 共用同一份送出邏輯——分開寫的話，`retry=False` 或例外處理總有一邊
+    會漏掉，而漏掉的那一邊只在 broker 出問題時才走到（也就是沒有人測得到的時候）。
+    """
     # 延後 import：`config.celery_app` 會建立 Celery instance 並讀設定，而 core 是最
     # 內圈——模組層 import 會讓每一個碰到 core 的行程（含測試蒐集）都付這筆成本。
     from config.celery_app import celery_app
@@ -60,15 +86,16 @@ def enqueue_ingestion(*, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str | 
 
     try:
         result = celery_app.send_task(
-            INGEST_DOCUMENT_TASK,
+            task_name,
             kwargs={"tenant_id": str(tenant_id), "document_id": str(document_id)},
             # 不在請求路徑上重試：kombu 預設會退避重試數次，而使用者正在等上傳回應。
-            # 送不出去就記 log 走人（見 docstring）——文件已經在 DB 裡，重跑得回來。
+            # 送不出去就記 log 走人（見各 enqueue 的 docstring）——文件已經在 DB 裡。
             retry=False,
         )
     except Exception:
         get_logger(__name__).warning(
-            "ingestion_enqueue_failed",
+            "task_enqueue_failed",
+            task=task_name,
             document_id=str(document_id),
             exc_info=True,
         )

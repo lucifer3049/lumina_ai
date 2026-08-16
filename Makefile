@@ -222,7 +222,7 @@ api-pinned: ## 啟動 API 並綁定 CPU $(API_CPUS)（基準線用）。log 導�
 # 佔用。ext4 上 inotify 正常運作，事件驅動、閒置時零成本。
 # 若哪天又在 /mnt/* 底下開發，這一項要加回來，否則熱重載會**靜默失效**
 # （沒有錯誤訊息，只是改檔後永遠不重啟）。
-DEV_RELOAD_DIRS = ai api apps common config core etl repositories services worker
+DEV_RELOAD_DIRS = ai api apps common config core etl rag repositories services worker
 
 DEV_CMD = LOG_FORMAT=console \
 	$(UV_RUN) uvicorn config.asgi:app --host 127.0.0.1 --port $(DEV_PORT) \
@@ -232,17 +232,33 @@ DEV_CMD = LOG_FORMAT=console \
 dev: ## 開發伺服器：單 worker + 熱重載 + console log（前景，Ctrl-C 停止）
 	$(DEV_CMD)
 
-# ETL worker（08 §1：專屬佇列與行程，不與 default/embedding 爭資源）。
+# 背景 worker（08 §1：專屬佇列與行程，不與 default 爭資源）。
 # 前景執行，Ctrl-C 停止；沒有它的話上傳的文件會停在 uploaded——訊息進了佇列但
 # 沒有人處理，而那在 API 側完全看不出來。
+#
+# **兩條佇列都要吃**：etl 是解析與切塊（吃 CPU），embedding 是算向量（吃外部 API 的
+# 等待時間）。少吃一條的症狀與「worker 沒起來」一模一樣，只是卡住的位置不同——漏了
+# embedding 的話文件停在 chunked，而 API 一樣回 201、佇列深度一樣正常。
+# 單一行程吃兩條是開發環境的選擇；正式環境依 08 §1 分開部署，兩者的擴縮依據不同。
 # `python -m celery` 而不是 `celery`：主控台腳本的 sys.path[0] 是 bin 目錄，工作目錄
 # 不在路徑上，於是 worker 啟動時 `autodiscover_tasks(["worker"])` 會 ModuleNotFoundError
 # （而 `-A config.celery_app` 反而先過了，錯誤看起來像是 worker 套件不存在）。
 # `-m` 會把工作目錄放進 sys.path，與 smoke 的 worker fixture 走同一條路。
+#
+# **`--pool threads` 是必要條件，不是偏好**（1C-4 實測）。Celery 預設的 prefork pool
+# 把工作行程建成 daemonic，而 **daemonic 行程不准有子行程**——抽取正是跑在子行程裡
+# （08 §6 的隔離）。用預設值時每一次上傳都會撞：
+#
+#   AssertionError: daemonic processes are not allowed to have children
+#
+# 症狀是文件永遠停在 `parsing`，重試 30s/2m/10m 之後才失敗，而 API 側一切正常。
+# 這個缺陷從 1B-6 就在，直到 1C-4 真的用 `make start` 跑一次上傳才浮現——smoke 的
+# worker fixture 當時用 `--pool solo`（為了少一層行程），於是測到的形狀與部署的形狀
+# 不同，而**差異剛好就在出事的那一項**。兩邊現在一致，並由 test_dev_launcher.py 對帳。
 WORKER_CMD = LOG_FORMAT=console $(UV_RUN) python -m celery -A config.celery_app worker \
-	--queues etl --concurrency $(ETL_CONCURRENCY) --loglevel info
+	--queues etl,embedding --pool threads --concurrency $(ETL_CONCURRENCY) --loglevel info
 
-worker: ## 啟動 ETL worker（Celery，etl 佇列；需先 make up）
+worker: ## 啟動背景 worker（Celery，etl + embedding 佇列；需先 make up）
 	$(WORKER_CMD)
 
 # ── 一鍵啟停 ────────────────────────────────────────────────────

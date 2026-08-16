@@ -128,13 +128,14 @@ class TestSmokeLoop:
         smoke_state.token = token
         smoke_state.document_id = body["id"]
 
-    def test_step_3_document_is_chunked(
-        self, api_server: str, etl_worker: None, smoke_state: _SmokeState
+    def test_step_3_document_is_ready(
+        self, api_server: str, background_worker: None, smoke_state: _SmokeState
     ) -> None:
-        """ETL 把文件推進到 ``chunked``（08 §2 的狀態機）。
+        """ETL + embedding 把文件推進到 ``ready``（08 §2 的狀態機）。
 
-        **終點暫時是 chunked 而不是 ready**：``ready`` 要等 1C 的 embedding。改成等
-        ready 的話這一步會永遠逾時，而原因與本階段無關。1C 完成時把斷言往前推一格。
+        1C-3 之前這一步停在 ``chunked``（``ready`` 要等 embedding）。現在等的是完整
+        的寫路徑：**兩條佇列、兩個任務、一次任務交棒**。停在 chunked 就逾時，那正是
+        「ETL 跑完卻沒有人接手」的症狀——它不會有任何錯誤訊息。
 
         輪詢而非固定 sleep：ETL 的時間隨文件大小變動，固定等待不是太慢就是會偶爾紅。
         """
@@ -150,12 +151,12 @@ class TestSmokeLoop:
             )
             assert response.status_code == 200, response.text
             document = response.json()
-            if document["status"] in {"chunked", "failed"}:
+            if document["status"] in {"ready", "failed"}:
                 break
             assert time.monotonic() < deadline, f"ETL {_ETL_TIMEOUT_S}s 內未完成：{document}"
             time.sleep(1.0)
 
-        assert document["status"] == "chunked", document
+        assert document["status"] == "ready", document
 
     @pytest.mark.skip(reason="等 1D：Chat SSE 問答")
     def test_step_4_ask_question(self) -> None: ...

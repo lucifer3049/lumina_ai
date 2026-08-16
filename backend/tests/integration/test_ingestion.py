@@ -19,12 +19,16 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
+from typing import Any
 
 import pytest
+from django.utils import timezone
 
 from apps.knowledge.models import Chunk, Document, EtlJob
 from core.exceptions import ConflictError, NotFoundError
 from core.object_storage import delete_object
+from repositories.knowledge import DocumentRepository
 from services.knowledge.documents import DocumentService
 from services.knowledge.ingestion import IngestionService
 from tests.conftest import TENANT_A, TENANT_B
@@ -112,6 +116,26 @@ class TestHappyPath:
             document = Document.objects.get(id=document_id)
         assert document.status == "chunked"
         assert document.error is None
+
+    def test_the_status_passes_through_the_intermediate_states(self, tenants: None) -> None:
+        """08 §2 的 ``parsing → cleaned → chunked``，不是從 parsing 直接跳到終點。
+
+        一份 500 頁的 PDF 會在這條路上待好幾分鐘，而使用者與維運看到的若始終是
+        ``parsing``，就分不出「還在解析」與「解析完了正在切塊」——兩者的處置不同：
+        前者只能等，後者卡住代表 chunker 出了問題。
+        """
+        seen: list[str] = []
+
+        class _RecordingDocuments(DocumentRepository):
+            def set_status(self, document_id: uuid.UUID, **fields: Any) -> int:
+                seen.append(str(fields.get("status")))
+                return super().set_status(document_id, **fields)
+
+        document_id = _upload(TENANT_A)
+
+        IngestionService(documents=_RecordingDocuments()).ingest(TENANT_A, document_id)
+
+        assert seen == ["parsing", "cleaned", "chunked"]
 
     def test_every_stage_leaves_a_job_row(self, tenants: None) -> None:
         document_id = _upload(TENANT_A)
@@ -284,6 +308,209 @@ class TestReingest:
 
         with pytest.raises(ConflictError):
             DocumentService().reingest(TENANT_A, document_id)
+
+
+class TestRequeueStuck:
+    """broker 送不出去時的恢復入口（`manage.py requeue_stuck_documents`）。
+
+    送任務是 best-effort——broker 掛掉時上傳仍然回 201，代價是那份文件停在
+    ``uploaded`` 而**沒有任何訊息存在**：不會有人重試，因為沒有東西可重試。API 側
+    看不出任何異常，只有那份文件永遠不會前進。這一組測試是那個缺口唯一的守門。
+    """
+
+    @staticmethod
+    def _age(document_id: uuid.UUID, *, minutes: int) -> None:
+        """把 updated_at 往前推。
+
+        ``.update()`` 而不是 ``.save()``：``updated_at`` 是 ``auto_now``，save 會把它
+        重設成現在，於是這個 helper 什麼也沒做而測試永遠測不到門檻。
+        """
+        with tenant_scope(TENANT_A):
+            Document.objects.filter(id=document_id).update(
+                updated_at=timezone.now() - timedelta(minutes=minutes)
+            )
+
+    @staticmethod
+    def _clear(sent: dict[str, list[uuid.UUID]]) -> None:
+        """丟掉前置階段記到的送出。
+
+        `DocumentService.upload` 自己就會排一次 ETL——那是正常路徑，不是恢復指令做的。
+        不清掉的話每條測試都會把它算進斷言，而「什麼都不該送」那幾條會永遠是紅的。
+        """
+        for queue in sent.values():
+            queue.clear()
+
+    @pytest.fixture
+    def sent(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, list[uuid.UUID]]:
+        """攔下兩條佇列的送出，分別記錄。"""
+        from services.knowledge import documents as documents_module
+
+        recorded: dict[str, list[uuid.UUID]] = {"etl": [], "embedding": []}
+
+        def _record(queue: str):  # type: ignore[no-untyped-def]
+            def _send(*, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str:
+                recorded[queue].append(document_id)
+                return "task-id"
+
+            return _send
+
+        monkeypatch.setattr(documents_module, "enqueue_ingestion", _record("etl"))
+        monkeypatch.setattr(documents_module, "enqueue_embedding", _record("embedding"))
+        return recorded
+
+    def test_an_uploaded_document_goes_back_to_the_etl_queue(
+        self, tenants: None, sent: dict[str, list[uuid.UUID]]
+    ) -> None:
+        document_id = _upload(TENANT_A)
+        self._age(document_id, minutes=30)
+
+        self._clear(sent)
+
+        DocumentService().requeue_stuck(TENANT_A, stale_after_minutes=15)
+
+        assert sent["etl"] == [document_id]
+        assert sent["embedding"] == []
+
+    def test_a_chunked_document_goes_to_the_embedding_queue(
+        self, tenants: None, sent: dict[str, list[uuid.UUID]]
+    ) -> None:
+        """已經切好塊的文件只差 embedding——**不該重跑整條 ETL**。
+
+        全部當成 ETL 重排的話結果仍然正確，但那是重新解析一次整份 PDF：幾分鐘的
+        CPU 換一件本來只要幾秒的事，而恢復指令通常正是在事故之後、系統最忙的時候跑。
+        """
+        document_id = _upload(TENANT_A)
+        IngestionService().ingest(TENANT_A, document_id)
+        self._age(document_id, minutes=30)
+
+        self._clear(sent)
+
+        DocumentService().requeue_stuck(TENANT_A, stale_after_minutes=15)
+
+        assert sent["embedding"] == [document_id]
+        assert sent["etl"] == []
+
+    def test_documents_that_just_arrived_are_left_alone(
+        self, tenants: None, sent: dict[str, list[uuid.UUID]]
+    ) -> None:
+        """``uploaded`` 是正常的過渡狀態——剛上傳的文件正在被處理。
+
+        沒有時間下限的話，這支指令會把佇列裡正在跑的東西再排一次。冪等保證資料不會
+        壞，但 embedding 那一段是真的錢，而重複的訊息會讓佇列在最需要吞吐時變兩倍長。
+        """
+        _upload(TENANT_A)  # updated_at = 現在
+
+        self._clear(sent)
+
+        DocumentService().requeue_stuck(TENANT_A, stale_after_minutes=15)
+
+        assert sent["etl"] == []
+        assert sent["embedding"] == []
+
+    def test_failed_and_in_flight_documents_are_not_requeued(
+        self, tenants: None, sent: dict[str, list[uuid.UUID]]
+    ) -> None:
+        """``failed`` 試過而且失敗了，重排只會再失敗一次（它的入口是 re-ingest）；
+        ``parsing`` 的訊息還在飛，``acks_late`` 已經涵蓋 worker 中途死掉的情況，
+        這裡再排一次只是讓兩個 worker 搶同一份文件。"""
+        for status in ("failed", "parsing", "cleaned", "embedding", "ready"):
+            document_id = _upload(TENANT_A)
+            with tenant_scope(TENANT_A):
+                Document.objects.filter(id=document_id).update(
+                    status=status, updated_at=timezone.now() - timedelta(minutes=30)
+                )
+
+        self._clear(sent)
+
+        DocumentService().requeue_stuck(TENANT_A, stale_after_minutes=15)
+
+        assert sent["etl"] == []
+        assert sent["embedding"] == []
+
+    def test_dry_run_reports_without_sending(
+        self, tenants: None, sent: dict[str, list[uuid.UUID]]
+    ) -> None:
+        """先看要動什麼再動——恢復指令是在事故當下跑的，那時最不需要意外。"""
+        document_id = _upload(TENANT_A)
+        self._age(document_id, minutes=30)
+
+        self._clear(sent)
+
+        found = DocumentService().requeue_stuck(TENANT_A, stale_after_minutes=15, dry_run=True)
+
+        assert found == [(document_id, "uploaded")]
+        assert sent["etl"] == []
+
+    def test_another_tenant_is_not_touched(
+        self, tenants: None, sent: dict[str, list[uuid.UUID]]
+    ) -> None:
+        """逐租戶是這支指令的設計前提（全域掃描需要 BYPASSRLS，排 2A）。
+
+        漏了 tenant filter 的話，維運修 A 租戶的事故會順手重排 B 租戶的文件——而 B
+        租戶要付那些 embedding 的錢。
+        """
+        document_id = _upload(TENANT_A)
+        self._age(document_id, minutes=30)
+
+        self._clear(sent)
+
+        DocumentService().requeue_stuck(TENANT_B, stale_after_minutes=15)
+
+        assert sent["etl"] == []
+        assert document_id not in sent["embedding"]
+
+
+class TestRequeueCommand:
+    """`manage.py requeue_stuck_documents` —— 維運在事故之後實際會打的那一行。
+
+    service 的行為由上面那組守著；這裡守的是 CLI 專屬的失敗方式：slug 打錯、
+    門檻給 0、指令根本沒註冊。它們都只在人真的要用它的那一刻才會浮現，而那一刻
+    通常是半夜。
+    """
+
+    def test_it_resolves_the_tenant_slug(self, tenants: None) -> None:
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from apps.identity.models import TenantDirectory
+
+        with tenant_scope(TENANT_A):
+            TenantDirectory.objects.update_or_create(
+                slug="tenant-a", defaults={"tenant_id": TENANT_A, "status": "active"}
+            )
+        document_id = _upload(TENANT_A)
+        with tenant_scope(TENANT_A):
+            Document.objects.filter(id=document_id).update(
+                updated_at=timezone.now() - timedelta(minutes=30)
+            )
+
+        out = StringIO()
+        call_command("requeue_stuck_documents", "--tenant", "tenant-a", "--dry-run", stdout=out)
+
+        assert str(document_id) in out.getvalue()
+
+    def test_an_unknown_tenant_fails_loudly(self, tenants: None) -> None:
+        """查無此租戶要當場失敗，不是「掃到 0 份文件」。
+
+        兩者的輸出很像，而維運會把後者讀成「沒有文件卡住」——然後去查別的地方，
+        而真正卡住的那些文件還在原地。
+        """
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with pytest.raises(CommandError, match="找不到"):
+            call_command("requeue_stuck_documents", "--tenant", "does-not-exist")
+
+    def test_a_zero_threshold_is_rejected(self, tenants: None) -> None:
+        """0 會把正在被處理的文件一起排下去（見指令的 _DEFAULT_STALE_MINUTES）。"""
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with pytest.raises(CommandError, match="至少"):
+            call_command(
+                "requeue_stuck_documents", "--tenant", "tenant-a", "--stale-after-minutes", "0"
+            )
 
 
 class TestRetriesExhausted:

@@ -32,6 +32,7 @@ from core.exceptions import (
     ObjectNotFoundError,
 )
 from core.object_storage import get_object, put_object
+from core.tasks import enqueue_embedding
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from etl.artifacts import from_json, to_json
@@ -45,6 +46,7 @@ from repositories.knowledge import (
     EtlJobRepository,
     KnowledgeBaseRepository,
 )
+from services.knowledge.failures import error_payload
 
 logger = get_logger(__name__)
 
@@ -53,14 +55,12 @@ STAGE_CLEAN = "clean"
 STAGE_CHUNK = "chunk"
 
 STATUS_PARSING = "parsing"
+STATUS_CLEANED = "cleaned"
 STATUS_CHUNKED = "chunked"
 STATUS_FAILED = "failed"
 
 _JOB_SUCCEEDED = "succeeded"
 _JOB_FAILED = "failed"
-
-# 非自家例外對外顯示的固定訊息（見 `_error_payload`）。
-_INTERNAL_FAILURE_MESSAGE = "處理失敗，請稍後重試或聯絡管理員"
 
 # **永久失敗**的例外型別：重試不會有不同結果。
 #
@@ -139,7 +139,7 @@ class IngestionService:
         """
         error = {
             "stage": self._last_running_stage(tenant_id, document_id),
-            **_error_payload(exc),
+            **error_payload(exc),
             "retryable": True,
             "attempts": attempts,
         }
@@ -177,10 +177,23 @@ class IngestionService:
             self._documents.set_status(target.document_id, status=STATUS_PARSING, error=None)
 
         cleaned, clean_stats = self._materialise_cleaned(tenant_id, target)
+
+        # 08 §2 的 ``cleaned``。**中間態不是裝飾**：一份 500 頁的 PDF 在 parsing 裡待
+        # 好幾分鐘，而使用者與維運看到的是同一個字——分不出「還在解析」與「解析完了
+        # 正在切塊」。兩者的處置不同（前者等，後者若卡住是 chunker 的問題）。
+        with tenant_context(tenant_id), unit_of_work():
+            self._documents.set_status(target.document_id, status=STATUS_CLEANED, error=None)
+
         chunks = self._chunk_stage(tenant_id, target, cleaned)
 
         with tenant_context(tenant_id), unit_of_work():
             self._documents.set_status(target.document_id, status=STATUS_CHUNKED, error=None)
+
+        # **交棒給 embedding 佇列**（06 §2 的 Q2），在 chunk 提交之後才送：worker 可能
+        # 在 COMMIT 之前就開始處理，而它查到的是零個 chunk——那會把文件標成 ready，
+        # 而它一個向量都沒有。少了這一行，整條鏈會安靜地停在 chunked：訊息沒有人送、
+        # 佇列是空的、API 回應完全正常，只有文件永遠不會變 ready。
+        enqueue_embedding(tenant_id=tenant_id, document_id=target.document_id)
 
         stats = {**clean_stats, "chunk_count": len(chunks)}
         logger.info(
@@ -356,13 +369,13 @@ class IngestionService:
 
     def _fail_job(self, tenant_id: uuid.UUID, job_id: uuid.UUID, exc: Exception) -> None:
         with tenant_context(tenant_id), unit_of_work():
-            self._jobs.finish(job_id, status=_JOB_FAILED, error=_error_payload(exc))
+            self._jobs.finish(job_id, status=_JOB_FAILED, error=error_payload(exc))
 
     def _fail_permanently(
         self, tenant_id: uuid.UUID, target: _Target, exc: DomainError
     ) -> IngestionResult:
         stage = self._failing_stage(tenant_id, target)
-        error = {"stage": stage, **_error_payload(exc), "retryable": False}
+        error = {"stage": stage, **error_payload(exc), "retryable": False}
         with tenant_context(tenant_id), unit_of_work():
             self._documents.set_status(target.document_id, status=STATUS_FAILED, error=error)
         logger.warning(
@@ -391,22 +404,6 @@ class IngestionService:
                 if job is not None and job.status == _JOB_FAILED:
                     return str(stage)
         return STAGE_EXTRACT
-
-
-def _error_payload(exc: Exception) -> dict[str, Any]:
-    """結構化的失敗紀錄（08 §6 的 DLQ 內容）。
-
-    ``cause`` 給程式看（重試判定、統計），``message`` 給人看。只寫訊息的話，維運
-    看到的是一堆措辭不同的字串，分不出毒檔與我們的 bug。
-
-    **只有自家例外的訊息會被寫進去**（鐵則 9）。這份 dict 會經 `DocumentOut.error`
-    回到租戶手上，而第三方例外的字串常帶內部細節——botocore 會夾 endpoint 與 bucket
-    名稱、psycopg 會夾表名與 SQL 片段。那些對使用者沒有意義，對想摸清架構的人卻很有
-    意義。完整訊息只進 log（worker 那一層已經帶 ``exc_info``）。
-    """
-    if isinstance(exc, DomainError):
-        return {"cause": str(exc.details.get("cause") or type(exc).__name__), "message": str(exc)}
-    return {"cause": type(exc).__name__, "message": _INTERNAL_FAILURE_MESSAGE}
 
 
 def _chunk_config_from(config: dict[str, Any]) -> ChunkConfig:

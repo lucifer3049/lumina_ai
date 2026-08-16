@@ -30,7 +30,7 @@ django.setup()
 
 from config.logging import configure_logging  # noqa: E402
 from config.settings.app_settings import get_app_settings  # noqa: E402
-from core.tasks import INGEST_DOCUMENT_TASK  # noqa: E402
+from core.tasks import EMBED_DOCUMENT_TASK, INGEST_DOCUMENT_TASK  # noqa: E402
 
 # worker 的日誌走與 API 同一條 pipeline（12 §1.1）。少了這行，task 內的 structlog
 # 事件會退回 stdlib 預設：純文字、沒有 tenant_id、WARNING 以下全部消失。
@@ -45,7 +45,10 @@ celery_app.conf.update(
     # 見模組 docstring：進度的單一事實來源是 DB。
     result_backend=None,
     task_default_queue="default",
-    task_routes={INGEST_DOCUMENT_TASK: {"queue": "etl"}},
+    task_routes={
+        INGEST_DOCUMENT_TASK: {"queue": "etl"},
+        EMBED_DOCUMENT_TASK: {"queue": "embedding"},
+    },
     # 序列化只收 JSON：pickle 能執行任意程式碼，而 broker 是一個「只要進得去就會被
     # 執行」的介面。任務參數因此一律是字串/數字（見 worker/etl_tasks.py 的 uuid 轉換）。
     task_serializer="json",
@@ -59,6 +62,15 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     # worker 行程處理幾個任務後重啟。解析函式庫的記憶體不一定還得乾淨，長跑的 worker
     # 會慢慢膨脹到被 OOM killer 收掉——那時死的是**正在處理的那份文件**，與肇因無關。
+    #
+    # **這條只對 prefork pool 生效，而我們跑的是 threads**（理由見 Makefile 的
+    # WORKER_CMD：prefork 的 daemonic 行程不准開子行程，而抽取需要）。也就是說它目前
+    # 是**沒有作用的**——留著是因為切回 prefork 時仍然需要它，刪掉的話那個切換會安靜地
+    # 少一道保護。
+    #
+    # 失去它的代價比看起來小：真正會吃記憶體的解析跑在 forkserver 子行程裡，那個行程
+    # 每份文件結束就消失，且有 RLIMIT_AS 上限（etl/extract/isolated.py 的 1GB）。
+    # 留在 worker 行程內的是編排與切塊，而 import 進來的解析函式庫是固定成本、不是洩漏。
     worker_max_tasks_per_child=50,
     # 送任務是**在使用者的上傳請求裡**發生的（services/knowledge/documents.py）。
     # 沒有 timeout 的話，broker 掛掉時上傳會卡到 HTTP 層逾時，而真正的問題在別處。
@@ -74,4 +86,8 @@ celery_app.conf.update(
 # 註冊表。用 `force=True` 立即 import 的話，**API 行程**會在第一次上傳時把整個 ETL
 # 堆疊（pdfplumber、openpyxl、numpy…）載進來——實測讓那個請求變成 16 秒，而症狀是
 # 「上傳偶爾超級慢」，看起來像物件儲存的問題。
+#
+# 每個 task 模組各註冊一次：`related_name` 只收一個字串，而漏掉一個模組的症狀是
+# 「那條佇列的訊息堆著沒人處理」——worker 啟動成功、log 乾淨，只是它不認得那個任務名。
 celery_app.autodiscover_tasks(["worker"], related_name="etl_tasks")
+celery_app.autodiscover_tasks(["worker"], related_name="embedding_tasks")

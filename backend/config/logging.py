@@ -62,6 +62,28 @@ _SENSITIVE_KEY_PARTS: tuple[str, ...] = (
     "private_key",
 )
 
+# **例外清單**：這些 key 含上面的子字串，但它們是「數量」而不是「秘密」。
+#
+# 用量計數是 2A 計費與成本控制的原料（06 §4 要求每次呼叫回報 token 數）。遮掉之後
+# log 裡是一個永遠印成 ``***`` 的欄位——它不保護任何東西，只讓讀 log 的人以為用量是
+# 機密，而真正要查「這個租戶為什麼這麼貴」時那一欄毫無用處。
+#
+# **逐項列舉而不是寫規則**（例如「以 _tokens 結尾就放行」）：規則會在下一個
+# ``refresh_tokens`` / ``token_secret`` 這種欄位上失效，而它失效的方向是**洩漏**。
+# 清單漏列的方向則只是多遮一個數字——兩種錯誤的代價差好幾個數量級。
+#
+# 只作用於 **key 名比對**。字串值裡的 ``tokens=123`` 仍會被 `_KEY_VALUE_PAIR` 遮掉，
+# 那是刻意的：自由文字裡分不出那是我們的計數還是第三方印出來的憑證。
+_NON_SENSITIVE_KEYS: frozenset[str] = frozenset(
+    {
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "token_count",
+        "max_tokens",
+    }
+)
+
 # 值樣式比對。前後的 lookaround 是必要的：沒有它，request_id（32 位十六進位）
 # 這類混合字串裡的數字片段會被當成卡號遮掉，追查時反而失去關聯能力。
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
@@ -119,6 +141,8 @@ _VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 def _is_sensitive_key(key: str) -> bool:
     lowered = key.lower()
+    if lowered in _NON_SENSITIVE_KEYS:
+        return False
     return any(part in lowered for part in _SENSITIVE_KEY_PARTS)
 
 

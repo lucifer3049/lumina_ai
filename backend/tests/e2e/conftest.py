@@ -99,16 +99,22 @@ def api_server() -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
-def etl_worker() -> Iterator[None]:
-    """啟動一個真的 Celery worker（只吃 etl 佇列）。
+def background_worker() -> Iterator[None]:
+    """啟動一個真的 Celery worker（吃 etl 與 embedding 兩條佇列）。
 
     與 `api_server` 同樣的理由：ETL 的**部署形狀**是「API 送訊息、另一個行程處理」，
     而在測試行程內直接呼叫 service 驗不到那條路——broker 位址錯、task 名稱不一致、
     worker 起不來（settings 或 django.setup 時序），全部只會表現成「文件永遠停在
     uploaded」。那正是這一步要擋的迴歸。
 
-    ``--pool solo``：worker 預設 fork 出子行程，而抽取本身又會 fork（forkserver）。
-    測試環境不需要並行，少一層行程就少一種難以歸因的失敗。
+    ``--pool threads`` **必須與 Makefile 的 `WORKER_CMD` 一致**，由
+    `tests/unit/test_dev_launcher.py::test_the_smoke_worker_uses_the_same_pool` 對帳。
+
+    這裡原本是 `--pool solo`（理由是「測試環境不需要並行，少一層行程就少一種難以歸因
+    的失敗」）。那個選擇讓 smoke 剛好繞開了 1B-6 起就存在的一個缺陷：預設的 prefork
+    pool 建的是 daemonic 行程，而 daemonic 行程不准有子行程——抽取正是跑在子行程裡。
+    `make start` 的 worker 因此完全處理不了任何上傳，而 smoke 全綠。**測試的形狀與部署
+    的形狀不同時，差異本身就是盲區**，而這次差異剛好就在出事的那一項。
     """
     proc = subprocess.Popen(
         [
@@ -119,9 +125,11 @@ def etl_worker() -> Iterator[None]:
             "config.celery_app",
             "worker",
             "--queues",
-            "etl",
+            # 兩條都要吃。只吃 etl 的話，smoke 第 3 步會停在 chunked 直到逾時，而
+            # 錯誤訊息指向「ETL 未完成」——實際上 ETL 早就跑完了，沒有人接手而已。
+            "etl,embedding",
             "--pool",
-            "solo",
+            "threads",
             "--loglevel",
             "warning",
         ],

@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 13 |
-| 版本 | v2.1 |
-| 日期 | 2026-08-14 |
+| 版本 | v2.2 |
+| 日期 | 2026-08-16 |
 | 狀態 | Draft — 待審閱 |
 | 估算基準 | **1 位工程師 + AI（Claude Code）結對開發**；AI 加速 coding 與測試撰寫，但 review、整合、除錯與決策仍以人為瓶頸——時程按此重估；pw 數字保留作為工作量參考；不含需求變更緩衝（建議整體 +20%） |
-| 變更紀錄 | v1.1：估算基準改為 1 人 + AI；時程重估（27→29 週）；2C 裁切（Django Admin 頂替、自訂角色延後）；新增人機協作開發規則；R4 改寫。v1.2：§9.1 補非開發 lead time（F-10）。v1.3：人機協作規則重編為 §1.2（原誤植 §2.1，編號順序錯誤）。v1.4：新增 §3.1「1A 前置條件」（RLS 有三個漏做即靜默失效的前置項）與 §3.2「1A 同步改動：log 的租戶綁定」，兩者皆出自 Phase 0 結案程式審查（見 15 §8）；版本欄同步更正（原停在 v1.1 而變更紀錄已到 v1.3）。v1.5：Phase 0 DoD 的認證併發數改為「待分機環境判定」——單機量測法的絕對值跨 session 漂移 34–48%，無法裁決 150（08-05）與 100（08-07）孰為真（依據見 11 §1.4）。v1.6：§2 新增 Phase 0 結案紀錄（2026-08-07 通過閘門，含依據與三項不阻塞的未結項）。v1.7：§3.1 末段兩項處置在 1A-1 實作時被推翻並改寫——PgBouncer 佔位符不新增（owner 一律不經連線池）、不預先建立 bypass 角色（owner 受 FORCE RLS 管，跨租戶作業延到 2A）；兩項都有強制測試。v1.8：§2 Phase 0 未結項①（CI 真實跑一次）結案並記下它兌現的方式——CI 自 1A-3 起連三次全紅無人察覺，根因是 workflow 缺 `make gen-jwt-keys`；§3.2 補上 1A-3/1A-5 的落地結果。v1.9：§3 新增「1A 結案」小節（**暫行**——Phase 1 的 DoD 是整期的，1A 單獨驗不了，1B–1D 完成後回頭修訂），含子項、驗收依據、帶進 1B 的四個已知缺口，以及過程中發現的兩個非原訂範圍問題。v2.0：新增 §3.3「1B 的範圍偏離紀錄」（PDF 解析器改 pdfplumber、xlsx/Markdown 自 2D 提前、Markdown 的定位、1B-4~1B-6 的子項切分），並同步 §4 的 2D 內容。v2.1：§3 新增「1B 結案」小節（**暫行**，同 1A 的理由），含驗收依據、帶進 1C 的五個缺口，以及過程中發現並修掉的七個非原訂範圍問題 |
+| 變更紀錄 | v1.1：估算基準改為 1 人 + AI；時程重估（27→29 週）；2C 裁切（Django Admin 頂替、自訂角色延後）；新增人機協作開發規則；R4 改寫。v1.2：§9.1 補非開發 lead time（F-10）。v1.3：人機協作規則重編為 §1.2（原誤植 §2.1，編號順序錯誤）。v1.4：新增 §3.1「1A 前置條件」（RLS 有三個漏做即靜默失效的前置項）與 §3.2「1A 同步改動：log 的租戶綁定」，兩者皆出自 Phase 0 結案程式審查（見 15 §8）；版本欄同步更正（原停在 v1.1 而變更紀錄已到 v1.3）。v1.5：Phase 0 DoD 的認證併發數改為「待分機環境判定」——單機量測法的絕對值跨 session 漂移 34–48%，無法裁決 150（08-05）與 100（08-07）孰為真（依據見 11 §1.4）。v1.6：§2 新增 Phase 0 結案紀錄（2026-08-07 通過閘門，含依據與三項不阻塞的未結項）。v1.7：§3.1 末段兩項處置在 1A-1 實作時被推翻並改寫——PgBouncer 佔位符不新增（owner 一律不經連線池）、不預先建立 bypass 角色（owner 受 FORCE RLS 管，跨租戶作業延到 2A）；兩項都有強制測試。v1.8：§2 Phase 0 未結項①（CI 真實跑一次）結案並記下它兌現的方式——CI 自 1A-3 起連三次全紅無人察覺，根因是 workflow 缺 `make gen-jwt-keys`；§3.2 補上 1A-3/1A-5 的落地結果。v1.9：§3 新增「1A 結案」小節（**暫行**——Phase 1 的 DoD 是整期的，1A 單獨驗不了，1B–1D 完成後回頭修訂），含子項、驗收依據、帶進 1B 的四個已知缺口，以及過程中發現的兩個非原訂範圍問題。v2.0：新增 §3.3「1B 的範圍偏離紀錄」（PDF 解析器改 pdfplumber、xlsx/Markdown 自 2D 提前、Markdown 的定位、1B-4~1B-6 的子項切分），並同步 §4 的 2D 內容。v2.1：§3 新增「1B 結案」小節（**暫行**，同 1A 的理由），含驗收依據、帶進 1C 的五個缺口，以及過程中發現並修掉的七個非原訂範圍問題。v2.2：新增 §3.4「1C-3 落地紀錄」——1C 尚未結案（1C-4／1C-5 未做），但 embedding worker 把文件的終點狀態從 `chunked` 改成 `ready`，那是 1D 的前提，因此先記；同步更新 1B 結案表的缺口①（已結）與④（部分處理：`acks_late` 本就涵蓋 worker 被砍，補上逐租戶的恢復指令，全域掃描仍排 2A）|
 
 ---
 
@@ -126,7 +126,7 @@ gantt
 | 子項 | 1B-1 Knowledge 資料層與 RLS／1B-2 KB/Document CRUD 與權限碼／1B-3 單請求上傳與物件儲存／1B-4 三種 loader 與子行程隔離／1B-4b xlsx + Markdown loader／1B-4c PDF 解析器換 pdfplumber（大綱與表格）／1B-5 Clean 與 recursive chunker／1B-6 ETL 狀態機、Celery 佇列、冪等與 chunks 落地（含 DLQ 落地、re-ingest 端點、worker 納入一鍵啟停） |
 | 驗收依據 | `make test` **549 passed / 0 failed**（unit + integration + api）；`make lint` 全綠（ruff + format + mypy strict 151 files + import-linter **7/7**）；`make smoke` **3 passed / 2 skipped**（skip 皆為 1D）；前端 28 passed 含 typecheck；`make openapi-check` 無漂移；手動驗證 `make start` 三服務就緒、worker 實際消化佇列、`make stop` 無殘留 |
 | 對照工作包內容 | KB/Document CRUD ✅／單請求上傳 ✅／PDF·docx·txt 三種 loader ✅（**另加 xlsx 與 Markdown**，見 §3.3）／recursive chunker ✅／狀態機 + 重試 + 冪等 ✅（冪等鍵 `(doc_id, doc_version, stage)` 以 DB 唯一約束強制）／斷點續跑 ✅（cleaned 中間產物落物件儲存）／re-ingest ✅（09 §2.3 的端點，doc_version+1 + superseded） |
-| 帶進 1C 的已知缺口 | ① smoke 第 3 步停在 `chunked`，1C 落地時推到 `ready`；② `superseded` 舊 chunk 的清理 job（重嵌入完成後硬刪）→ 2A；③ DLQ 的**通知**與 per-tenant 公平佇列 → 2A；④ **enqueue 失敗沒有補償**：broker 掛掉時文件停在 `uploaded` 而沒有掃描器撿回來（需 Celery Beat，排 2A）；⑤ `_chunk_config_from` 的 KB 參數覆寫路徑尚無測試 |
+| 帶進 1C 的已知缺口 | ① ~~smoke 第 3 步停在 `chunked`，1C 落地時推到 `ready`~~ ✅ **1C-3 結案**；② `superseded` 舊 chunk 的清理 job（重嵌入完成後硬刪）→ 2A；③ DLQ 的**通知**與 per-tenant 公平佇列 → 2A；④ **enqueue 失敗沒有補償** → **1C-3 部分處理**：`acks_late` 本來就涵蓋「worker 中途被砍」（訊息回佇列），真正的缺口只有「送不出去，訊息根本不存在」；已補**逐租戶**的恢復指令 `manage.py requeue_stuck_documents`，自動化的全域掃描仍排 2A（理由見 §3.4）；⑤ `_chunk_config_from` 的 KB 參數覆寫路徑尚無測試 |
 | 過程中發現並修掉（非原訂範圍） | ① **`make stop` 會永久卡在 flock**——`acquire_lock` 的 fd 被背景子行程繼承，而 flock 綁的是 open file description，服務跑著就永遠有人持有它（子行程改 `9>&-`）。② **Celery worker 缺 `django.setup()`**：smoke 因為 fixture 顯式設了 `DJANGO_SETTINGS_MODULE` 而看不出來，`make start` 起的 worker 直接 `ImproperlyConfigured`。③ **上傳第一次要 16 秒**：`autodiscover_tasks(force=True)` 讓 API 行程載入整個 ETL 堆疊；改 `force=False` 後仍有 10 秒，真正的大頭是 **boto3 建 client 15.6 秒**（WSL2 掛載磁碟），改為啟動時背景預熱。④ smoke 偶發在建租戶失敗：`token_urlsafe` 產生以 `-` 開頭的密碼被 argparse 當旗標。⑤ `test_logging.py` 兩條紅燈（`6b16b3a` 把 dev 指令搬進 `DEV_CMD` 後測試讀到字面值）。⑥ **失敗訊息外洩**：第三方例外的字串會經 `DocumentOut.error` 回到租戶手上（botocore 夾 endpoint 與 bucket 名），改成只有自家例外的訊息落地。⑦ 物件不存在被當成可重試，實際上永久失敗 |
 
 ### 3.3 1B 的範圍偏離紀錄（2026-08-12～14）
@@ -140,9 +140,29 @@ gantt
 | 3 | Markdown 的定位 | 未定義 | **序列化形式，不是中間格式** | 中間格式仍是 `ExtractedDoc`：純 Markdown 沒有頁碼，而 1D 的引用要指得出頁。chunk 內容存 Markdown，meta 仍帶 page 與 heading_path |
 | 4 | 工作包切分 | 1B 一包 | **1B-4／4b／4c／5／6** | 抽取、loader 擴充、解析器換裝、Clean+chunker、狀態機+Celery 各自一次 review。切開的理由是解析器換裝需要與舊版對照，混在大 diff 裡看不出品質差異 |
 
-**1B 的終點狀態是 `chunked` 而不是 `ready`**：`ready` 要等 1C 的 embedding。smoke 第 3 步因此斷言 `chunked`，1C 完成時往前推一格（該測試的 docstring 已標明）。
+**1B 的終點狀態是 `chunked` 而不是 `ready`**：`ready` 要等 1C 的 embedding。smoke 第 3 步因此斷言 `chunked`，1C 完成時往前推一格（該測試的 docstring 已標明）。**已於 1C-3 推到 `ready`**（見 §3.4）。
 
 **帶進 1C 的已知缺口**：① DLQ 只落地到 `document.error`（`retryable` 分毒檔與環境問題兩類），**通知**屬 2A；② `superseded` 的舊 chunk 需要清理 job（重嵌入完成後硬刪），排 2A；③ 語言偵測對拉丁語系以外的小語種未驗證，Phase 2 golden set 一併評估；④ ETL 尚未有 per-tenant 公平佇列（08 §6 的背壓），單一租戶大量上傳會排擠他人——2A 的 quota 一併處理。
+
+### 3.4 1C-3 落地紀錄（2026-08-16）
+
+1C 尚未結案（`1C-4` 純向量檢索、`1C-5` OpenAI／Ollama adapter 未做），本節只記 embedding worker 這一段，因為它**改變了後續工作包的前提**：文件的終點狀態從 `chunked` 變成 `ready`，而 1D 的檢索只認 `ready`。
+
+| 面向 | 內容 |
+|------|------|
+| 落地內容 | `EmbeddingService`（batch=64、逐批落地、失敗分兩類）／`embedding` 佇列與 `worker/embedding_tasks.py`／ETL 完成後自動交棒／狀態機補上 08 §2 的 `cleaned` 與 `embedding` 兩個中間態／smoke 第 3 步推到 `ready` |
+| 驗收依據 | `make test` 632 passed；`make lint` 全綠（ruff + format + mypy strict + import-linter 8/8）；`make smoke` 3 passed / 2 skipped（skip 皆為 1D） |
+| 範圍決定 | **不含 embedding cache**（06 §6 的 Redis + DB 雙層）：跨文件去重的價值要等真 provider（1C-5）才量得出來，而同一份文件內的去重已由 `chunks_without_embedding` 涵蓋。**不含真 provider**：1C-5。 |
+
+**過程中發現並修掉（非原訂範圍）**：
+
+1. **`prompt_tokens` 在 log 裡被遮成 `***`**。`config/logging.py` 的敏感 key 是子字串比對，而 `token` 在清單內——任何含 token 的欄位名都會被遮掉。用量計數是 2A 計費的原料（06 §4），而那個欄位存在的唯一理由就是那個數字。已加**逐項列舉**的例外清單（`prompt_tokens` / `total_tokens` / `token_count` 等），刻意不用「以 `_tokens` 結尾」這種規則——規則會在 `refresh_tokens` 上失效，而失效的方向是洩漏。
+2. **舊訊息會把 re-ingest 中的文件標成 ready**。文件在 `chunked` 時排了 embedding，使用者接著 re-ingest（那時 `chunked` 允許重跑），`doc_version` 變 2 而新版 chunk 還沒切出來；舊訊息進來看到「這一版沒有 chunk 要算」就標 ready——一份零向量、狀態卻是完成的文件。已加狀態守門（`_EMBEDDABLE_STATUSES`）。
+3. **`cleaned` 中間態原本沒有實作**（08 §2 有、1B 把 extract/clean/chunk 全壓在 `parsing`）。補上之後 `cleaned` 一併納入「進行中」，否則使用者在切塊那幾秒按重跑會讓兩個 job 寫同一份文件。
+
+**為什麼恢復是逐租戶的 CLI 而不是 Celery Beat**：全域掃描要能列舉租戶，而 `identity_tenant` 自己就有 RLS（`id = current_tenant`），列舉它需要 BYPASSRLS 角色——§3.1 v1.7 已明文決定那個角色等 2A 才建（提前建一個「沒人用但看得到全部租戶資料」的角色，風險是純增加的）。Celery Beat 本身也還不存在（新行程、部署、單一實例鎖）。因此 1C-3 只補「不需要動這兩個決定」的那一半：`manage.py requeue_stuck_documents --tenant <slug>`，可由外部排程逐租戶呼叫。**自動化的全域掃描仍是 2A 的工作項。**
+
+**帶進 1C-4／1C-5 的已知缺口**：① embedding cache 未做（見上表）；② `superseded` 舊 chunk 的清理 job 仍排 2A，而 1C-3 之後那些舊 chunk 確定不會再被算向量，清理的價值變成純儲存空間；③ 全域的停滯掃描排 2A（見上一段）。
 
 ## 4. Phase 2：多租戶營運能力（5 週，~13 pw）
 

@@ -237,6 +237,7 @@ root_packages = [
     "common",
     "core",
     "etl",
+    "rag",
     "repositories",
     "services",
     "worker",
@@ -268,7 +269,7 @@ name = "common 是純工具，不認識任何層"
 type = "forbidden"
 allow_indirect_imports = true
 source_modules = ["common"]
-forbidden_modules = ["api", "services", "repositories", "apps", "core", "etl", "worker", "ai"]
+forbidden_modules = ["api", "services", "repositories", "apps", "core", "etl", "worker", "ai", "rag"]
 
 [[tool.importlinter.contracts]]
 # etl 是內層（02 §2）：它只認得 core 的型別與例外。禁 repositories/apps 而不只是
@@ -288,6 +289,16 @@ name = "ai 不知道上層，也不碰 ORM"
 type = "forbidden"
 allow_indirect_imports = true
 source_modules = ["ai"]
+forbidden_modules = ["api", "services", "repositories", "apps"]
+
+[[tool.importlinter.contracts]]
+# rag 是內層（02 §2）：檢索的**演算法**住在這裡，SQL 不住在這裡。禁 repositories 的
+# 理由比 etl/ai 更直接——向量查詢是唯一一條「把內容讀出來交給 LLM 講出口」的路徑，
+# 而租戶過濾在 repository。rag 自己查 ORM 就繞過了那一層，且它的結果會直接進 prompt。
+name = "rag 不知道上層，也不碰 ORM"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["rag"]
 forbidden_modules = ["api", "services", "repositories", "apps"]
 
 [[tool.importlinter.contracts]]

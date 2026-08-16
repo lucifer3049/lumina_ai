@@ -25,10 +25,15 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from typing import TypedDict
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, TypedDict
 
+from django.db import connection
 from django.db.models import Model, QuerySet
 from django.utils import timezone
+from pgvector import HalfVector
+from pgvector.django import CosineDistance
 
 from apps.knowledge.models import Chunk, Document, Embedding, EtlJob, KnowledgeBase
 from core.tenant import get_current_tenant_id
@@ -149,6 +154,20 @@ class DocumentRepository(SoftDeletableRepository[Document]):
             source_type=source_type,
         )
 
+    def stuck_in(self, statuses: Sequence[str], *, not_updated_since: datetime) -> list[Document]:
+        """停在某幾個狀態、且一段時間沒有動靜的文件（維運恢復用）。
+
+        ``not_updated_since`` 不是可有可無的參數：``uploaded`` 與 ``chunked`` 是**正常
+        的過渡狀態**，剛上傳的文件本來就會在裡面待幾秒。少了時間下限，恢復指令會把
+        正在被處理的文件再排一次——冪等保證那不會弄壞資料，但 embedding 那一段是真的
+        錢，而重複的訊息會讓佇列在最需要吞吐的時候變成兩倍長。
+        """
+        return list(
+            self.get_queryset()
+            .filter(status__in=list(statuses), updated_at__lt=not_updated_since)
+            .order_by("updated_at")
+        )
+
     def start_new_version(self, document_id: uuid.UUID, *, doc_version: int) -> int:
         """re-ingest：版本 +1 並回到起點（08 §2 的 ``ready → parsing`` 那條邊）。
 
@@ -191,6 +210,19 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
         那個索引。
         """
         return list(self.get_queryset().filter(kb_id=kb_id, superseded=False).order_by("seq"))
+
+    def active_for_version(self, *, document_id: uuid.UUID, doc_version: int) -> list[Chunk]:
+        """一份文件**目前這一版、未 superseded** 的 chunk——embedding 的輸入（1C-3）。
+
+        兩個條件缺一不可。少了 ``doc_version``，re-ingest 之後會連舊版一起算；少了
+        ``superseded``，同樣會算到即將被清理 job 硬刪的那些。兩種漏法的症狀都是帳單
+        變貴而資料看起來正常。
+        """
+        return list(
+            self.get_queryset()
+            .filter(document_id=document_id, doc_version=doc_version, superseded=False)
+            .order_by("seq")
+        )
 
     def mark_superseded(self, *, chunk_ids: Sequence[uuid.UUID]) -> int:
         """標記舊版本；回傳實際影響的列數。
@@ -260,8 +292,24 @@ class EmbeddingRow(TypedDict):
     vector: Sequence[float]
 
 
+@dataclass(frozen=True, slots=True)
+class VectorHit:
+    """檢索命中的一筆——**這是 repository 唯一允許外流的形狀**。
+
+    不回傳 `Embedding` 或 `Chunk` 物件：那會讓上層拿到一個綁著 ORM 的東西，而
+    `rag/` 依鐵則 2 不得碰 ORM。``meta`` 保持原始 dict，page 與 heading_path 的解讀
+    留給知道 1D 需要什麼的那一層。
+    """
+
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    content: str
+    meta: dict[str, Any]
+    score: float
+
+
 class EmbeddingRepository(TenantScopedRepository[Embedding]):
-    """向量的讀寫（05 §3.2）。檢索查詢本身屬 1C-4，這裡只有寫入與盤點。"""
+    """向量的讀寫與檢索（05 §3.2、06 §3.1）。"""
 
     model = Embedding
 
@@ -312,6 +360,70 @@ class EmbeddingRepository(TenantScopedRepository[Embedding]):
                 embedding_version=embedding_version,
             )
         )
+
+    def search(
+        self,
+        query_vector: Sequence[float],
+        *,
+        kb_id: uuid.UUID,
+        model: str,
+        embedding_version: int,
+        top_k: int,
+        ef_search: int,
+    ) -> list[VectorHit]:
+        """向量檢索：回傳最相近的 chunk 與**相似度**（06 §3.1、05 §4）。
+
+        三件事在這條查詢裡定案，錯了都不會報錯：
+
+        1. **參數必須是 `HalfVector`**。欄位是 halfvec，而傳一般的 list 會被轉成
+           `vector`；`halfvec <=> vector` 需要隱式轉型，於是 planner 用不到
+           ``halfvec_cosine_ops`` 的索引——檢索退化成整表掃描，而結果完全正確。
+           `tests/integration/test_vector_retrieval.py` 以 EXPLAIN 釘住這件事。
+
+        2. **`ef_search` 用 ``SET LOCAL``**（11 §2 的 80）。它是「找多仔細」的旋鈕，
+           預設值比文件定的低。用連線層級的 ``SET`` 會外溢到之後所有查詢——連線來自
+           PgBouncer 的池，下一個拿到它的可能是完全不碰向量的 ETL。
+
+        3. **回傳相似度而不是距離**（``1 - cosine_distance``）。兩者差一個負號，而都會
+           排出一個看起來像答案的清單；06 §3.1 的 rerank 門檻 0.3 是相似度。
+
+        過濾條件一個都不能少：租戶（``get_queryset``）、KB、``superseded``、以及
+        model + embedding_version。少任何一個，回來的 chunk 都「確實存在且看起來合理」。
+        """
+        with connection.cursor() as cursor:
+            # 參數化而非字面值：ef_search 目前是常數，但它遲早會變成 KB 可覆寫的設定
+            # （06 §3.1 的「KB 可覆寫」），而那時這裡就是使用者輸入的落點。
+            cursor.execute("SET LOCAL hnsw.ef_search = %s", [int(ef_search)])
+
+        distance = CosineDistance("vector", HalfVector(list(query_vector)))
+        rows = (
+            self.get_queryset()
+            .filter(
+                chunk__kb_id=kb_id,
+                chunk__superseded=False,
+                model=model,
+                embedding_version=embedding_version,
+            )
+            .annotate(distance=distance)
+            .order_by("distance")
+            .values_list(
+                "chunk_id",
+                "chunk__document_id",
+                "chunk__content",
+                "chunk__meta",
+                "distance",
+            )[:top_k]
+        )
+        return [
+            VectorHit(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                content=content,
+                meta=meta or {},
+                score=1.0 - float(distance_value),
+            )
+            for chunk_id, document_id, content, meta, distance_value in rows
+        ]
 
     def chunks_without_embedding(
         self, chunk_ids: Sequence[uuid.UUID], *, model: str, embedding_version: int

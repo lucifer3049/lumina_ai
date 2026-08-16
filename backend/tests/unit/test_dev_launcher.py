@@ -46,6 +46,70 @@ class TestEveryServiceIsManaged:
         assert f'{variable}="${{{variable}:?' in _DEV_SH
 
 
+class TestQueueCoverage:
+    """每一條佇列都要有人消化——**這是與「服務漏接」同一種失敗**。
+
+    1B-6 漏掉的是「worker 沒進 make start」，1C-3 可能漏掉的是「worker 起來了，但
+    只吃 etl 佇列」。兩者的症狀一模一樣：訊息進得去、沒有人處理、API 側完全正常，
+    只有文件永遠不會前進——前者停在 `uploaded`，後者停在 `chunked`。
+    """
+
+    def test_the_worker_consumes_every_routed_queue(self) -> None:
+        from config.celery_app import celery_app
+
+        routed = {route["queue"] for route in (celery_app.conf.task_routes or {}).values()}
+        worker_command = _MAKEFILE.split("WORKER_CMD =", 1)[1].split("\n\n", 1)[0]
+        consumed = set(worker_command.split("--queues", 1)[1].split()[0].split(","))
+
+        assert routed <= consumed, f"沒有 worker 消化的佇列：{sorted(routed - consumed)}"
+
+
+class TestWorkerPool:
+    """worker 的 pool 型態——**1C-4 踩過的那個洞**。
+
+    Celery 預設的 prefork pool 把工作行程建成 daemonic，而 daemonic 行程**不准有子
+    行程**。抽取正是跑在子行程裡（08 §6 的隔離），所以預設值之下每一次上傳都會撞
+    ``AssertionError: daemonic processes are not allowed to have children``——文件永遠
+    停在 `parsing`，而 API 回 201、佇列深度正常、worker 也沒有掛掉。
+
+    這個缺陷從 1B-6 就在，卻活過了整個 1B 與 1C-3。原因不是沒有測試，是**測試的形狀
+    與部署的形狀不同**：smoke 的 worker fixture 當時寫 `--pool solo`（「少一層行程就
+    少一種難以歸因的失敗」），剛好繞開了它。所以這裡守的是兩件事，而第二件比第一件
+    重要——第一件擋的是這個 bug，第二件擋的是「下一個同類的 bug」。
+    """
+
+    @staticmethod
+    def _worker_command() -> str:
+        return _MAKEFILE.split("WORKER_CMD =", 1)[1].split("\n\n", 1)[0]
+
+    @staticmethod
+    def _pool_of(command: str) -> str:
+        return command.split("--pool", 1)[1].split()[0].strip().strip('",')
+
+    def test_the_worker_does_not_use_the_prefork_pool(self) -> None:
+        """prefork 之下抽取一定失敗（見 class docstring）。"""
+        command = self._worker_command()
+
+        assert "--pool" in command, "沒有指定 pool——Celery 預設是 prefork，而那會讓抽取失敗"
+        assert self._pool_of(command) != "prefork"
+
+    def test_the_smoke_worker_uses_the_same_pool(self) -> None:
+        """smoke 起的 worker 與 `make start` 起的必須是同一種 pool。
+
+        **不同的話，smoke 驗的就不是會被部署的那個東西**——而差異落在哪一項是隨機的，
+        這次剛好落在唯一會出事的那一項。
+        """
+        conftest = (_REPO_ROOT / "backend" / "tests" / "e2e" / "conftest.py").read_text(
+            encoding="utf-8"
+        )
+        smoke_pool = conftest.split('"--pool",', 1)[1].split(",", 1)[0].strip().strip('"')
+
+        assert smoke_pool == self._pool_of(self._worker_command()), (
+            f"smoke 用 {smoke_pool}，make start 用 {self._pool_of(self._worker_command())}"
+            "——smoke 驗的不是會被部署的形狀"
+        )
+
+
 class TestObservability:
     def test_status_lists_every_service(self) -> None:
         listed = _DEV_SH.split("for name in ", 1)[1].split(";", 1)[0].split()

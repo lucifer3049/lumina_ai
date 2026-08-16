@@ -12,14 +12,16 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from django.db import IntegrityError
+from django.utils import timezone
 
 from config.logging import get_logger
 from core.exceptions import ConflictError, NotFoundError
 from core.object_storage import build_document_key, delete_object, put_object
-from core.tasks import enqueue_ingestion
+from core.tasks import enqueue_embedding, enqueue_ingestion
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.knowledge import (
@@ -32,7 +34,18 @@ from services.knowledge.uploads import detect_media_type, ensure_within_limit, s
 logger = get_logger(__name__)
 
 # ETL 進行中的狀態（08 §2）。這幾個狀態下重跑會讓兩個 job 寫同一份文件。
-_IN_PROGRESS_STATUSES = {"parsing", "embedding"}
+#
+# ``cleaned`` 也算進行中：它是「解析完、正在切塊」，下一步就會寫 chunk。漏掉它的話，
+# 使用者在那幾秒內按重跑會讓兩個 job 同時寫同一份文件的 chunk，而先寫完的那個會被
+# 另一個的「先刪同版本殘留」清掉——結果是隨機少一半內容，兩邊都不報錯。
+#
+# ``chunked`` **不算**：那時 chunk 已經寫完，重跑是安全的，而它同時是 embedding 沒有
+# 被觸發時唯一的恢復入口（見 `EmbeddingService` 對 doc_version 的守門）。
+_IN_PROGRESS_STATUSES = {"parsing", "cleaned", "embedding"}
+
+# 停住時可以靠重排恢復的兩個狀態——它們的共通點是「該有一則訊息，而它不在」。
+_STATUS_UPLOADED = "uploaded"
+_STATUS_CHUNKED = "chunked"
 
 
 @dataclass(frozen=True)
@@ -181,6 +194,50 @@ class DocumentService:
 
         enqueue_ingestion(tenant_id=tenant_id, document_id=document_id)
         return view
+
+    def requeue_stuck(
+        self, tenant_id: uuid.UUID, *, stale_after_minutes: int, dry_run: bool = False
+    ) -> list[tuple[uuid.UUID, str]]:
+        """把停住的文件重新排進佇列；回傳 (document_id, status) 清單。
+
+        **這是 enqueue 失敗唯一的恢復路徑。** 送任務是 best-effort（broker 掛掉時
+        `enqueue_ingestion` / `enqueue_embedding` 記 log 後回 None，不讓使用者的上傳
+        失敗），代價是那份文件停在 ``uploaded`` 或 ``chunked`` 而**沒有任何訊息存在**
+        ——不會有人重試，因為沒有東西可重試。
+
+        兩個狀態對應兩條佇列：``uploaded`` 要重跑 ETL，``chunked`` 只差 embedding。
+        全部當成 ETL 重排的話，已經切好塊的文件會重新解析一次整份 PDF——結果正確，
+        但那是幾分鐘的 CPU 換一件本來只要幾秒的事。
+
+        **不含 ``failed``**：那是「試過而且失敗了」，重排只會再失敗一次；它的入口是
+        re-ingest（使用者的明確決定）。也不含 ``parsing`` / ``cleaned`` / ``embedding``
+        ——那些狀態下訊息還在飛，`acks_late` 會處理 worker 中途死掉的情況，這裡再排
+        一次只是讓兩個 worker 搶同一份文件。
+
+        全租戶掃描需要 BYPASSRLS 角色，而那要等 2A（13 §3.1 v1.7）。因此這支是
+        **逐租戶**的：呼叫端要嘛知道自己在修哪個租戶，要嘛在外面迴圈。
+        """
+        cutoff = timezone.now() - timedelta(minutes=stale_after_minutes)
+        with tenant_context(tenant_id), unit_of_work():
+            stuck = self._documents.stuck_in(
+                [_STATUS_UPLOADED, _STATUS_CHUNKED], not_updated_since=cutoff
+            )
+            found = [(uuid.UUID(str(doc.id)), str(doc.status)) for doc in stuck]
+
+        if dry_run:
+            return found
+
+        for document_id, status in found:
+            if status == _STATUS_UPLOADED:
+                enqueue_ingestion(tenant_id=tenant_id, document_id=document_id)
+            else:
+                enqueue_embedding(tenant_id=tenant_id, document_id=document_id)
+            logger.info(
+                "document_requeued",
+                document_id=str(document_id),
+                document_status=status,
+            )
+        return found
 
     def delete(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> None:
         """軟刪除（05 §5.4）。chunk 與 embedding 的硬刪由清理 worker 負責。"""

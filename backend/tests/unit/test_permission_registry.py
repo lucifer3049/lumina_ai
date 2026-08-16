@@ -20,9 +20,13 @@ from __future__ import annotations
 
 from services.identity.permissions import PERMISSION_CODES, SYSTEM_ROLE_PERMISSIONS, SystemRole
 from services.knowledge.permissions import KNOWLEDGE_PERMISSIONS, KNOWLEDGE_ROLE_PERMISSIONS
+from services.rag.permissions import RAG_PERMISSIONS, RAG_ROLE_PERMISSIONS
 
 # 1B-2 進來的三個碼（09 §2.3）。
 EXPECTED_KNOWLEDGE_CODES = {"knowledge:read", "knowledge:write", "knowledge:admin"}
+
+# 1C-4 進來的碼（09 §2.3 的 `POST /rag/query`）。
+EXPECTED_RAG_CODES = {"rag:query"}
 
 
 def test_knowledge_declares_its_own_codes() -> None:
@@ -99,3 +103,58 @@ def test_editor_and_viewer_are_finally_different() -> None:
 
     assert editor != viewer, "Editor 與 Viewer 的權限完全相同——角色設計失去意義"
     assert viewer < editor, "Viewer 應該是 Editor 的子集"
+
+
+# ── rag（1C-4）─────────────────────────────────────────────────
+
+
+def test_rag_declares_its_own_codes() -> None:
+    """rag 是第三個 bounded context，形狀必須與前兩個相同。
+
+    形狀一致才是「加 context 不必改匯總邏輯」這個設計的兌現條件——不一致的話，
+    匯總那段會長出一個 if，而下一個 context 會再長一個。
+    """
+    assert {code for code, _ in RAG_PERMISSIONS} == EXPECTED_RAG_CODES
+
+
+def test_every_rag_code_has_a_description() -> None:
+    missing = [code for code, description in RAG_PERMISSIONS if not description.strip()]
+
+    assert not missing, f"以下權限碼沒有描述：{missing}"
+
+
+def test_rag_codes_are_aggregated() -> None:
+    """漏了匯總的症狀：所有人打 `/rag/query` 都拿到 403，而權限管理介面完全正常。"""
+    assert EXPECTED_RAG_CODES <= PERMISSION_CODES, (
+        f"匯總後缺少 rag 的權限碼：{sorted(EXPECTED_RAG_CODES - PERMISSION_CODES)}"
+    )
+
+
+def test_rag_role_bindings_are_aggregated() -> None:
+    for role_name, codes in RAG_ROLE_PERMISSIONS.items():
+        aggregated = SYSTEM_ROLE_PERMISSIONS[SystemRole(role_name)]
+        assert codes <= aggregated, (
+            f"{role_name} 的 rag 權限沒有進匯總：{sorted(codes - aggregated)}"
+        )
+
+
+def test_rag_query_is_granted_to_every_role() -> None:
+    """`rag:query` 四個角色都有（2026-08-16 產品決策）。
+
+    問問題就是這個產品本身——Viewer 查不了的話，「能查、不能改」這個定位不成立。
+    它讀得到的內容完全等同 `knowledge:read` 已經給的，因此不構成新的暴露面。
+
+    **那為什麼要獨立成一個碼**：檢索每一次都要花錢（embedding，2B 之後還有 rerank），
+    而「能看文件清單」與「能無限次觸發付費呼叫」是兩件事——2A 的 quota 需要一個掛得
+    上去的碼。今天四個角色都給，不代表明天不會有人想關掉其中一個。
+    """
+    expected = {
+        SystemRole.OWNER: {"rag:query"},
+        SystemRole.ADMIN: {"rag:query"},
+        SystemRole.EDITOR: {"rag:query"},
+        SystemRole.VIEWER: {"rag:query"},
+    }
+
+    actual = {role: set(codes) for role, codes in RAG_ROLE_PERMISSIONS.items()}
+
+    assert actual == expected, f"rag 的角色矩陣與產品決策不符：{actual}"

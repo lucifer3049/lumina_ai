@@ -346,6 +346,101 @@
         "title": "ProblemDetail",
         "type": "object"
       },
+      "RagQueryIn": {
+        "properties": {
+          "kb_id": {
+            "format": "uuid",
+            "title": "Kb Id",
+            "type": "string"
+          },
+          "query": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 40,
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kb_id",
+          "query"
+        ],
+        "title": "RagQueryIn",
+        "type": "object"
+      },
+      "RagQueryOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RetrievedChunkOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "RagQueryOut",
+        "type": "object"
+      },
+      "RetrievedChunkOut": {
+        "description": "一筆檢索命中。\n\n**欄位剛好足以組出一則引用**：哪個 chunk、出自哪份文件、第幾頁、哪一節。少了它們，\n這個端點就只是「回一堆文字」，而呼叫端無從得知那些文字是哪來的，也就無法驗證答案。\n\n``score`` 是**相似度**（越大越相關，0~1），不是距離。",
+        "properties": {
+          "chunk_id": {
+            "format": "uuid",
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "heading_path": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Heading Path",
+            "type": "array"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "document_id",
+          "content",
+          "score",
+          "page",
+          "heading_path"
+        ],
+        "title": "RetrievedChunkOut",
+        "type": "object"
+      },
       "TenantOut": {
         "properties": {
           "id": {
@@ -1543,6 +1638,78 @@
         "summary": "Upload Document",
         "tags": [
           "knowledge"
+        ]
+      }
+    },
+    "/api/v1/rag/query": {
+      "post": {
+        "description": "檢索（不生成）。查不到東西是 200 + 空清單，不是 404。\n\n404 的意思是「這個 KB 不存在」，而「存在但沒有相關內容」是完全不同的情況——\n1D 對後者有自己的處置（06 §3.1：回「知識庫無相關內容」而不是硬答）。",
+        "operationId": "rag_query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RagQueryIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RagQueryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "請求格式錯誤"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "不存在或無權可見"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "語意驗證失敗"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "內部錯誤"
+          }
+        },
+        "summary": "Rag Query",
+        "tags": [
+          "rag"
         ]
       }
     },
