@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     "apps.platform",
     "apps.identity",
     "apps.knowledge",
+    "apps.conversation",
 ]
 
 DATABASES = {
