@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "permissions": {
+    "deny": [
+      "Bash(git add:*)",
+      "Bash(git add *)",
+      "Bash(git commit:*)",
+      "Bash(git commit *)",
+      "Bash(git push:*)",
+      "Bash(git push *)",
+      "Bash(git merge:*)",
+      "Bash(git merge *)",
+      "Bash(git rebase:*)",
+      "Bash(git rebase *)",
+      "Bash(git tag:*)",
+      "Bash(git tag *)",
+      "Bash(git reset:*)",
+      "Bash(git reset *)",
+      "Bash(git checkout:*)",
+      "Bash(git checkout *)",
+      "Bash(git restore:*)",
+      "Bash(git restore *)"
+    ],
+    "allow": [
+      "Bash(make:*)",
+      "Bash(uv run:*)",
+      "Bash(uv lock:*)",
+      "Bash(ruff:*)",
+      "Bash(mypy:*)",
+      "Bash(lint-imports:*)",
+      "Bash(pnpm:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/ruff-on-edit.sh",
+            "timeout": 30,
+            "statusMessage": "ruff format + fix"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check-layers.sh",
+            "timeout": 60,
+            "statusMessage": "檢查分層依賴"
+          }
+        ]
+      }
+    ]
+  }
+}
