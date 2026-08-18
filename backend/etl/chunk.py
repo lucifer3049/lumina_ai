@@ -43,7 +43,13 @@ _ATOMIC = {BlockType.TABLE, BlockType.CODE}
 
 @dataclass(frozen=True, slots=True)
 class ChunkConfig:
-    """切塊參數（06 §2.1 的預設值；KB config 可覆寫，對映在 1B-6 的 service）。"""
+    """切塊參數（06 §2.1）。
+
+    **這裡的預設值只是型別上的方便，不是「系統預設值」。** 正式路徑一律由
+    `services/knowledge/ingestion.py` 從 `app_settings` 帶入，再讓 KB config 覆寫
+    （15 §4.1：可調參數集中在單一來源）。留一份在這裡是為了讓 `etl/` 不必 import
+    設定——它是內層，而測試也需要一個「隨便給個合理值」的建構方式。
+    """
 
     target_tokens: int = 512
     overlap_tokens: int = 64

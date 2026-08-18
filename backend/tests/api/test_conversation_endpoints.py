@@ -34,6 +34,7 @@ from core.redis import get_redis, tenant_key
 from tests.conftest import TENANT_A, TENANT_B
 from tests.factories.conversation import make_conversation, make_message
 from tests.factories.identity import make_tenant, make_user, make_user_role, tenant_scope
+from tests.factories.knowledge import make_knowledge_base
 from tests.seed import ensure_identity_seed
 
 pytestmark = pytest.mark.django_db(transaction=True, databases=["default", "admin"])
@@ -77,6 +78,21 @@ def owner() -> uuid.UUID:
 # Django ORM 是同步的，在 async 測試函式裡直接建資料會被 `SynchronousOnlyOperation`
 # 擋下（同 test_knowledge_permissions.py 的 scenario、1C-4 的 seeded_kb）。因此每個
 # 情境各給一個 fixture，測試只拿 id。
+
+
+@pytest.fixture
+def knowledge_base(owner: uuid.UUID) -> uuid.UUID:
+    """租戶 A 的一個知識庫。建立對話時 `kb_ids` 只收真的存在的（1D-5）。"""
+    with tenant_scope(TENANT_A):
+        return uuid.UUID(str(make_knowledge_base(tenant_id=TENANT_A).id))
+
+
+@pytest.fixture
+def other_tenants_knowledge_base() -> uuid.UUID:
+    ensure_identity_seed()
+    with tenant_scope(TENANT_B):
+        make_tenant(id=TENANT_B, slug=SLUG_B)
+        return uuid.UUID(str(make_knowledge_base(tenant_id=TENANT_B).id))
 
 
 @pytest.fixture
@@ -177,10 +193,77 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+class TestKnowledgeBaseSelection:
+    """`kb_ids` 只收**真的存在於本租戶**的知識庫（1D-5，2026-08-17 決定）。
+
+    **不驗的話，打錯一個字會安靜地毀掉整場對話**：檢索每一輪都跳過那個 id、回答每一次
+    都是「知識庫中找不到相關內容」，而使用者看到的是「這個 AI 很笨」，不是「我填錯了」。
+    唯一的線索是後台的 `rag_kb_unavailable`——那要有人想到去翻才找得到。
+
+    **只在建立時擋。** 對話進行到一半知識庫被刪掉是另一回事：那時整輪失敗會讓那場對話
+    從此每一次發言都失敗，正確的行為是跳過並照常回答（`RetrievalService.retrieve_for_chat`
+    負責）。**填錯是當下就錯了，被刪是後來才變的**——兩種情境的正確處置相反，所以分開。
+    """
+
+    async def test_an_unknown_knowledge_base_is_rejected(
+        self, client: httpx.AsyncClient, owner: uuid.UUID
+    ) -> None:
+        response = await client.post(
+            "/api/v1/conversations",
+            json={"title": "打錯字", "kb_ids": [str(uuid.uuid4())]},
+            headers=_auth(await _token(client)),
+        )
+
+        assert response.status_code == 404, response.text
+
+    async def test_another_tenants_knowledge_base_is_rejected(
+        self,
+        client: httpx.AsyncClient,
+        owner: uuid.UUID,
+        other_tenants_knowledge_base: uuid.UUID,
+    ) -> None:
+        """**404 而不是 403**（09 §2.3）：403 等於承認那個 id 存在，可以拿來掃出別的
+        租戶有哪些知識庫。與「不存在」合併成同一個回應才防得了枚舉。"""
+        response = await client.post(
+            "/api/v1/conversations",
+            json={"title": "別人的", "kb_ids": [str(other_tenants_knowledge_base)]},
+            headers=_auth(await _token(client)),
+        )
+
+        assert response.status_code == 404, response.text
+
+    async def test_one_bad_id_rejects_the_whole_request(
+        self, client: httpx.AsyncClient, knowledge_base: uuid.UUID
+    ) -> None:
+        """**全有或全無。** 悄悄濾掉壞的那一個等於「建出來了，但少查一個知識庫」——
+        而那正是這條規則要防的安靜降級。"""
+        response = await client.post(
+            "/api/v1/conversations",
+            json={"kb_ids": [str(knowledge_base), str(uuid.uuid4())]},
+            headers=_auth(await _token(client)),
+        )
+
+        assert response.status_code == 404, response.text
+
+    async def test_no_knowledge_base_is_still_fine(
+        self, client: httpx.AsyncClient, owner: uuid.UUID
+    ) -> None:
+        """純閒聊路徑（06 §9）——不掛知識庫是正常用法，不是漏填。"""
+        response = await client.post(
+            "/api/v1/conversations",
+            json={"title": "純聊天"},
+            headers=_auth(await _token(client)),
+        )
+
+        assert response.status_code == 201, response.text
+
+
 class TestCrud:
-    async def test_create_then_read_back(self, client: httpx.AsyncClient, owner: uuid.UUID) -> None:
+    async def test_create_then_read_back(
+        self, client: httpx.AsyncClient, knowledge_base: uuid.UUID
+    ) -> None:
         token = await _token(client)
-        kb_id = str(uuid.uuid4())
+        kb_id = str(knowledge_base)
 
         created = await client.post(
             "/api/v1/conversations",

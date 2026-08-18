@@ -35,7 +35,7 @@ from ai.gateway import AIGateway
 from ai.gateway.providers.mock import MockEmbeddingProvider
 from core.exceptions import NotFoundError
 from services.knowledge.embedding import EmbeddingService
-from services.rag.retrieval import DEFAULT_TOP_K, RetrievalService
+from services.rag.retrieval import RetrievalService, default_top_k
 from tests.conftest import TENANT_A, TENANT_B
 from tests.factories.identity import make_tenant, tenant_scope
 from tests.factories.knowledge import make_chunk, make_document, make_knowledge_base
@@ -210,10 +210,11 @@ class TestTopK:
     def test_the_default_is_forty(self, tenants: None) -> None:
         """06 §3.1：vector search top_k=40。
 
-        寫死在 service 而不是散在呼叫端——1D 與 `/rag/query` 要拿到同一組候選，
-        否則「除錯用的 API 查得到、實際問答查不到」會變成一種可能。
+        **來源只有一個**（1D-5 起是 `services/rag/params.py`，見 15 §4.1）——1D 的
+        問答與 `/rag/query` 要拿到同一組候選，否則「除錯用的 API 查得到、實際問答
+        查不到」會變成一種可能，而那時沒有人會想到去比對兩個預設值。
         """
-        assert DEFAULT_TOP_K == 40
+        assert default_top_k() == 40
 
     def test_it_limits_the_number_of_results(self, tenants: None) -> None:
         kb_id, _ = _kb_with_vectors(TENANT_A)

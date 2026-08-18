@@ -700,11 +700,8 @@ export interface components {
             kb_id: string;
             /** Query */
             query: string;
-            /**
-             * Top K
-             * @default 40
-             */
-            top_k?: number;
+            /** Top K */
+            top_k?: number | null;
         };
         /** RagQueryOut */
         RagQueryOut: {
@@ -728,11 +725,15 @@ export interface components {
             chunk_id: string;
             /** Content */
             content: string;
+            /** Doc Version */
+            doc_version: number;
             /**
              * Document Id
              * Format: uuid
              */
             document_id: string;
+            /** Document Name */
+            document_name: string;
             /** Heading Path */
             heading_path: string[];
             /** Page */

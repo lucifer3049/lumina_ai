@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 06 |
-| 版本 | v1.3 |
+| 版本 | v1.4 |
 | 日期 | 2026-08-14 |
 | 狀態 | Draft — 待審閱 |
 | 相依文件 | 01（ADR-003/004）、04（RAG / Embedding / Memory / Gateway 模組）、05（chunks / embeddings 表） |
-| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08）。v1.2：新增 §3.5 Prompt Engineering 策略分級表；§4 增補 reasoning 模式與 structured output 的介面預留。v1.3：§2.1 的 Clean / Chunk 兩列補上 1B-5 的實作定案（語言偵測方式、正規化邊界、不可切塊型別、token 計數注入） |
+| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08）。v1.2：新增 §3.5 Prompt Engineering 策略分級表；§4 增補 reasoning 模式與 structured output 的介面預留。v1.3：§2.1 的 Clean / Chunk 兩列補上 1B-5 的實作定案（語言偵測方式、正規化邊界、不可切塊型別、token 計數注入）。v1.4：§3.1 與 §3.3 併入 1D-5 的四項實作定案（2026-08-17）——引用標記改用「本輪第幾段」的短編號、Phase 1 的檢索門檻改為可選的相對門檻、condense 先做免呼叫模型的版本、幻覺引用只剔清單不改寫文字；並在 §3.1 前加註參數的落點（15 §4.1）。偏離的完整理由見 13 §3.5 |
 
 ---
 
@@ -83,15 +83,19 @@ flowchart TB
 
 ### 3.1 階段規格與參數（預設值，KB 可覆寫）
 
+> **參數的落點（2026-08-17，1D-5）**：本表的數字是**預設值**，實際生效值一律經
+> `services/rag/params.py` 依「系統預設（`app_settings`）→ 租戶設定 → KB 覆寫」解析。
+> 不得在 service 裡寫常數——理由與後台的統一設定畫面見 **15 §4.1**。
+
 | 階段 | 預設 | 說明 |
 |------|------|------|
-| Query condense | 多輪時啟用 | 以近 N 輪對話將指代性問句改寫為獨立問句（小模型，低成本）；單輪跳過 |
+| Query condense | 多輪時啟用 | 以近 N 輪對話將指代性問句改寫為獨立問句（小模型，低成本）；單輪跳過。**Phase 1 實作的是免錢版**（2026-08-17，1D-5）：不呼叫模型，改為檢索時把前 N 個問題接上一起查（`query_history_turns`，預設 1）。真 condense 每輪多一次 LLM 呼叫，排 Phase 2/3C——屆時有 golden set 才量得出它好多少 |
 | Vector search | top_k=40, cosine | `ef_search` 調校見 11_NFR |
 | FTS | top_k=40 | pgroonga 中文斷詞 |
 | Hybrid | RRF k=60 → 24 | 免調權重、對分數尺度不敏感，勝過線性加權 |
-| Rerank | top_n=6~8, threshold=0.3 | 全數低於門檻 → 回「知識庫無相關內容」而非硬答（hallucination 防線一） |
-| Compression | budget 內 extractive | 相鄰 chunk 合併、重疊去除；LLM 摘要壓縮為選配（延遲+成本，預設關） |
-| Generation | 依 model_config | system prompt 強制：僅依據 context 回答、引用標記 `[c:chunk_id]`、無據回答需聲明 |
+| Rerank | top_n=6~8, threshold=0.3 | 全數低於門檻 → 回「知識庫無相關內容」而非硬答（hallucination 防線一）。**門檻在 Phase 1 不生效**（2026-08-17，1D-5）：0.3 是 cross-encoder 的分數尺度，而 1C-4 只有餘弦相似度——套上去不是品質變好，是每次都回「找不到」。Phase 1 改用可選的**相對門檻**（只留分數 ≥ 第一名 × ratio 的候選，`min_score_ratio` 預設 0＝關閉），它不吃尺度因此換打分方式也不失效。絕對門檻等 2B 接上 rerank 後才有意義；`top_n` 在 Phase 1 即為「進 context 幾段」（`context_chunks`，預設 8） |
+| Compression | budget 內 extractive | 相鄰 chunk 合併、重疊去除；LLM 摘要壓縮為選配（延遲+成本，預設關）。Phase 1 僅實作 §3.2 的預算硬上限（低分端先裁） |
+| Generation | 依 model_config | system prompt 強制：僅依據 context 回答、引用標記 `[c:編號]`、無據回答需聲明。**編號是「本輪第幾段」（1、2、3…）而不是 `chunk_id`**（2026-08-17，1D-5）：一個 UUID 約 20 token，而模型每引用一次抄一遍、輸出 token 又比輸入貴數倍；且叫模型一字不差抄 36 個十六進位字元它會抄錯，而抄錯就被驗證當成幻覺剔掉——畫面上少一個**本來是真的**來源。編號只在該輪有效（比對的就是該輪清單），落地與回傳的仍是真 `chunk_id`，歷史無歧義。實作見 `rag/citation.py` |
 
 ### 3.2 Token Budget（context window 分配）
 
@@ -107,10 +111,12 @@ flowchart TB
 
 ### 3.3 Citation 與 Hallucination 防線
 
-1. **檢索門檻**：rerank 分數全數低於 threshold → 誠實回覆無相關資料（可組態為仍回答但標示「非知識庫依據」）。
-2. **標記式引用**：LLM 在句尾輸出 `[c:id]`；後處理驗證 id 存在於本次 context（幻覺引用直接剔除並記 metric）。
+1. **檢索門檻**：rerank 分數全數低於 threshold → 誠實回覆無相關資料（可組態為仍回答但標示「非知識庫依據」）。**Phase 1 的形式見 §3.1 的 Rerank 條目**（相對門檻，預設關）。
+2. **標記式引用**：LLM 在句尾輸出 `[c:編號]`（編號的形狀見 §3.1 的 Generation 條目）；後處理驗證該編號存在於**本次** context（幻覺引用直接剔除並記 metric）。
+
+   **「剔除」只作用在引用清單，不改寫回答文字**（2026-08-17，1D-5）：字是逐字串流出去的，收不回來，而重寫持久化內容會讓「使用者看到的」與「資料庫存的」不一致——那是 09 §3.2 拆兩步後由 1D-4a 釘住的不變式。原始文字留著同時是 §3 第 3 點（groundedness 抽測）與 3B 評測的原料：要統計模型多常唬爛，靠的就是它。**畫面上的清理屬渲染**：前端把不在 `citations` 事件裡的標記略去。
 3. **Groundedness 抽測**：線上抽樣 N%（預設 5%）由 Evaluation 模組以 LLM-as-judge 背景評分，趨勢進 Dashboard。
-4. **SSE citation event**：串流結尾送 `event: citations`（結構化清單），前端 CitationPanel 呈現來源片段與頁碼。
+4. **SSE citation event**：串流結尾送 `event: citations`（結構化清單，形狀見 09 §3.2），前端 CitationPanel 呈現來源片段與頁碼。
 
 ### 3.4 跨語言檢索指引（F-08：中文問句 vs 英文文件）
 

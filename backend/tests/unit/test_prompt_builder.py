@@ -36,8 +36,14 @@ from ai.prompts import (
 from core.exceptions import ValidationFailedError
 
 
-def _chunk(chunk_id: str = "11111111-1111-5111-8111-111111111111", text: str = "年假 14 天。"):  # type: ignore[no-untyped-def]
-    return ContextChunk(chunk_id=chunk_id, text=text, doc_name="員工手冊", page=3)
+def _chunk(marker: str = "1", text: str = "年假 14 天。"):  # type: ignore[no-untyped-def]
+    return ContextChunk(
+        marker=marker,
+        text=text,
+        doc_name="員工手冊",
+        page=3,
+        heading_path=["員工手冊", "請假"],
+    )
 
 
 class TestRendering:
@@ -181,20 +187,38 @@ class TestContextBlock:
         assert block.rstrip().endswith(CONTEXT_END)
 
     def test_each_chunk_carries_its_citation_marker(self) -> None:
-        """`[c:chunk_id]` 是 06 §3.1 的引用契約：LLM 照抄它，1D-5 再拿它比對本次
-        context。標記沒進 context 的話，模型只能自己編一個看起來像 id 的東西。"""
-        chunk = _chunk(chunk_id="22222222-2222-5222-8222-222222222222")
+        """`[c:編號]` 是引用契約：LLM 照抄它，1D-5 再拿它比對本次 context。標記沒進
+        context 的話，模型只能自己編一個看起來像編號的東西。"""
+        chunk = _chunk(marker="2")
 
         block = build_context_block([chunk])
 
-        assert "[c:22222222-2222-5222-8222-222222222222]" in block
+        assert "[c:2]" in block
+
+    def test_the_marker_is_whatever_the_caller_numbered_it(self) -> None:
+        """**編號由呼叫端決定，這一層不認識 chunk_id**（2026-08-17 決定，偏離
+        06 §3.1 的 `[c:chunk_id]`）。
+
+        改用「本輪第幾段」的短編號有兩個各自成立的理由：一個 UUID 約 20 個 token，
+        而模型每引用一次就抄一遍、輸出 token 又比輸入貴好幾倍；以及叫模型一字不差抄
+        36 個十六進位字元，它會抄錯——抄錯就被當成幻覺剔掉，畫面上少一個本來是真的
+        來源。對映回真 `chunk_id` 由 `rag/citation.py` 負責。
+        """
+        block = build_context_block([_chunk(marker="7")])
+
+        assert "[c:7]" in block
+        assert len(block.split("[c:", 1)[1].split("]", 1)[0]) <= 3
 
     def test_source_metadata_travels_with_the_chunk(self) -> None:
-        """文件名與頁碼要進 context：06 §3.3 的引用面板要顯示它們，而讓 LLM 看得到
-        來源也讓它答得出「依據員工手冊第 3 頁」。"""
+        """文件名、頁碼與章節要進 context：06 §3.3 的引用面板要顯示它們，而讓 LLM
+        看得到來源也讓它答得出「依據員工手冊第 3 頁」。
+
+        **章節路徑是 Markdown 與 xlsx 唯一說得出位置的東西**——那兩種來源沒有頁碼，
+        只給頁碼的話，引用面板對它們永遠是空的。
+        """
         block = build_context_block([_chunk()])
 
-        assert "員工手冊" in block and "3" in block
+        assert "員工手冊" in block and "3" in block and "請假" in block
 
     def test_a_chunk_cannot_forge_the_end_delimiter(self) -> None:
         """**這是本檔最重要的一條。** 被污染的文件只要含有我們的結束標記，就能讓後面
@@ -231,10 +255,7 @@ class TestContextBlock:
         """順序是相關性排序（1C-4 的 top_k）。打亂的話，最相關的那一段會落在 context
         中段——而長 context 的中段正是模型最容易忽略的位置。"""
         block = build_context_block(
-            [
-                _chunk(chunk_id="aaaaaaaa-1111-5111-8111-111111111111", text="第一"),
-                _chunk(chunk_id="bbbbbbbb-2222-5222-8222-222222222222", text="第二"),
-            ]
+            [_chunk(marker="1", text="第一"), _chunk(marker="2", text="第二")]
         )
 
         assert block.index("第一") < block.index("第二")

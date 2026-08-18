@@ -613,11 +613,17 @@
             "type": "string"
           },
           "top_k": {
-            "default": 40,
-            "maximum": 200.0,
-            "minimum": 1.0,
-            "title": "Top K",
-            "type": "integer"
+            "anyOf": [
+              {
+                "maximum": 200.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top K"
           }
         },
         "required": [
@@ -655,9 +661,17 @@
             "title": "Content",
             "type": "string"
           },
+          "doc_version": {
+            "title": "Doc Version",
+            "type": "integer"
+          },
           "document_id": {
             "format": "uuid",
             "title": "Document Id",
+            "type": "string"
+          },
+          "document_name": {
+            "title": "Document Name",
             "type": "string"
           },
           "heading_path": {
@@ -686,6 +700,8 @@
         "required": [
           "chunk_id",
           "document_id",
+          "document_name",
+          "doc_version",
           "content",
           "score",
           "page",

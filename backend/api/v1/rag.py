@@ -34,6 +34,8 @@ def _chunk_out(chunk: RetrievedChunk) -> RetrievedChunkOut:
     return RetrievedChunkOut(
         chunk_id=chunk.chunk_id,
         document_id=chunk.document_id,
+        document_name=chunk.document_name,
+        doc_version=chunk.doc_version,
         content=chunk.content,
         score=chunk.score,
         page=chunk.page,

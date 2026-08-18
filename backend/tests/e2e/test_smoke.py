@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import cast
 
 import httpx
 import pytest
@@ -52,9 +53,11 @@ class _SmokeState:
 
     tenant: SmokeTenant
     token: str = ""
+    kb_id: str = ""
     document_id: str = ""
     conversation_id: str = ""
     message_id: str = ""
+    citations: list[dict[str, object]] = field(default_factory=list)
 
 
 @pytest.fixture(scope="session")
@@ -153,6 +156,7 @@ class TestSmokeLoop:
         assert body["status"] == "uploaded"
 
         smoke_state.token = token
+        smoke_state.kb_id = kb_id
         smoke_state.document_id = body["id"]
 
     def test_step_3_document_is_ready(
@@ -192,13 +196,17 @@ class TestSmokeLoop:
         而我們從另一個請求（GET）把事件讀回來。在測試行程內直接呼叫 service 驗不到
         「背景 task 沒被 GC 掉」「緩衝區跨請求讀得到」這兩種故障，而它們的症狀都是
         「訊息永遠停在 streaming」。
+
+        **對話掛上第 2 步的 KB**（1D-5）：不掛的話這一步走的是純閒聊路徑，第 5 步的
+        引用永遠不會出現——而那看起來會像「引用壞了」，不是「這場對話本來就沒有資料」。
         """
+        assert smoke_state.kb_id, "第 2 步沒有留下 kb id"
         headers = {"Authorization": f"Bearer {smoke_state.token}"}
 
         created = httpx.post(
             f"{api_server}/api/v1/conversations",
             headers=headers,
-            json={"title": "smoke"},
+            json={"title": "smoke", "kb_ids": [smoke_state.kb_id]},
             timeout=_TIMEOUT_S,
         )
         assert created.status_code == 201, created.text
@@ -221,6 +229,10 @@ class TestSmokeLoop:
         answer = "".join(str(data["text"]) for name, data in events if name == "delta")
         assert answer.strip(), "回答是空的"
 
+        citations = [data for name, data in events if name == "citations"]
+        assert citations, f"沒有 citations 事件：{[name for name, _ in events]}"
+        smoke_state.citations = cast("list[dict[str, object]]", citations[0]["items"])
+
         message = httpx.get(
             f"{api_server}/api/v1/conversations/{conversation_id}/messages",
             headers=headers,
@@ -229,5 +241,28 @@ class TestSmokeLoop:
         assert message["status"] == "completed", message
         assert message["content"] == answer, "串流看到的與存下來的不一致"
 
-    @pytest.mark.skip(reason="等 1D-5：RAG 編排與 citation")
-    def test_step_5_answer_has_citation(self) -> None: ...
+    def test_step_5_answer_has_citation(self, api_server: str, smoke_state: _SmokeState) -> None:
+        """回答引用得到第 2 步上傳的那份文件（06 §3.3、09 §3.2）。
+
+        **這是 Phase 1 的 DoD 最後一格**（13 §3：上傳 → ready → 提問 → 串流回答含正確
+        引用）。前四步全綠而這一步紅，指的一定是 chat 與 knowledge 之間那一段——
+        檢索沒接上、context 沒進請求、或引用驗證把真的來源當成幻覺剔掉了。
+
+        驗的是**指回真實來源**，不只是「有東西」：`doc_id` 必須是第 2 步那份文件。
+        引用清單非空但指向別的文件，那是引用組裝拿錯了對映——而畫面上完全看不出來。
+
+        持久化與事件一起驗：只送事件不落地的話，重整頁面之後引用就消失了，而回答
+        還在——那個答案看起來從一開始就沒有依據。
+        """
+        assert smoke_state.citations, "第 4 步沒有拿到引用"
+        assert {str(item["doc_id"]) for item in smoke_state.citations} == {
+            smoke_state.document_id
+        }, smoke_state.citations
+
+        headers = {"Authorization": f"Bearer {smoke_state.token}"}
+        message = httpx.get(
+            f"{api_server}/api/v1/conversations/{smoke_state.conversation_id}/messages",
+            headers=headers,
+            timeout=_TIMEOUT_S,
+        ).json()["items"][-1]
+        assert message["citations"] == smoke_state.citations, "串流看到的引用與存下來的不一致"

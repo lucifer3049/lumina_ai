@@ -41,6 +41,7 @@ from ai.gateway.chat import (
     ToolCallDelta,
     UsageDelta,
 )
+from ai.prompts import ContextChunk, build_context_block, build_user_turn
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
 from core.db import run_orm
@@ -48,9 +49,13 @@ from core.exceptions import DomainError, ErrorCode, NotFoundError, ProviderError
 from core.streams import StreamBuffer
 from core.tenant import tenant_context
 from core.uow import unit_of_work
+from rag.citation import assemble_citations, marker_for
+from rag.pipeline import build_search_query
+from rag.retrievers.vector import RetrievedChunk
 from repositories.conversation import ConversationRepository, MessageRepository
 from services.ai.prompts import SYSTEM_RAG_PROMPT_KEY, PromptService
 from services.conversation.conversations import MessageView, message_view
+from services.rag.retrieval import RetrievalService
 
 logger = get_logger(__name__)
 
@@ -71,12 +76,28 @@ STOP_POLL_SECONDS = 0.2
 
 @dataclass(frozen=True, slots=True)
 class TurnStarted:
-    """第一段的產出。`message_id` 是第二段（串流、停止、重連）唯一的定位鍵。"""
+    """第一段的產出。`message_id` 是第二段（串流、停止、重連）唯一的定位鍵。
+
+    `question` 與 `kb_ids` 是 1D-5 加的：第二段要用它們做檢索，而它們在第一段就已經
+    讀出來了——再查一次等於每則訊息多一趟 DB，且中間 KB 被改掉的話兩段會不一致。
+    """
 
     message_id: uuid.UUID
     conversation_id: uuid.UUID
     user_message_id: uuid.UUID
     model: str
+    question: str = ""
+    kb_ids: tuple[uuid.UUID, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedTurn:
+    """送出去之前組好的一切。`chunks` 留到收尾時比對引用（06 §3.3）。"""
+
+    request: ChatRequest
+    prompt_version: int
+    chunks: tuple[RetrievedChunk, ...]
+    retrieved: bool
 
 
 class ChatService:
@@ -86,11 +107,13 @@ class ChatService:
         conversations: ConversationRepository | None = None,
         messages: MessageRepository | None = None,
         prompts: PromptService | None = None,
+        retrieval: RetrievalService | None = None,
         gateway: AIGateway | None = None,
     ) -> None:
         self._conversations = conversations or ConversationRepository()
         self._messages = messages or MessageRepository()
         self._prompts = prompts or PromptService()
+        self._retrieval = retrieval or RetrievalService()
         # Gateway 惰性建立，理由同 `RetrievalService`：`build_gateway()` 會解析 provider
         # 名稱，而缺金鑰時直接 raise——建構 service 本身不該因此失敗。
         self._gateway = gateway
@@ -138,11 +161,17 @@ class ChatService:
                 status="streaming",
             )
 
+            # KB 清單在交易內取出：離開之後再碰屬性會觸發新查詢，而那時沒有租戶
+            # context（RLS 讀不到東西）。
+            kb_ids = tuple(uuid.UUID(str(kb_id)) for kb_id in (conversation.kb_ids or []))
+
         return TurnStarted(
             message_id=uuid.UUID(str(answer.id)),
             conversation_id=conversation_id,
             user_message_id=uuid.UUID(str(user_message.id)),
             model=get_app_settings().ai_chat_model,
+            question=question,
+            kb_ids=kb_ids,
         )
 
     # ── 第二段：生成（非同步，跑在背景）──────────────────────────
@@ -159,9 +188,11 @@ class ChatService:
         usage: dict[str, Any] = {}
         model = turn.model
         prompt_version: int | None = None
+        prepared: _PreparedTurn | None = None
 
         try:
-            request, prompt_version = await self._build_request(tenant_id, turn)
+            prepared = await self._prepare(tenant_id, turn)
+            request, prompt_version = prepared.request, prepared.prompt_version
             await buffer.append(
                 "meta",
                 {
@@ -189,6 +220,7 @@ class ChatService:
                             usage=usage,
                             model=model,
                             prompt_version=prompt_version,
+                            prepared=prepared,
                         )
                         return
                 if isinstance(delta, TextDelta):
@@ -229,6 +261,7 @@ class ChatService:
                         usage=usage,
                         model=model,
                         prompt_version=prompt_version,
+                        prepared=prepared,
                     )
                     return
                 elif isinstance(delta, DoneDelta):
@@ -241,6 +274,7 @@ class ChatService:
                         usage=usage,
                         model=model,
                         prompt_version=prompt_version,
+                        prepared=prepared,
                     )
                     return
         except asyncio.CancelledError:
@@ -264,6 +298,7 @@ class ChatService:
                         usage=usage,
                         model=model,
                         prompt_version=prompt_version,
+                        prepared=prepared,
                         cause="shutdown",
                     )
                 )
@@ -283,6 +318,7 @@ class ChatService:
                 usage=usage,
                 model=model,
                 prompt_version=prompt_version,
+                prepared=prepared,
             )
         except Exception as exc:
             logger.exception("chat_generation_crashed", message_id=str(turn.message_id))
@@ -299,6 +335,7 @@ class ChatService:
                 usage=usage,
                 model=model,
                 prompt_version=prompt_version,
+                prepared=prepared,
                 cause=type(exc).__name__,
             )
 
@@ -350,31 +387,87 @@ class ChatService:
 
     # ── 內部 ────────────────────────────────────────────────────
 
-    async def _build_request(
-        self, tenant_id: uuid.UUID, turn: TurnStarted
-    ) -> tuple[ChatRequest, int]:
-        """system prompt（1D-3b）+ 近 N 輪原文 → `ChatRequest`。
+    async def _prepare(self, tenant_id: uuid.UUID, turn: TurnStarted) -> _PreparedTurn:
+        """system prompt（1D-3b）+ 近 N 輪原文 + 檢索到的 context（1D-5）→ 請求。
 
         歷史從 DB 讀而不是由呼叫端傳：那是唯一一份真相，而「前端送什麼就用什麼」等於
         讓 client 決定 LLM 看得到哪些內容——它可以偽造一段從未發生過的對話。
+
+        **組裝順序是 06 §3 的 system → memory → context → query**，而 context 與問題
+        都在最後那一則 `user` 訊息裡（10 §5 的指令／資料分域，見 `build_user_turn`）。
         """
         rendered = await run_orm(self._prompts.render, tenant_id, key=SYSTEM_RAG_PROMPT_KEY)
-        history = await run_orm(self._history, tenant_id, turn)
+        history, previous_questions = await run_orm(self._history, tenant_id, turn)
+        chunks = await self._retrieve(tenant_id, turn, previous_questions)
 
-        messages = [ChatMessage(role="system", content=rendered.system), *history]
-        return ChatRequest(messages=messages, model=turn.model), rendered.version
+        context = ""
+        if chunks:
+            context = build_context_block(
+                [
+                    ContextChunk(
+                        marker=marker_for(index),
+                        text=chunk.content,
+                        doc_name=chunk.document_name,
+                        page=chunk.page,
+                        heading_path=chunk.heading_path,
+                    )
+                    for index, chunk in enumerate(chunks)
+                ]
+            )
 
-    def _history(self, tenant_id: uuid.UUID, turn: TurnStarted) -> list[ChatMessage]:
-        """近 N 輪（含這一輪的問題）。**跳過還在生成的那一則**——它的內容是空的。"""
+        messages = [
+            ChatMessage(role="system", content=rendered.system),
+            *history,
+            ChatMessage(role="user", content=build_user_turn(turn.question, context)),
+        ]
+        return _PreparedTurn(
+            request=ChatRequest(messages=messages, model=turn.model),
+            prompt_version=rendered.version,
+            chunks=tuple(chunks),
+            retrieved=bool(turn.kb_ids),
+        )
+
+    async def _retrieve(
+        self, tenant_id: uuid.UUID, turn: TurnStarted, previous_questions: Sequence[str]
+    ) -> list[RetrievedChunk]:
+        """這一輪的 context（06 §3）。沒掛 KB 就整段跳過——06 §9 的純閒聊路徑不付
+        RAG 成本，而沒有 KB 時檢索一定查不到任何東西。"""
+        if not turn.kb_ids:
+            return []
+
+        params = await run_orm(self._retrieval.params_for, tenant_id, turn.kb_ids)
+        query = build_search_query(
+            turn.question,
+            previous_questions=previous_questions,
+            history_turns=params.query_history_turns,
+        )
+        return await run_orm(
+            self._retrieval.retrieve_for_chat, tenant_id, kb_ids=turn.kb_ids, query=query
+        )
+
+    def _history(
+        self, tenant_id: uuid.UUID, turn: TurnStarted
+    ) -> tuple[list[ChatMessage], list[str]]:
+        """近 N 輪 → (要送給模型的歷史, 先前的問題)。
+
+        **這一輪的問題不在歷史裡**：它與 context 一起組成最後那則 user 訊息
+        （`_prepare`），留在歷史裡會讓同一個問題出現兩次。還在生成的那一則也跳過
+        ——它的內容是空的。
+
+        先前的問題另外回傳，給檢索用（`build_search_query`）：「那病假呢？」單獨拿去
+        搜命中的是一組無關內容，而模型那邊本來就看得到歷史，不需要改寫過的問句。
+        """
         with tenant_context(tenant_id), unit_of_work():
             rows = self._messages.for_conversation(
                 turn.conversation_id, limit=HISTORY_WINDOW_MESSAGES
             )
-        return [
-            ChatMessage(role=_role_of(row.role), content=row.content)
-            for row in rows
-            if row.content and uuid.UUID(str(row.id)) != turn.message_id
-        ]
+
+        skip = {turn.message_id, turn.user_message_id}
+        kept = [row for row in rows if row.content and uuid.UUID(str(row.id)) not in skip]
+        return (
+            [ChatMessage(role=_role_of(row.role), content=row.content) for row in kept],
+            [str(row.content) for row in kept if row.role == "user"],
+        )
 
     async def _complete(
         self,
@@ -387,20 +480,25 @@ class ChatService:
         usage: dict[str, Any],
         model: str,
         prompt_version: int | None,
+        prepared: _PreparedTurn | None,
         status: str = "completed",
     ) -> None:
         """正常收尾。`status` 只有中止時不是 `completed`——那時 `finish_reason` 是
         `stopped`，讓前端分得出「講完了」與「被停下來」（05 §3.4 的 `interrupted`）。"""
+        answer = "".join(text)
+        citations, rag_stats = self._citations(answer, prepared, message_id=turn.message_id)
         await run_orm(
             self._persist,
             tenant_id,
             turn.message_id,
             status=status,
-            content="".join(text),
-            usage=usage,
+            content=answer,
+            usage=_with_rag_stats(usage, rag_stats),
             model=model,
             prompt_version=prompt_version,
+            citations=citations,
         )
+        await self._emit_citations(buffer, prepared, citations)
         await buffer.append(
             "done", {"message_id": str(turn.message_id), "finish_reason": finish_reason}
         )
@@ -428,24 +526,32 @@ class ChatService:
         usage: dict[str, Any],
         model: str,
         prompt_version: int | None,
+        prepared: _PreparedTurn | None = None,
         cause: str | None = None,
     ) -> None:
         """收尾：**先持久化再送事件**。
 
         反過來的話，client 收到 error 之後立刻去抓最終訊息，會讀到一則還停在
         `streaming` 的列——而那是一個看起來像「還在跑」的已結束訊息。
+
+        **中斷的回答也要組引用**：已經產生的那半句話裡的標記與完整回答裡的沒有差別，
+        而使用者留在畫面上的就是那半句——沒有引用的話，它看起來像一段沒有依據的話。
         """
+        answer = "".join(text)
+        citations, rag_stats = self._citations(answer, prepared, message_id=turn.message_id)
         await run_orm(
             self._persist,
             tenant_id,
             turn.message_id,
             status=status,
-            content="".join(text),
-            usage=usage,
+            content=answer,
+            usage=_with_rag_stats(usage, rag_stats),
             model=model,
             prompt_version=prompt_version,
+            citations=citations,
             error={"code": str(code), "cause": cause} if cause else {"code": str(code)},
         )
+        await self._emit_citations(buffer, prepared, citations)
         await buffer.append("error", {"code": str(code), "title": message, "retryable": retryable})
         logger.warning(
             "chat_turn_failed",
@@ -454,6 +560,64 @@ class ChatService:
             status=status,
             produced_characters=sum(len(part) for part in text),
         )
+
+    def _citations(
+        self, answer: str, prepared: _PreparedTurn | None, *, message_id: uuid.UUID
+    ) -> tuple[list[dict[str, Any]], dict[str, int] | None]:
+        """回答 + 本輪 context → 驗證過的引用，以及**這一輪的三個數字**（06 §3.3）。
+
+        `prepared` 是 `None` 代表在組請求之前就失敗了（prompt 讀不到、檢索炸了）——
+        那時一個字都還沒產生，自然沒有引用可組。
+
+        **三個數字要落地，不能只進 log**（2026-08-17 決定）：它們是 06 §3.3 的幻覺
+        指標，也是 13 §3.5 第 1 項（改用短編號）唯一的量測——真 provider 接上之後，
+        「模型抄不抄得對」只能從這裡看出來。留在 log 裡等於沒人會看：要回答「這個月
+        有多少 % 的回答出現假引用」得去翻幾百萬行日誌，而那件事沒有人會去做第二次。
+        落在 `messages.usage` 裡則是一句 SQL，且**3B 的評測不必回頭補歷史**——歷史
+        補不回來。
+        """
+        if prepared is None or not answer:
+            return [], None
+
+        result = assemble_citations(answer, prepared.chunks)
+        if result.dropped_markers:
+            logger.warning(
+                "citation_markers_dropped",
+                message_id=str(message_id),
+                dropped=result.dropped_markers,
+                context_count=len(prepared.chunks),
+            )
+        if not prepared.retrieved:
+            # 純閒聊路徑（06 §9）沒有檢索，也就沒有東西可統計。**記一組全是 0 的數字
+            # 會汙染分母**——「有多少 % 的回答出現假引用」會把從來沒查過知識庫的那些
+            # 也算進去，而那個比例只會愈看愈好。
+            return [], None
+        stats = {
+            "context_chunks": len(prepared.chunks),
+            "citations": len(result.citations),
+            "dropped": len(result.dropped_markers),
+        }
+        return [citation.as_dict() for citation in result.citations], stats
+
+    async def _emit_citations(
+        self,
+        buffer: StreamBuffer,
+        prepared: _PreparedTurn | None,
+        citations: list[dict[str, Any]],
+    ) -> None:
+        """`citations` 事件（09 §3.2）。**一定在 `done`／`error` 之前**——那兩個是
+        client 停止讀取的訊號，排在它們後面的事件永遠不會被收到。
+
+        **檢索跑過就送，即使是空的**：不送的話前端分不出「這是純閒聊」與「查了但
+        沒有依據」，而後者要顯示的是「本回答未引用知識庫內容」——那是一個提醒，
+        不是一個空白。
+
+        `{"items": [...]}` 而不是 09 §3.2 寫的裸陣列：緩衝區的事件 data 是物件，
+        而其餘六種事件也全是物件（偏離記於 13 §3.5）。
+        """
+        if prepared is None or not prepared.retrieved:
+            return
+        await buffer.append("citations", {"items": citations})
 
     def _persist(
         self,
@@ -465,12 +629,16 @@ class ChatService:
         usage: dict[str, Any],
         model: str,
         prompt_version: int | None,
+        citations: list[dict[str, Any]] | None = None,
         error: dict[str, Any] | None = None,
     ) -> None:
         """把生成的結果寫回那一列（05 §3.4 的生成快照）。
 
         `model` 與 `prompt_version` 是「這個回答當時用了什麼」的唯一紀錄——漏記的話，
         3B 的評測與事故回溯都失去依據，而那正是 06 §1 的版本化貫穿要保證的事。
+
+        `citations` 一起寫：只送事件不落地的話，引用會在關掉分頁的那一刻消失，而回答
+        還在——那個答案看起來從一開始就沒有依據。
         """
         with tenant_context(tenant_id), unit_of_work():
             self._messages.set_status(
@@ -481,6 +649,7 @@ class ChatService:
                 usage=usage,
                 model=model,
                 prompt_version=prompt_version,
+                citations=citations or [],
             )
 
 
@@ -491,6 +660,21 @@ class EmptyMessageError(DomainError):
 
     def __init__(self) -> None:
         super().__init__("訊息內容不得為空")
+
+
+def _with_rag_stats(usage: dict[str, Any], stats: dict[str, int] | None) -> dict[str, Any]:
+    """把這一輪的引用統計併進生成快照（05 §3.4 的 `usage jb`）。
+
+    **放在 `usage["rag"]` 這個子物件裡，不與 token 平放**：`prompt_tokens` 那幾個鍵是
+    2A 計費的原料，混在一起遲早會有人把 `dropped` 當成一種 token。分開之後查詢仍然
+    只有一句（`usage->'rag'->>'dropped'`）。
+
+    **不開新欄位**是為了不動 migration：`messages` 是分區表，加欄位要走 05 §5.2 的
+    三步走，而這三個數字的價值不足以換那個成本。真的需要索引時（3B 的評測報表）再談。
+    """
+    if stats is None:
+        return usage
+    return {**usage, "rag": stats}
 
 
 def _role_of(role: str) -> Any:
