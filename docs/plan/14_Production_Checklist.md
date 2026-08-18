@@ -43,7 +43,7 @@
 - [ ] 單一 image 多角色、image 以 digest 固定、non-root 執行
 
 ### □ Maintainability
-- [ ] 新人 onboarding 實測：30 分鐘起環境、半天內合入首個 PR
+- [x] ~~新人 onboarding 實測：30 分鐘起環境、半天內合入首個 PR~~（2026-08-19 作廢：單人開發，無新人；見 `13` §2 未結項②）
 - [ ] 文件完備：00–14 全系列 + runbook + ADR 與程式碼一致（抽查）
 - [ ] 測試覆蓋：Service 層 ≥80%、關鍵路徑（chat/etl/quota/auth）≥90%
 
