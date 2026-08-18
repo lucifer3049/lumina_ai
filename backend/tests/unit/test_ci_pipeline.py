@@ -361,6 +361,33 @@ def test_image_runs_as_non_root(workflow: dict[str, Any]) -> None:
     )
 
 
+def test_build_context_excludes_secrets() -> None:
+    """`backend/.dockerignore` 必須擋掉 `.secrets/`（鐵則 9）。
+
+    Dockerfile 是 `COPY . .`，而 `make gen-jwt-keys` 把 ES256 私鑰放在
+    `backend/.secrets/`。漏擋的話**每個開發者本機建出來的 image 都帶著自己的簽章
+    私鑰**，而 image 跑起來完全正常——沒有任何症狀。拿到那把鑰匙就能簽出任意租戶、
+    任意角色的 token（10 §2.1）。
+
+    這條不重複 trivy 的工作，而是補它的死角：trivy 掃的是「這個 image 裡有沒有」，
+    要跑完整個 build 才知道，訊息是一則安全發現；本檔驗的是「意圖還在不在」，不必
+    docker、失敗訊息直接指向該改的那一行。trivy 的 `--severity` 或 secret 掃描哪天
+    被調掉時，也還有這一條在。
+    """
+    dockerignore = REPO_ROOT / "backend" / ".dockerignore"
+    assert dockerignore.exists(), "backend/.dockerignore 不見了——build context 將包含 .env 與私鑰"
+
+    patterns = {
+        line.strip()
+        for line in dockerignore.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert patterns & {".secrets", ".secrets/"}, (
+        "backend/.dockerignore 未排除 `.secrets/`——`make gen-jwt-keys` 產生的 JWT "
+        "私鑰會被 `COPY . .` 烘進 image 層，推上 registry 後人人可讀"
+    )
+
+
 def test_image_is_scanned(workflow: dict[str, Any]) -> None:
     """trivy 掃描（12 §6.1）。"""
     parts = [

@@ -10,7 +10,7 @@ import uuid
 
 from pydantic import BaseModel, Field, field_validator
 
-from services.rag.retrieval import DEFAULT_TOP_K, MAX_TOP_K
+from services.rag.retrieval import MAX_TOP_K
 
 
 class RagQueryIn(BaseModel):
@@ -21,7 +21,12 @@ class RagQueryIn(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     # 上限保護 DB：`top_k` 直接進 SQL 的 LIMIT，而呼叫端是外部整合方。沒有上限的話，
     # 一個極大值不會失敗，只會讓那台 DB 在那幾秒內對所有租戶都很慢。
-    top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
+    #
+    # **`None` = 用這個 KB 生效中的值**，不是在這裡寫一個數字（15 §4.1）。寫死的話，
+    # client 每次都會送出那個數字，於是 KB 的覆寫**永遠不會生效**——而後台明明改得動、
+    # 問答那邊也確實變了，只有這個端點沒反應。這個端點存在的理由正是「看檢索準不準」，
+    # 它看到的必須與問答看到的是同一組候選。
+    top_k: int | None = Field(default=None, ge=1, le=MAX_TOP_K)
 
     @field_validator("query")
     @classmethod
@@ -43,6 +48,10 @@ class RetrievedChunkOut(BaseModel):
 
     chunk_id: uuid.UUID
     document_id: uuid.UUID
+    # 檔名與版本（1D-5 加）：只給一串 UUID 的話，這個除錯用的端點回答不了它存在的
+    # 唯一問題——「這段話是從哪份文件來的」。它與 chat 的引用是同一份資料。
+    document_name: str
+    doc_version: int
     content: str
     score: float
     page: int | None

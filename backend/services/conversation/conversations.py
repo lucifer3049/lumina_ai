@@ -27,6 +27,7 @@ from core.exceptions import NotFoundError, ValidationFailedError
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.conversation import ConversationRepository, MessageRepository
+from repositories.knowledge import KnowledgeBaseRepository
 
 # 09 §1.1：預設 20、上限 100。
 DEFAULT_PAGE_SIZE = 20
@@ -75,9 +76,11 @@ class ConversationService:
         *,
         conversations: ConversationRepository | None = None,
         messages: MessageRepository | None = None,
+        knowledge_bases: KnowledgeBaseRepository | None = None,
     ) -> None:
         self._conversations = conversations or ConversationRepository()
         self._messages = messages or MessageRepository()
+        self._knowledge_bases = knowledge_bases or KnowledgeBaseRepository()
 
     # ── 對話 ────────────────────────────────────────────────
 
@@ -90,11 +93,46 @@ class ConversationService:
         kb_ids: list[uuid.UUID] | None = None,
         prompt_key: str = "",
     ) -> ConversationView:
+        """建立一場對話。`kb_ids` 必須都是**本租戶真的存在**的知識庫（1D-5）。
+
+        不驗的話，打錯一個字會安靜地毀掉整場對話：檢索每一輪都跳過那個 id、回答每一次
+        都是「知識庫中找不到相關內容」，而使用者看到的是「這個 AI 很笨」而不是「我填錯
+        了」。唯一的線索是後台的 `rag_kb_unavailable`，那要有人想到去翻。
+
+        **只在這裡擋，生成時不擋。** 對話進行到一半知識庫被刪掉是相反的情境——那時整輪
+        失敗會讓那場對話從此每一次發言都失敗，正確的行為是跳過並照常回答
+        （`RetrievalService.retrieve_for_chat`）。填錯是當下就錯了，被刪是後來才變的。
+        """
         with tenant_context(tenant_id), unit_of_work():
+            self._require_knowledge_bases(kb_ids)
             conversation = self._conversations.create(
                 user_id=user_id, title=title, kb_ids=kb_ids, prompt_key=prompt_key
             )
             return _conversation_view(conversation)
+
+    def _require_knowledge_bases(self, kb_ids: list[uuid.UUID] | None) -> None:
+        """**全有或全無。**
+
+        悄悄濾掉查不到的那幾個等於「建出來了，但少查一個知識庫」——而那正是這道驗證
+        要防的安靜降級。
+
+        找不到與屬於別的租戶都回 `NotFoundError`（09 §2.3）：403 等於承認那個 id 存在，
+        可以拿來掃出別的租戶有哪些知識庫。租戶過濾由 `get_queryset` 負責。
+        """
+        wanted = list(kb_ids or [])
+        if not wanted:
+            return
+        found = {
+            uuid.UUID(str(kb_id))
+            # 一次查完，不逐個 `get_by_id`：後者是 N 次來回，而 `kb_ids` 是使用者給的
+            # 清單——沒有上限時那就是 N 次查詢的放大器。
+            for kb_id in self._knowledge_bases.get_queryset()
+            .filter(id__in=wanted)
+            .values_list("id", flat=True)
+        }
+        missing = [kb_id for kb_id in wanted if kb_id not in found]
+        if missing:
+            raise NotFoundError("知識庫不存在")
 
     def list_for_user(
         self,
@@ -171,7 +209,7 @@ class ConversationService:
                 conversation_id, limit=limit, cursor=_decode(cursor)
             )
             return Page(
-                items=[_message_view(row) for row in rows],
+                items=[message_view(row) for row in rows],
                 next_cursor=encode_cursor(next_key) if next_key else None,
             )
 
@@ -219,7 +257,8 @@ def _conversation_view(conversation: Any) -> ConversationView:
     )
 
 
-def _message_view(message: Any) -> MessageView:
+def message_view(message: Any) -> MessageView:
+    """model → DTO。**`chat.py` 也用它**：兩份對映會漂，而漂掉時 API 少一個欄位。"""
     return MessageView(
         id=message.id,
         role=message.role,

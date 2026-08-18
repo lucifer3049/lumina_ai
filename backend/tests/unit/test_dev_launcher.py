@@ -141,6 +141,54 @@ class TestProviderVerification:
                 f"{path.name} 會打真 API——CI 會開始花錢，且會因為別人的服務中斷而紅"
             )
 
+    def test_smoke_subprocesses_are_forced_onto_the_mock_provider(self) -> None:
+        """smoke 起的 API 與 worker 都不得打真 API（1D-5 發現，2026-08-17）。
+
+        **`config/settings/test.py` 的強制值救不了 smoke**：那份只對 in-process 的測試
+        套件有效，而 smoke 的兩個子行程跑在 `config.settings.dev` 之下——那是正式的
+        設定路徑，會照實讀 repo 根的 `.env`。1C-5 把真金鑰寫進 `.env` 之後，smoke 就
+        一直在打真的 Gemini，而沒有任何測試會因此變紅。
+
+        最難查的代價不是花錢，是**兩個子行程可能落在不同的模型上**：worker 用 A 模型
+        寫向量、API 用 B 模型查，`UNIQUE(chunk_id, model, embedding_version)` 對不上，
+        檢索永遠回零筆。文件照樣 `ready`、API 全部 200，畫面上只是「答不出東西」。
+        這條測試守的就是那個前提。
+        """
+        conftest = (_REPO_ROOT / "backend" / "tests" / "e2e" / "conftest.py").read_text(
+            encoding="utf-8"
+        )
+        forced = conftest.split("_MOCK_AI_ENV", 1)[1].split("}", 1)[0]
+
+        for key in ("AI_EMBEDDING_PROVIDER", "AI_CHAT_PROVIDER"):
+            assert f'"{key}": "mock"' in forced, f"smoke 沒有把 {key} 釘成 mock"
+        for key in ("AI_EMBEDDING_API_KEY", "AI_CHAT_API_KEY"):
+            assert f'"{key}": ""' in forced, f"smoke 沒有清掉 {key}——金鑰還在就花得了錢"
+        assert "**_MOCK_AI_ENV" in conftest, "強制值定義了卻沒有套進子行程的環境"
+
+    def test_smoke_has_its_own_celery_queue(self) -> None:
+        """smoke 與 `make start` 不得共用同一個 Redis 邏輯 DB（1D-5 發現，2026-08-17）。
+
+        **Celery 的工作籃就是 Redis 的一個 DB。** 共用的話，`make start` 起的 worker 會
+        撿走 smoke 的任務——而它讀的是 repo 根的 `.env`（真 provider），於是寫入端與
+        查詢端落在不同的模型上，檢索永遠回零筆。文件照樣 `ready`、API 全部 200，
+        smoke 只說「沒有引用」，而 dev 環境可能已經開了一整天沒人記得。
+
+        分工：0 給 dev 與 `make start`、1~14 給 xdist worker、15 給 smoke。
+        """
+        conftest = (_REPO_ROOT / "backend" / "tests" / "e2e" / "conftest.py").read_text(
+            encoding="utf-8"
+        )
+        root_conftest = (_REPO_ROOT / "backend" / "tests" / "conftest.py").read_text(
+            encoding="utf-8"
+        )
+        smoke_db = conftest.split("_SMOKE_REDIS_DB = ", 1)[1].split("\n", 1)[0].strip().strip('"')
+
+        assert smoke_db != "0", "smoke 與 make start 共用 DB 0——會互相搶任務"
+        assert '"REDIS_DB": _SMOKE_REDIS_DB' in conftest, "定義了卻沒套進子行程的環境"
+        assert f"+ 1 > {int(smoke_db) - 1}" in root_conftest, (
+            f"xdist 的上限沒有讓開 DB {smoke_db}——平行測試會與 smoke 撞在一起"
+        )
+
 
 class TestObservability:
     def test_status_lists_every_service(self) -> None:

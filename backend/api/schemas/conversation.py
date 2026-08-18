@@ -51,6 +51,27 @@ class MessageListOut(BaseModel):
     next_cursor: str | None
 
 
+class MessageCreateIn(BaseModel):
+    """送出一個問題（1D-4a）。"""
+
+    content: str
+
+
+class TurnStartedOut(BaseModel):
+    """建立回合的回應（09 §2.4，1D-4a 拆成兩步後的第一步）。
+
+    **client 在收到任何一個位元組之前就拿到 `message_id`。** 它是後續三件事唯一的
+    定位鍵：讀串流、按停止（1D-4b）、以及斷線後直接抓最終訊息。只靠 `meta` 事件的話，
+    生成失敗時那個事件永遠不會來，而 client 手上沒有任何東西可以查。
+    """
+
+    message_id: uuid.UUID
+    user_message_id: uuid.UUID
+    conversation_id: uuid.UUID
+    # 串流的位址由伺服器給，client 不自己拼——網址形狀之後要改時，改一邊就好。
+    stream_url: str
+
+
 def _reject_blank(value: str | None) -> str | None:
     """空白字元不算內容（同 knowledge 的理由）。"""
     if value is None:

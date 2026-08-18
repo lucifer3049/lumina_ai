@@ -278,6 +278,11 @@ class VectorHit:
 
     chunk_id: uuid.UUID
     document_id: uuid.UUID
+    # 檔名與版本在同一趟 SQL 裡撈回來（1D-5 的引用要用）：事後補查等於每則回答多 N
+    # 次查詢，而引用面板是讀路徑上最頻繁的東西。join 的成本是零——`chunk__document`
+    # 本來就在查詢裡。
+    document_name: str
+    doc_version: int
     content: str
     meta: dict[str, Any]
     score: float
@@ -384,6 +389,8 @@ class EmbeddingRepository(TenantScopedRepository[Embedding]):
             .values_list(
                 "chunk_id",
                 "chunk__document_id",
+                "chunk__document__filename",
+                "chunk__doc_version",
                 "chunk__content",
                 "chunk__meta",
                 "distance",
@@ -393,11 +400,21 @@ class EmbeddingRepository(TenantScopedRepository[Embedding]):
             VectorHit(
                 chunk_id=chunk_id,
                 document_id=document_id,
+                document_name=filename or "",
+                doc_version=int(doc_version),
                 content=content,
                 meta=meta or {},
                 score=1.0 - float(distance_value),
             )
-            for chunk_id, document_id, content, meta, distance_value in rows
+            for (
+                chunk_id,
+                document_id,
+                filename,
+                doc_version,
+                content,
+                meta,
+                distance_value,
+            ) in rows
         ]
 
     def chunks_without_embedding(

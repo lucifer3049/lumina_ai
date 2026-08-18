@@ -18,7 +18,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
 
-    "baseUrl": ".",
+    // 不設 baseUrl：TS 6.0 起標為 deprecated、7.0 移除。省略時 paths 的目標會以
+    // 本檔所在目錄為基準解析，`./src/*` 的行為與原本完全相同。
     "paths": {
       "@/*": ["./src/*"]
     }

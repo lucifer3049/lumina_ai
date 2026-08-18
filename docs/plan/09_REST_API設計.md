@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 09 |
-| 版本 | v1.1 |
+| 版本 | v1.2 |
 | 日期 | 2026-07-30 |
 | 狀態 | Draft — 待審閱 |
 | 相依文件 | 01（ADR-004）、03（codegen）、04（模組對映）、10（認證與權限細節） |
-| 變更紀錄 | v1.1：新增附錄 A 錯誤 code 初始字典（15 審查報告 F-05） |
+| 變更紀錄 | v1.1：新增附錄 A 錯誤 code 初始字典（15 審查報告 F-05）。v1.2：§3.2 的 `citations` 事件改為物件（`{"items":[...]}`）並增列 marker／doc_version／heading_path／snippet 四欄，同時載明事件順序與「檢索跑過就送、即使是空的」（2026-08-17，1D-5；理由見 13 §3.5） |
 
 ---
 
@@ -103,7 +103,8 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 |--------|------|------|------|
 | GET/POST ★ | /conversations | 列表 / 建立（kb_ids、model、prompt_key） | chat:use |
 | GET/PATCH/DELETE | /conversations/{id} | 詳情（含訊息分頁）/ 改名/釘選/封存 / 刪除 | 擁有者 |
-| **POST** | **/conversations/{id}/messages** | **發送訊息 → SSE 串流回應**（`Accept: text/event-stream`）；非串流模式 `?stream=false` | chat:use |
+| **POST ★** | **/conversations/{id}/messages** | **發送訊息 → 201 `{message_id, stream_url}`**（建立回合並開始生成）；非串流模式 `?stream=false` 回完整訊息 | chat:use |
+| **GET** | **/conversations/{id}/messages/{mid}/stream** | **讀該則訊息的 SSE 串流**（`Accept: text/event-stream`）；斷線重連帶 `Last-Event-ID` | 擁有者 |
 | POST | /conversations/{id}/messages/{mid}/stop | 中止生成 | 擁有者 |
 | POST | /conversations/{id}/messages/{mid}/regenerate | 重新生成 | 擁有者 |
 | GET | /conversations/{id}/export | 匯出 markdown/json | 擁有者 |
@@ -148,20 +149,25 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 ### 3.2 SSE 事件協定
 
 ```
-POST /api/v1/conversations/{id}/messages
+GET /api/v1/conversations/{id}/messages/{mid}/stream
 Accept: text/event-stream
 
 ← id: 1            event: meta       data: {"message_id","model","conversation_id"}
 ← id: 2..n         event: delta      data: {"text":"..."}
 ← id: k            event: tool_call  data: {"name","params_preview","status":"running|done|failed"}
-← id: n+1          event: citations  data: [{"chunk_id","doc_id","doc_name","page","score"}]
+← id: n+1          event: citations  data: {"items":[{"marker","chunk_id","doc_id","doc_name","doc_version","page","heading_path","score","snippet"}]}
 ← id: n+2          event: usage      data: {"prompt_tokens","completion_tokens","cost"}
 ← id: n+3          event: done       data: {"message_id","finish_reason"}
 （錯誤時）         event: error      data: {"code","title","retryable":true}
 （每 15s）         : heartbeat
 ```
 
-- 斷線重連：`Last-Event-ID` header → 從 Redis resume buffer 續傳（TTL 5min，過期回 `409 RESUME_EXPIRED`，client 改抓最終 message）。
+- 斷線重連：**再 GET 一次同一個網址**並帶 `Last-Event-ID` header → 從 Redis resume buffer 續傳（TTL 5min，過期回 `409 RESUME_EXPIRED`，client 改抓最終 message）。
+- **發送與串流拆成兩步（2026-08-16，1D-4a 定案；原設計是單一 POST 直接回串流）**。理由是正確性而非形式：單一 POST 同時做「建立訊息」與「串流」，網路閃斷時 client 分不出請求送達與否，重送即產生兩則訊息、兩次生成、兩次帳單，而本端點原本未標冪等鍵。拆開後建立是普通 JSON 請求（★ 冪等鍵適用），串流是可重複讀的資源；連帶：生成前的錯誤是普通 HTTP 狀態碼、resume 與初次串流共用同一條路徑、client 斷線後生成續行（§4 的 G-06）天然成立。
+- **前端不使用 `EventSource`**：它無法帶自訂 header，而本 API 的憑證是 `Authorization: Bearer`（§1.2）——與 GET/POST 無關。前端一律 fetch + ReadableStream，`Last-Event-ID` 由 client 自行維護（03 §3.2 同步修訂）。
+- **`citations` 的 data 是物件而不是裸陣列（2026-08-17，1D-5 修訂）**，且每筆多四個欄位。裸陣列與 SSE 緩衝區的事件形狀不合（`core/streams.py` 的 data 是物件），且其餘六種事件全是物件——為一種事件破例，等於每個讀取端都要為它寫一條特例。四個新欄位各有用途：`marker` 是答案文字裡那個 `[c:1]`，前端靠它把標記換成可點的上標；`snippet` 是 06 §3.3 要求的來源片段，**同時是一張當時的照片**（文件之後被 re-ingest 或刪除，這則回答仍看得出當初依據了什麼）；`heading_path` 是 Markdown 與 xlsx 唯一說得出位置的東西（那兩種沒有頁碼）；`doc_version` 讓 re-ingest 之後仍指得出當時引用的版本。後三者的資料在檢索時本來就在手上。
+- **`citations` 一定排在 `done`／`error` 之前**：那兩個是 client 停止讀取的訊號，排在它們後面的事件永遠不會被收到，而串流看起來完全正常。與 `usage` 的相對順序由 provider 決定（多數在最後一個 chunk 才回報用量）。
+- **檢索跑過就送，即使 `items` 是空的**：不送的話 client 分不出「這場對話沒掛知識庫」與「查了但沒有依據」，而後者要顯示的是「本回答未引用知識庫內容」——那是一個提醒，不是一個空白。沒掛知識庫的純閒聊路徑則完全不送這個事件。
 - 所有 SSE 錯誤皆為 event（HTTP 已 200），錯誤碼與 §1.3 共用 code 字典。
 
 ### 3.3 非同步任務慣例（202 模式）

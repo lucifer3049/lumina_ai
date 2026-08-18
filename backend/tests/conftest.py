@@ -36,10 +36,13 @@ from collections.abc import Iterator
 # 序列跑用 0 號。Redis 預設只有 16 個邏輯 DB，超出就明確失敗——不 fail 的話 worker
 # 會靜默共用 0 號，也就是回到這段要解決的問題本身。
 if _worker := os.environ.get("PYTEST_XDIST_WORKER"):
-    if int(_worker.removeprefix("gw")) + 1 > 15:
+    # 上限 14 而不是 15：**15 保留給 smoke**（`tests/e2e/conftest.py` 的
+    # `_SMOKE_REDIS_DB`），0 是 dev 與 `make start` 在用的。撞在一起的話，兩邊的
+    # Celery worker 會搶同一個工作籃，而症狀完全不指向真因（見那份 conftest 的說明）。
+    if int(_worker.removeprefix("gw")) + 1 > 14:
         raise RuntimeError(
-            f"pytest-xdist worker {_worker} 超出 Redis 的 16 個邏輯 DB；"
-            "降低 PYTEST_XDIST_N，或改用獨立的 Redis 實例"
+            f"pytest-xdist worker {_worker} 超出可用的 Redis 邏輯 DB（1~14；"
+            "0 給 dev、15 給 smoke）；降低 PYTEST_XDIST_N，或改用獨立的 Redis 實例"
         )
     os.environ["REDIS_DB"] = str(int(_worker.removeprefix("gw")) + 1)
 

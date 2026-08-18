@@ -24,6 +24,11 @@ class RetrievedChunk:
     `page` 與 `heading_path` 從 chunk 的 meta 攤平出來：1D 的引用要靠它們說出「這句話
     出自哪份文件第幾頁」，而 meta 是一個什麼都能塞的 dict，讓每個呼叫端各自去挖等於
     讓每個呼叫端各自寫一次「如果沒有這個鍵怎麼辦」。
+
+    `document_name` 與 `doc_version` 是 1D-5 加的，兩個都只為了引用（06 §3.3）：
+    面板要說得出「出自《人事規章.pdf》第 7 頁」，而只有一串 UUID 說不出來；版本則讓
+    文件重新上傳之後，舊回答仍指得出當時引用的是哪一版。**兩筆資料在 SQL 那一趟就
+    一起撈回來**——事後補查等於每則回答多 N 次查詢，而那是引用面板最頻繁的路徑。
     """
 
     chunk_id: UUID
@@ -32,6 +37,9 @@ class RetrievedChunk:
     score: float
     page: int | None
     heading_path: list[str]
+    # 有預設值：`rag/` 的既有呼叫端（與測試）不必為了兩個引用用的欄位全部改一遍。
+    document_name: str = ""
+    doc_version: int = 1
 
 
 class VectorHitLike(Protocol):
@@ -47,6 +55,10 @@ class VectorHitLike(Protocol):
     def chunk_id(self) -> UUID: ...
     @property
     def document_id(self) -> UUID: ...
+    @property
+    def document_name(self) -> str: ...
+    @property
+    def doc_version(self) -> int: ...
     @property
     def content(self) -> str: ...
     @property
@@ -78,6 +90,8 @@ def to_retrieved(hits: Sequence[VectorHitLike]) -> list[RetrievedChunk]:
         RetrievedChunk(
             chunk_id=hit.chunk_id,
             document_id=hit.document_id,
+            document_name=hit.document_name,
+            doc_version=hit.doc_version,
             content=hit.content,
             score=hit.score,
             page=_page(hit.meta),

@@ -33,6 +33,7 @@ __all__ = [
     "CONTEXT_START",
     "ContextChunk",
     "build_context_block",
+    "build_user_turn",
     "render_template",
     "validate_variables",
 ]
@@ -58,14 +59,21 @@ _ENV = SandboxedEnvironment(undefined=StrictUndefined, autoescape=False, keep_tr
 class ContextChunk:
     """要放進 context 的一段檢索結果。
 
-    `chunk_id` 進 `[c:...]` 標記（06 §3.1 的引用契約），`doc_name` 與 `page` 讓模型
-    答得出「依據員工手冊第 3 頁」，也讓 06 §3.3 的引用面板有東西可顯示。
+    `marker` 進 `[c:...]` 標記（引用契約），`doc_name`、`page` 與 `heading_path` 讓
+    模型答得出「依據員工手冊第 3 頁」，也讓 06 §3.3 的引用面板有東西可顯示。
+
+    **`marker` 由呼叫端決定，這一層不認識 `chunk_id`。** 1D-5 用的是「本輪第幾段」
+    的短編號而不是 UUID（偏離 06 §3.1，記於 13 §3.5）：一個 UUID 約 20 token 而模型
+    每引用一次抄一遍、輸出 token 又比輸入貴數倍；而叫模型一字不差抄 36 個十六進位
+    字元，它會抄錯——抄錯就被驗證當成幻覺剔掉，畫面上少一個本來是真的來源。
+    對映回真 `chunk_id` 是 `rag/citation.py` 的事。
     """
 
-    chunk_id: str
+    marker: str
     text: str
     doc_name: str = ""
     page: int | None = None
+    heading_path: tuple[str, ...] | list[str] = ()
 
 
 def render_template(template: str, variables: Mapping[str, Any]) -> str:
@@ -134,11 +142,34 @@ def build_context_block(chunks: Sequence[ContextChunk]) -> str:
     return "\n".join(lines)
 
 
+def build_user_turn(question: str, context: str = "") -> str:
+    """這一輪要送進 `role="user"` 的完整內容（06 §3 的組裝順序）。
+
+    **順序是 context 在前、問題在後**，兩個理由：模型讀到問題時要已經看過資料；而把
+    問題埋在一大段 context 之前會讓 prompt cache 的穩定前綴（06 §4）從第一個 token
+    就失效——每一輪都是一次全新的 prompt。
+
+    **context 進 user 而不是 system**（10 §5 的指令／資料分域）：混在同一個 role 裡
+    的話，一份被污染的文件就能用「忽略以上指令」改寫我們的規則，而回答看起來完全
+    正常。這個位置的選擇與定界標記是同一道防線的兩半。
+
+    沒有 context（純閒聊路徑，06 §9）時就只有問題——**不放一個空的資料區塊**：那會
+    讓模型以為「查過了、沒東西」，而實際上是這場對話根本沒掛知識庫。
+    """
+    if not context:
+        return question
+    return f"{context}\n\n問題：{question}"
+
+
 def _source_line(chunk: ContextChunk) -> str:
     source = chunk.doc_name or "未命名文件"
     if chunk.page is not None:
         source = f"{source} 第 {chunk.page} 頁"
-    return f"[c:{chunk.chunk_id}] 來源：{source}"
+    # 章節路徑是 Markdown 與 xlsx 唯一說得出位置的東西——那兩種來源沒有頁碼，
+    # 只給檔名的話，模型與引用面板都只能說「出自某某檔案」。
+    if chunk.heading_path:
+        source = f"{source}（{' › '.join(chunk.heading_path)}）"
+    return f"[c:{chunk.marker}] 來源：{source}"
 
 
 def _defuse(text: str) -> str:

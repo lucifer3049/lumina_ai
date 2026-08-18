@@ -109,7 +109,7 @@ DEMO_PASSWORD ?= demo-password-1234
 .PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys migrate \
         dev api api-pinned start stop restart status demo-tenant app-logs \
         test test-unit test-integration test-api smoke verify-infra verify-provider \
-        image lock-check lint \
+        image lock-check lint lint-backend \
         fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
         loadtest-report clean
 
@@ -448,11 +448,22 @@ lock-check: ## 驗證 uv.lock 與 pyproject 一致（唯讀，不會改動 lock�
 # 之後才在 Dockerfile 的 `uv sync --frozen` 爆掉（或 image 與 CI 裝到不同版本）。
 # CI 另外獨立跑一次 lock-check，**這個重複是刻意的**：CI 那步是為了讓紅燈一眼看出
 # 是鎖檔問題，這個前置則是讓本機 `make lint` 同樣受保護。拿掉任一邊都會少一半覆蓋。
-lint: lock-check ## uv.lock 檢查 + ruff + mypy + import-linter（分層依賴強制）
+lint-backend: lock-check ## 只跑後端：uv.lock 檢查 + ruff + mypy + import-linter（分層依賴強制）
 	$(UV) run ruff check .
 	$(UV) run ruff format --check .
 	$(UV_RUN) mypy .
 	$(UV) run lint-imports
+
+# `lint` 是**兩端都跑**的那一個，而後端仍留一個獨立目標（lint-backend）：CI 的 quality
+# job 沒有 Node 也沒有 node_modules（前端另有 job，見 ci.yml），在那裡跑 fe-lint 只會
+# 得到 `eslint: not found`——一個與程式碼品質完全無關的紅燈。
+#
+# 前後端分成兩個目標、卻只有一個總入口，是因為漏跑的方向是單向的：本機習慣打 `make lint`
+# 的人不會記得另外補一次 `make fe-lint`，於是前端的型別錯誤要等到推上去才由 CI 發現。
+# 反過來（CI 少跑前端）不會發生——那是 workflow 裡獨立的一個 job。
+#
+# 前置目標的順序有意義：後端先跑。改後端的次數遠多於前端，先紅的那一端應該是常改的那端。
+lint: lint-backend fe-lint ## 後端 + 前端全部靜態檢查（前端需先 make fe-install）
 
 # 負載產生端（locust）於 1A-5 隨 spike 面移除，理由見檔案開頭。留下的是**伺服器端**
 # 的延遲分析：它讀 access log 的 duration_ms（伺服器行程內量的），與用什麼工具打

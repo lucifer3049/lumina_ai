@@ -40,15 +40,66 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+# smoke 專用的 Redis 邏輯 DB（2026-08-17，1D-5）。
+#
+# **Celery 的工作籃就是 Redis 的一個 DB。** smoke 起自己的 worker，但 `make start` 起的
+# worker 聽的是同一組佇列——兩邊搶同一個籃子，誰先撿到誰做。而 `make start` 那個讀的是
+# repo 根的 `.env`（真 provider），於是「寫入端用 A 模型、查詢端用 B 模型」，
+# `UNIQUE(chunk_id, model, embedding_version)` 對不上，檢索永遠回零筆。
+#
+# 症狀完全不指向真因：文件照樣 `ready`、API 全部 200、smoke 只說「沒有引用」。
+# 1D-5 實際被咬了一次，而當時 dev 環境已經開了一整天沒人記得。
+#
+# 換一個 DB 就是換一個房間的籃子，兩邊再也碰不到。**15 是保留給 smoke 的**：
+# `tests/conftest.py` 的 xdist worker 用 1~14，dev 與 `make start` 用預設的 0。
+_SMOKE_REDIS_DB = "15"
+
+# smoke 的子行程一律用假 provider（CLAUDE.md：LLM 測試禁止呼叫真實 API）。
+#
+# **這裡必須自己寫一份，不能靠 `config/settings/test.py`**：那份強制值只對 in-process
+# 的測試套件有效，而 smoke 的 API 與 worker 都跑在 `config.settings.dev` 之下——那是
+# 正式的設定路徑，它會照實讀 repo 根的 `.env`。
+#
+# 1C-5 把真金鑰寫進 `.env` 之後，smoke 就一直在打真的 Gemini（2026-08-17 於 1D-5 發現）。
+# 三個代價：**smoke 會花錢**；**會因為別人的服務中斷而紅**；而最難查的是第三個——
+# 兩個子行程各自解析設定的時機不同，寫入端與查詢端可能落在不同的模型上，於是 worker
+# 用 A 模型寫向量、API 用 B 模型查，`UNIQUE(chunk_id, model, embedding_version)` 對不上，
+# **查詢永遠回零筆**。文件照樣是 `ready`、API 全部 200、畫面上只是「答不出東西」，
+# 而那正是 `services/knowledge/embedding.py` 的 `model_for` docstring 預言過的症狀。
+#
+# 維度一併釘住：`.env` 的真模型維度若與 `halfvec(1536)` 不同，寫入會在 Gateway 被擋下，
+# 而那個紅燈指向 provider 設定，不指向 smoke 的環境。
+_MOCK_AI_ENV = {
+    "AI_EMBEDDING_PROVIDER": "mock",
+    "AI_EMBEDDING_MODEL": "mock-embedding",
+    "AI_EMBEDDING_API_KEY": "",
+    "AI_EMBEDDING_DIMENSIONS": "1536",
+    "AI_CHAT_PROVIDER": "mock",
+    "AI_CHAT_MODEL": "mock-chat",
+    "AI_CHAT_API_KEY": "",
+    "AI_CHAT_FALLBACK_MODELS": "",
+}
+
+
 def _dev_env() -> dict[str, str]:
-    """子行程環境：改用 dev settings。
+    """子行程環境：改用 dev settings，並強制假 provider。
 
     pytest-django 依 pyproject 的 ini 把 ``DJANGO_SETTINGS_MODULE`` 設成
     ``config.settings.test`` 並寫進 ``os.environ``——子行程若原樣繼承，
     ``config/asgi.py`` 的 ``setdefault`` 不會覆蓋它，伺服器就連上 test DB
     的殘影。必須顯式蓋掉。
+
+    **金鑰設成空字串而不是 `pop`**：`AppSettings` 的 `env_file` 直接指向 repo 根的
+    `.env`，把環境變數刪掉之後 pydantic 還是會從那個檔案讀到金鑰（`config/settings/
+    test.py` 已實測過）。環境變數的優先序高於 `.env`，覆寫成空字串才蓋得掉。
     """
-    return {**os.environ, "DJANGO_SETTINGS_MODULE": "config.settings.dev"}
+    return {
+        **os.environ,
+        "DJANGO_SETTINGS_MODULE": "config.settings.dev",
+        # 放在 `**os.environ` 之後才蓋得掉 xdist 在父行程設的那個值。
+        "REDIS_DB": _SMOKE_REDIS_DB,
+        **_MOCK_AI_ENV,
+    }
 
 
 @pytest.fixture(scope="session")

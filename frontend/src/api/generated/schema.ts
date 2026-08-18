@@ -131,6 +131,64 @@ export interface paths {
          */
         get: operations["conversations_list_messages"];
         put?: never;
+        /**
+         * Send Message
+         * @description 送出一個問題（09 §2.4）。**建立回合就回，生成跑在背景。**
+         *
+         *     串流本身在 `GET .../stream`。拆成兩步的理由見 `services/conversation/chat.py`
+         *     ——一句話版本：這個 POST 若同時回串流，網路閃斷時 client 分不出單子送出去了沒，
+         *     重送一次就是兩則訊息、兩次生成、兩次帳單。
+         */
+        post: operations["conversations_send_message"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/messages/{message_id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop Message
+         * @description 中止生成（09 §2.4）。
+         *
+         *     **202 而不是 204**：真正停下來的是**另一個行程**裡的那個 task（11 §45：每 replica
+         *     兩個 worker × N replica），這裡只是把旗標放上去。09 §3.3 的 202 慣例講的就是這種
+         *     「已受理、還沒發生」。
+         *
+         *     已經結束的生成照樣回 202：使用者在最後一個 token 到達的同一瞬間按下停止，那是他
+         *     躲不掉的競態，不該因此看到錯誤。
+         */
+        post: operations["conversations_stop_message"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/messages/{message_id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Message
+         * @description 讀一則訊息的生成串流（09 §3.2）。**帶 `Last-Event-ID` 就是續傳。**
+         *
+         *     **這是第二個入口，而它最容易漏掉擁有者判定**：RLS 只擋租戶，擋不了同租戶的另一個
+         *     使用者（1D-2 已經踩過這條），而 `message_id` 會出現在前端的網址與 log 裡。
+         */
+        get: operations["conversations_stream_message"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -531,6 +589,14 @@ export interface components {
             /** Tenant Slug */
             tenant_slug: string;
         };
+        /**
+         * MessageCreateIn
+         * @description 送出一個問題（1D-4a）。
+         */
+        MessageCreateIn: {
+            /** Content */
+            content: string;
+        };
         /** MessageListOut */
         MessageListOut: {
             /** Items */
@@ -634,11 +700,8 @@ export interface components {
             kb_id: string;
             /** Query */
             query: string;
-            /**
-             * Top K
-             * @default 40
-             */
-            top_k?: number;
+            /** Top K */
+            top_k?: number | null;
         };
         /** RagQueryOut */
         RagQueryOut: {
@@ -662,11 +725,15 @@ export interface components {
             chunk_id: string;
             /** Content */
             content: string;
+            /** Doc Version */
+            doc_version: number;
             /**
              * Document Id
              * Format: uuid
              */
             document_id: string;
+            /** Document Name */
+            document_name: string;
             /** Heading Path */
             heading_path: string[];
             /** Page */
@@ -718,6 +785,33 @@ export interface components {
              * @default Bearer
              */
             token_type?: string;
+        };
+        /**
+         * TurnStartedOut
+         * @description 建立回合的回應（09 §2.4，1D-4a 拆成兩步後的第一步）。
+         *
+         *     **client 在收到任何一個位元組之前就拿到 `message_id`。** 它是後續三件事唯一的
+         *     定位鍵：讀串流、按停止（1D-4b）、以及斷線後直接抓最終訊息。只靠 `meta` 事件的話，
+         *     生成失敗時那個事件永遠不會來，而 client 手上沒有任何東西可以查。
+         */
+        TurnStartedOut: {
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            /** Stream Url */
+            stream_url: string;
+            /**
+             * User Message Id
+             * Format: uuid
+             */
+            user_message_id: string;
         };
         /** UserCreateIn */
         UserCreateIn: {
@@ -1321,6 +1415,191 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MessageListOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    conversations_send_message: {
+        parameters: {
+            query?: {
+                /** @description false = 等生成完成再回完整訊息 */
+                stream?: boolean;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MessageCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnStartedOut"] | components["schemas"]["MessageOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    conversations_stop_message: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    conversations_stream_message: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Last-Event-ID"?: string | null;
+            };
+            path: {
+                conversation_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SSE 事件串流 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
                 };
             };
             /** @description 請求格式錯誤 */

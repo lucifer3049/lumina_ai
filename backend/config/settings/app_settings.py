@@ -134,6 +134,41 @@ class AppSettings(BaseSettings):
     ai_chat_ttft_timeout_seconds: float = 30.0
     ai_chat_total_timeout_seconds: float = 120.0
 
+    # ── 可調參數：檢索與切塊（15 §4.1；1D-5）────────────────────────
+    #
+    # **「要由使用者決定」的數字全部住在這一段**，不散在 service 的常數裡。這是
+    # 2026-08-17 的產品決定（15 §4.1），而它要防的不是「難找」——是同一個概念在兩處
+    # 各有一份預設值：1D-5 之前 `top_k=40` 同時寫在 `RetrievalService` 與 `/rag/query`
+    # 的簽章上，兩份漂掉時的症狀是「除錯 API 查得到、實際問答查不到」，而兩邊各自
+    # 看起來都對。
+    #
+    # 覆寫順序（解析在 `services/rag/params.py`）：
+    #     這裡（env 可蓋）→ 租戶設定（09 §2.6，屬 2C）→ KB 覆寫（`kb.config`）
+    #
+    # 後台的統一設定畫面屬 2C；它要寫的就是上面第二、三層，不必回頭動這裡。
+    # **不屬於這一段的**：安全邊界與保護 DB 的硬上限（`services/rag/params.py` 的
+    # `MAX_TOP_K`、`ai/prompts/` 的定界標記）——那些不是使用者該決定的東西。
+
+    # 06 §3.1：vector search 候選數。
+    rag_top_k: int = 40
+    # 06 §3.1 的 rerank top_n 6~8。Phase 1 沒有 rerank，這是「進 context 幾段」。
+    rag_context_chunks: int = 8
+    # 06 §3.2：RAG context 的 token 預算。與 chunker 用同一個估算器（`etl/tokens.py`），
+    # 兩邊估法不同時這個預算的算術就對不起來。
+    rag_context_token_budget: int = 4500
+    # 相對門檻：只留下分數 ≥ 第一名 × 這個比例的候選。**預設 0 = 關閉。**
+    # 06 §3.1 的絕對門檻 0.3 是 cross-encoder 的尺度，套在餘弦相似度上等於每次都回
+    # 「找不到相關內容」；相對門檻不吃尺度，但它仍會砍東西，所以開不開由資料決定。
+    # 絕對門檻等 2B 接上 `bge-reranker-v2-m3`（MIT、可自架）之後才有意義。
+    rag_min_score_ratio: float = 0.0
+    # 檢索時往前帶幾個問題（06 §3.1 的 condense 的免錢版，1D-5）。0 = 只看當前問題。
+    rag_query_history_turns: int = 1
+
+    # 08 §3 的切塊參數。**原本住在 `etl/chunk.py` 的 dataclass 預設值**，1D-5 依
+    # 15 §4.1 搬過來——留在那裡的話，「統一管理」對切塊這半邊就是假的。
+    chunk_target_tokens: int = 512
+    chunk_overlap_tokens: int = 64
+
     @property
     def redis_url(self) -> SecretStr:
         """`redis://:pw@host:port/db`；密碼經 percent-encoding，特殊字元不會拆壞 URL。"""

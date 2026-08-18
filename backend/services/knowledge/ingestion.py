@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from config.logging import get_logger
+from config.settings.app_settings import get_app_settings
 from core.exceptions import (
     DomainError,
     ExtractionFailedError,
@@ -414,8 +415,12 @@ def _chunk_config_from(config: dict[str, Any]) -> ChunkConfig:
     """
     raw = config.get("chunk")
     section: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    defaults = ChunkConfig()
+    # **預設值來自 `app_settings` 而不是 `ChunkConfig()`**（15 §4.1 的可調參數集中）：
+    # 留在 dataclass 上的話，「後台調得到」對切塊這半邊就是假的，而使用者只會發現
+    # 有些參數改得動、有些改不動。`ChunkConfig` 自己的預設值因此只是型別上的方便，
+    # 正式路徑一律由這裡帶入。
+    settings = get_app_settings()
     return ChunkConfig(
-        target_tokens=int(section.get("target_tokens", defaults.target_tokens)),
-        overlap_tokens=int(section.get("overlap_tokens", defaults.overlap_tokens)),
+        target_tokens=int(section.get("target_tokens", settings.chunk_target_tokens)),
+        overlap_tokens=int(section.get("overlap_tokens", settings.chunk_overlap_tokens)),
     )

@@ -74,8 +74,11 @@ jobs:
       - name: uv.lock 與 pyproject 一致
         run: make lock-check
 
+      # `lint-backend` 而不是 `lint`：後者連前端的 eslint + vue-tsc 一起跑（本機一個
+      # 指令檢查兩端），而本 job 沒有 setup-node 也沒有 node_modules，會停在
+      # `eslint: not found`。前端由下方的 frontend job 跑。
       - name: ruff + mypy + import-linter
-        run: make lint
+        run: make lint-backend
 
       - name: unit 測試（無外部依賴）
         run: make test-unit
@@ -169,6 +172,14 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
+
+      # 本 job 不建 app、不跑測試，照理不需要金鑰——**這一步是為了讓下面的 trivy
+      # 掃得到東西**。`backend/.secrets/` 在 gitignore 之內，不產生的話 build context
+      # 裡根本沒有私鑰，secret 掃描永遠是綠的，而它綠得毫無意義：2026-08-17 發現
+      # backend/.dockerignore 漏列 `.secrets/`，所有人本機建的 image 都把 ES256 私鑰
+      # 烘了進去，CI 卻一次都沒紅過。守門要能失敗才算守門。
+      - name: 產生 JWT 簽章金鑰（讓 trivy 的 secret 掃描有東西可掃）
+        run: make gen-jwt-keys
 
       - name: 建置 backend image
         run: make image BACKEND_IMAGE="${BACKEND_IMAGE}"

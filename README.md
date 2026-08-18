@@ -4,18 +4,26 @@ Multi-tenant SaaS 的 Enterprise AI Knowledge Platform。核心能力：LLM Chat
 
 架構風格：**Modular Monolith + Clean Architecture + DDD**，保留未來拆分 Microservices 的能力。
 
-> **目前狀態：Phase 0 已結案（2026-08-07），Phase 1 的工作包 1A（Identity 基礎）已結案（2026-08-09，暫行紀錄），下一步為 1B（Knowledge + ETL 基礎）。**
+> **目前狀態：Phase 0 已結案（2026-08-07）；Phase 1 的 1A～1D 已完成（1D-5 於 2026-08-18 結案，暫行紀錄），下一步為 1E（前端 MVP）。**
 > Phase 0：ADR-001 橋接驗證（Django ORM 在 FastAPI async context 下的共存方式）、
 > 開發環境基礎設施全套、CI 全管線（2026-08-09 首次四個 job 全綠）、結構化日誌與請求追蹤、
 > 前端 Vite 骨架與 OpenAPI codegen 管線。
-> 1A：DB 角色拆分（RLS 的前提）、Identity 資料層與 RLS、JWT 登入與 refresh rotation、
-> 權限判定與使用者管理、spike 面移除（ADR-002 結案）與 E2E smoke 骨架。
-> **業務功能僅到 Identity 為止，非可用產品**——目前的端點是 `/api/v1/auth`、`/users`、`/tenants`；
-> 知識庫、RAG 與 Chat 分屬 1B–1D。
-> 1A 的結案紀錄標為**暫行**：Phase 1 的 DoD 是整期的（上傳 → ready → 問答 → 引用），
-> 1A 單獨驗不了——smoke suite 的第 2–5 步目前是 skip，等 1B–1D 逐步接上後回頭修訂。
+> 1A（2026-08-09 結案）：DB 角色拆分（RLS 的前提）、Identity 資料層與 RLS、JWT 登入與
+> refresh rotation、權限判定與使用者管理、spike 面移除（ADR-002 結案）與 E2E smoke 骨架。
+> 1B（2026-08-14 結案）：KB/Document CRUD、單請求上傳與物件儲存、五種 loader（PDF／docx／
+> txt／xlsx／Markdown）、Clean 與 recursive chunker、ETL 狀態機 + Celery + 冪等 + DLQ + re-ingest。
+> 1C（1C-1~1C-5 已完成，**結案紀錄未補**）：AI Gateway、embeddings 資料層與 pgvector HNSW、
+> embedding worker（文件終點狀態推到 `ready`）、純向量檢索與 `/rag/query`、五家 provider 的 adapter。
+> 1D（1D-5 於 2026-08-18 結案）：Conversation/Message、SSE 全協定（串流／`Last-Event-ID` 續傳／
+> stop／graceful shutdown）、PromptBuilder（draft/published）、記憶視窗，以及 RAG 編排與引用
+> （檢索 → context → `[c:編號]` 驗證 → `citations` 事件與落地）。
+> **後端的價值迴路已接齊，但還沒有可用的介面**——目前的端點是 `/api/v1/auth`、`/users`、
+> `/tenants`、`/knowledge-bases`、`/documents`、`/conversations`（含 SSE）、`/rag/query`；
+> 前端只有 Vite 骨架與 OpenAPI client，登入／KB 管理／Chat UI 都在 1E。
+> 1D-5 的結案紀錄標為**暫行**：Phase 1 的 DoD 是整期的（上傳 → ready → 問答 → 引用，另加
+> TTFT p95 < 3.5s），要等 1E 與真 provider 的量測才認定得了。
 > 完整設計見 [`docs/plan/`](docs/plan/)（00–15），開發順序與各工作包的 DoD 見
-> [`13_開發Roadmap.md`](docs/plan/13_開發Roadmap.md)（§2 Phase 0 結案、§3 Phase 1 與 1A 結案）。
+> [`13_開發Roadmap.md`](docs/plan/13_開發Roadmap.md)（§2 Phase 0 結案、§3 Phase 1 與 1A／1B／1D-5 結案）。
 
 ---
 
@@ -136,7 +144,8 @@ pytest 直連）、PgBouncer `16432`（應用端一律連這個）、Redis `1637
 | `make image` | 建置 backend image（與 CI 同一份 Dockerfile） |
 | `make minio-init` | 重建 bucket / 版本化 / 關閉匿名存取（冪等） |
 | `make db-timeouts` | 重新套用 role 層級 `statement_timeout`（冪等） |
-| `make lint` | ruff check + ruff format --check + mypy strict |
+| `make lint` | 後端 + 前端全部靜態檢查（`lint-backend` + `fe-lint`；前端需先 `make fe-install`） |
+| `make lint-backend` | 只跑後端：ruff check + ruff format --check + mypy strict + import-linter |
 | `make fe-install` / `fe-lint` / `fe-test` / `fe-build` / `fe-dev` | 前端相依 / eslint+vue-tsc / vitest / build / dev server |
 | `make openapi` | 由 FastAPI 匯出 API 契約到 `openapi.json` |
 | `make gen-api` | 由契約重新產生前端 typed client（`frontend/src/api/generated/`） |
@@ -184,7 +193,7 @@ make test
 連開發資料庫、經 `manage.py create_tenant` 建一個本輪專用租戶，前置是
 `make up` + `make migrate` + `make gen-jwt-keys`。走的是**部署形狀**的伺服器，驗的是
 「登入 → 上傳 → ready → 問答 → 引用」這條價值迴路仍然活著（13 §1.2：每次任務結束
-必跑，不過視同任務未完成）。目前只有登入那一步是活的，其餘隨 1B–1D 逐步接上。
+必跑，不過視同任務未完成）。**五個步驟自 1D-5 起全部是實作**——1A 時只有登入是活的，其餘隨 1B–1D 逐步接上（13 §3 各結案紀錄）。
 
 前端（03 §6.1）：vitest 跑 `frontend/tests/unit/`（API client 以 msw mock，不打真後端）
 與 `frontend/tests/types/`（型別層，由 vue-tsc 檢查）。
@@ -199,7 +208,7 @@ make fe-test
 
 | Job | 內容 |
 |-----|------|
-| quality | `make lint`（ruff + mypy strict + import-linter）、`make test-unit` |
+| quality | `make lint-backend`（ruff + mypy strict + import-linter）、`make test-unit`。**不是 `make lint`**：那個連前端一起跑，而本 job 沒有 Node |
 | tests | `make up` 起真實 PG/Redis/MinIO → `make migrate` → integration + api 測試 |
 | frontend | `make fe-lint`（eslint + vue-tsc）、`make fe-test`（vitest）、`make openapi-check` |
 | image | `make image` → 驗證以非 root 執行 → trivy 掃描（HIGH/CRITICAL 有修補版即擋 PR） |
