@@ -2,7 +2,7 @@
 /**
  * 主應用外框（03 §2）：sidebar + header。
  *
- * 選單目前只有首頁；知識庫（1E-2）與對話（1E-3）的項目隨各自的工作包進來
+ * 選單隨工作包長出來：首頁（1E-1）、知識庫（1E-2），對話留給 1E-3
  * ——先放假選項會讓「點了沒反應」看起來像壞掉。
  */
 import { NButton, NLayout, NLayoutContent, NLayoutHeader, NLayoutSider, NMenu } from 'naive-ui'
@@ -15,8 +15,16 @@ import { useAuthStore } from '@/stores/auth'
 const auth = useAuthStore()
 const router = useRouter()
 
-const menuOptions: MenuOption[] = [{ label: '首頁', key: 'home' }]
-const activeKey = computed(() => String(router.currentRoute.value.name ?? ''))
+const menuOptions: MenuOption[] = [
+  { label: '首頁', key: 'home' },
+  { label: '知識庫', key: 'knowledge' },
+]
+// 選單 key 就是 route name（onMenuSelect 直接 push 它）。文件頁是知識庫的子頁，
+// 停在那裡時選單仍要亮著「知識庫」，否則使用者會覺得自己離開了那一區。
+const activeKey = computed(() => {
+  const name = String(router.currentRoute.value.name ?? '')
+  return name === 'knowledge-documents' ? 'knowledge' : name
+})
 
 function onMenuSelect(key: string): void {
   void router.push({ name: key })

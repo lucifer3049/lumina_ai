@@ -20,3 +20,19 @@ export type TokenPairOut = components['schemas']['TokenPairOut']
 
 /** 登入者本人（`GET /users/me`）。 */
 export type UserOut = components['schemas']['UserOut']
+
+/** 知識庫（`GET /knowledge-bases`；09 §2.3）。 */
+export type KnowledgeBaseOut = components['schemas']['KnowledgeBaseOut']
+
+/** 建立知識庫的輸入。 */
+export type KnowledgeBaseCreateIn = components['schemas']['KnowledgeBaseCreateIn']
+
+/** 部分更新：`null` 代表「這次沒給」，不是「設為空」（後端 schema 的原話）。 */
+export type KnowledgeBaseUpdateIn = components['schemas']['KnowledgeBaseUpdateIn']
+
+export type KnowledgeBaseListOut = components['schemas']['KnowledgeBaseListOut']
+
+/** 文件（含 ETL 狀態與失敗原因；08 §2、§6）。刻意沒有 storage_key。 */
+export type DocumentOut = components['schemas']['DocumentOut']
+
+export type DocumentListOut = components['schemas']['DocumentListOut']

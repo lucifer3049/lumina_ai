@@ -25,6 +25,19 @@ const router = createRouter({
       component: () => import('@/views/HomeView.vue'),
     },
     {
+      path: '/knowledge',
+      name: 'knowledge',
+      component: () => import('@/views/knowledge/KnowledgeBaseListView.vue'),
+    },
+    {
+      // props: true —— view 收 kbId 當 prop 而不是自己讀 useRoute()：
+      // 參數變了（同一頁換 KB）時 prop 會觸發 watch，讀 route 的寫法要另外接線。
+      path: '/knowledge/:kbId',
+      name: 'knowledge-documents',
+      component: () => import('@/views/knowledge/DocumentListView.vue'),
+      props: true,
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/views/auth/LoginView.vue'),

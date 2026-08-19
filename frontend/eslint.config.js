@@ -28,6 +28,13 @@ export default ts.config(
     languageOptions: {
       parserOptions: { parser: ts.parser },
     },
+    rules: {
+      // `no-undef` 在 TS 檔由 typescript-eslint 的預設關掉（它會把 File、fetch 這類
+      // 瀏覽器全域報成未定義，而那是 TS 的 lib 在管的事）。`.vue` 的 <script setup>
+      // 同樣是 TS，卻不在那個關閉範圍內——不關的話，用到任何瀏覽器 API 的元件都會
+      // 紅，而真正的守門（vue-tsc）早就驗過它們存在。
+      'no-undef': 'off',
+    },
   },
   // 放最後：關掉所有與格式有關的規則，格式一律交給 prettier。
   // 兩邊都管格式時會互相打架，而症狀是 `--fix` 之後 lint 仍然紅。
