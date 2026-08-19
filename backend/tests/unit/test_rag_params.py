@@ -23,9 +23,8 @@
 
 from __future__ import annotations
 
-from services.rag.params import MAX_TOP_K, resolve_rag_params
-
 from config.settings.app_settings import get_app_settings
+from services.rag.params import MAX_TOP_K, resolve_rag_params
 
 
 class TestSystemDefaults:
