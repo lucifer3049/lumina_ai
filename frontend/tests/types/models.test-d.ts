@@ -10,7 +10,13 @@
  */
 import { assertType, describe, expectTypeOf, it } from 'vitest'
 
-import type { ProblemDetail, components, paths } from '@/types/models'
+import type {
+  DocumentOut,
+  KnowledgeBaseOut,
+  ProblemDetail,
+  components,
+  paths,
+} from '@/types/models'
 
 describe('generated 型別經 types/models.ts 對外', () => {
   it('re-exports the OpenAPI root types', () => {
@@ -34,5 +40,35 @@ describe('generated 型別經 types/models.ts 對外', () => {
 
     expectTypeOf<ProblemDetail>().toHaveProperty('status')
     expectTypeOf<ProblemDetail['status']>().toEqualTypeOf<number>()
+  })
+})
+
+describe('知識庫與文件的型別（1E-2）', () => {
+  it('exposes KnowledgeBaseOut with the fields the list view renders', () => {
+    assertType<KnowledgeBaseOut>({
+      id: '3f9f2b1e-0000-4000-8000-00000000000a',
+      name: '法規',
+      description: '',
+      status: 'active',
+      document_count: 3,
+    })
+  })
+
+  it('exposes DocumentOut including the nullable error payload (08 §6)', () => {
+    // `error` 是 ETL 失敗時的結構化原因，null 代表沒失敗過。前端把它當成
+    // 「有沒有東西可以顯示」的判斷，型別上必須是可為 null 的物件而不是字串。
+    assertType<DocumentOut>({
+      id: '3f9f2b1e-0000-4000-8000-00000000d001',
+      kb_id: '3f9f2b1e-0000-4000-8000-00000000000a',
+      filename: 'handbook.pdf',
+      mime_type: 'application/pdf',
+      size_bytes: 1024,
+      status: 'ready',
+      doc_version: 1,
+      error: null,
+    })
+
+    expectTypeOf<DocumentOut['status']>().toEqualTypeOf<string>()
+    expectTypeOf<DocumentOut['doc_version']>().toEqualTypeOf<number>()
   })
 })
