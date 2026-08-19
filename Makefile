@@ -109,7 +109,7 @@ DEMO_PASSWORD ?= demo-password-1234
 .PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys migrate \
         dev api api-pinned start stop restart status demo-tenant app-logs \
         test test-unit test-integration test-api smoke verify-infra verify-provider \
-        image lock-check lint lint-backend \
+        image lock-check lint lint-backend ci-status \
         fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
         loadtest-report clean
 
@@ -448,9 +448,12 @@ lock-check: ## 驗證 uv.lock 與 pyproject 一致（唯讀，不會改動 lock�
 # 之後才在 Dockerfile 的 `uv sync --frozen` 爆掉（或 image 與 CI 裝到不同版本）。
 # CI 另外獨立跑一次 lock-check，**這個重複是刻意的**：CI 那步是為了讓紅燈一眼看出
 # 是鎖檔問題，這個前置則是讓本機 `make lint` 同樣受保護。拿掉任一邊都會少一半覆蓋。
+# ruff 帶 --no-cache：cache 以檔案 metadata 為鍵，曾對 test_rag_params.py 沿用舊的
+# 「通過」判定——本機連續綠、CI（無 cache）連紅四次（run 57–60，2026-08-19 查明）。
+# 代價實測 <2s；「lint 的結論可信」值這個價。mypy 的 cache 是語意級的，不在此列。
 lint-backend: lock-check ## 只跑後端：uv.lock 檢查 + ruff + mypy + import-linter（分層依賴強制）
-	$(UV) run ruff check .
-	$(UV) run ruff format --check .
+	$(UV) run ruff check --no-cache .
+	$(UV) run ruff format --check --no-cache .
 	$(UV_RUN) mypy .
 	$(UV) run lint-imports
 
@@ -464,6 +467,13 @@ lint-backend: lock-check ## 只跑後端：uv.lock 檢查 + ruff + mypy + import
 #
 # 前置目標的順序有意義：後端先跑。改後端的次數遠多於前端，先紅的那一端應該是常改的那端。
 lint: lint-backend fe-lint ## 後端 + 前端全部靜態檢查（前端需先 make fe-install）
+
+# push 之後必跑（CLAUDE.md Git 規則）。存在的理由：CI 曾連紅四次（run 57–60）無人
+# 察覺——test_ci_pipeline.py 只防「步驟缺漏」，防不了「內容真的紅」，而 GitHub 的
+# email 通知太容易被淹沒。跑在 in_progress 時會輪詢到完成為止（上限 20 分鐘）。
+# 不依賴 gh CLI：repo 是公開的，走匿名 REST API 即可。
+ci-status: ## 查最近 push 的 CI 結果（進行中會輪詢至完成；紅燈時列出失敗的 job/step）
+	python3 scripts/ci_status.py
 
 # 負載產生端（locust）於 1A-5 隨 spike 面移除，理由見檔案開頭。留下的是**伺服器端**
 # 的延遲分析：它讀 access log 的 duration_ms（伺服器行程內量的），與用什麼工具打
