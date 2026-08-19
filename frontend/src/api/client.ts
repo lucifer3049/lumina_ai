@@ -1,16 +1,19 @@
 /**
  * HTTP 傳輸層——前端唯一碰網路的地方（03 §2）。
  *
- * Phase 0 只做四件事：接 baseURL、逾時、把後端的 Problem Details（09 §1.3）
- * 正規化成一種例外、以及**永遠不吞錯**。401 refresh（03 §3.3）屬於 1A 認證
- * 工作包，SSE 走 `api/sse.ts`（1D），兩者刻意不在這裡預先鋪。
+ * 職責：接 baseURL、逾時、把後端的 Problem Details（09 §1.3）正規化成一種例外、
+ * **永遠不吞錯**，以及 401 refresh（03 §3.3，1E-1 進來）。SSE 走 `api/sse.ts`
+ * （1E-3），刻意不在這裡預先鋪。
  *
  * 「只有一種例外」是這一層的核心價值：呼叫端不需要分辨 TypeError（網路斷）、
  * AbortError（逾時）與 HTTP 錯誤——它們在畫面上都是「這次操作失敗了」，
  * 差別只在 `code`。
+ *
+ * 認證的接線用 `configureAuth()` 注入而不是 import store：反向的話傳輸層就
+ * 依賴了狀態層，任何 store 重構都會扯動這裡（1E-1 驗收測試釘住的契約）。
  */
 
-import type { ProblemDetail } from '@/types/models'
+import type { ProblemDetail, TokenPairOut } from '@/types/models'
 
 /** 逾時預算。值出自 11 §4.1 Timeout 全域字典的「HTTP 對外 15s」。 */
 export const API_TIMEOUT_MS = 15_000
@@ -75,6 +78,59 @@ export class ApiError extends Error {
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 
+// ── 認證接線（1E-1；03 §3.3）─────────────────────────────────────────────
+
+export interface AuthHooks {
+  /** 目前的 access token；`null` = 未登入（此時**不送** Authorization header）。 */
+  getToken: () => string | null
+  /** refresh 成功——store 據此換上新 token。 */
+  onTokenRefreshed: (token: string) => void
+  /** refresh 也失敗——session 真的結束了，store 清空、guard 送回登入頁。 */
+  onSessionExpired: () => void
+}
+
+let authHooks: AuthHooks | null = null
+
+/** 由 auth store 在建立時呼叫；傳 `null` 解除（測試隔離用）。 */
+export function configureAuth(hooks: AuthHooks | null): void {
+  authHooks = hooks
+  refreshInFlight = null
+}
+
+/**
+ * single-flight：所有並發的 401 共用同一次 refresh。
+ *
+ * 這不只是省流量——refresh rotation（1A-3）之下，舊 refresh token 用第二次
+ * 會被後端視為重放攻擊而撤銷整個 token 家族：並發重複 refresh 等於自己登出自己。
+ */
+let refreshInFlight: Promise<string> | null = null
+
+function sharedRefresh(hooks: AuthHooks): Promise<string> {
+  refreshInFlight ??= (async () => {
+    try {
+      // 走 performRequest 而非 request：refresh 自己 401 時不准再觸發 refresh。
+      const pair = await performRequest<TokenPairOut>(
+        '/api/v1/auth/refresh',
+        { method: 'POST', credentials: 'include' },
+        null,
+      )
+      hooks.onTokenRefreshed(pair.access_token)
+      return pair.access_token
+    } catch (cause) {
+      // 放在這裡而不是各個等待者的 catch：一次失敗只通知一次，
+      // 不因並發等待者的數量而重複清空 store。
+      hooks.onSessionExpired()
+      throw cause
+    } finally {
+      refreshInFlight = null
+    }
+  })()
+  return refreshInFlight
+}
+
+/** 這些路徑的 401 有各自的語意（帳密錯、無 session），refresh 幫不上忙。 */
+const isAuthPath = (path: string): boolean => path.startsWith('/api/v1/auth/')
+
 const asString = (value: unknown): string | null => (typeof value === 'string' ? value : null)
 
 /**
@@ -119,10 +175,58 @@ async function toApiError(response: Response): Promise<ApiError> {
 /**
  * 發一個請求並回傳解析後的 body（204 / 空 body 回 null）。
  *
+ * 401 且 `code === 'AUTH_TOKEN_EXPIRED'`（09 附錄 A：該碼的語意就是「client 走
+ * refresh」）時 refresh 後帶新 token 重放**一次**。上限一次是硬的：後端若因
+ * 時鐘偏移把新 token 也判過期，沒有上限就是無窮迴圈。其他 401（帳密錯、token
+ * 被撤銷）直接放行——對它們 refresh 只是把真正的錯誤遮起來。
+ */
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const hooks = authHooks
+  const usedToken = hooks?.getToken() ?? null
+
+  try {
+    return await performRequest<T>(path, options, usedToken)
+  } catch (error) {
+    if (
+      hooks === null ||
+      !(error instanceof ApiError) ||
+      error.status !== 401 ||
+      error.code !== 'AUTH_TOKEN_EXPIRED' ||
+      isAuthPath(path)
+    ) {
+      throw error
+    }
+
+    // 另一個請求可能已經 refresh 完了（我們失敗的原因是帶著舊 token 出門）——
+    // 那就直接帶現在的 token 重放，不再多打一次 refresh。
+    const current = hooks.getToken()
+    if (current !== null && current !== usedToken) {
+      return performRequest<T>(path, options, current)
+    }
+
+    let fresh: string
+    try {
+      fresh = await sharedRefresh(hooks)
+    } catch {
+      // refresh 的失敗細節不往上冒：呼叫端在等的是「原本那個請求」的結果，
+      // 拿到 refresh 端點的錯誤只會誤導。session 清理已由 onSessionExpired 做掉。
+      throw error
+    }
+    return performRequest<T>(path, options, fresh)
+  }
+}
+
+/**
+ * 實際發出一個請求（不含 refresh 邏輯）。
+ *
  * 逾時用 AbortController 而非只是 reject：只 reject 的話連線會留著直到伺服器
  * 回應，使用者反覆切分頁時會累積。
  */
-export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+async function performRequest<T>(
+  path: string,
+  options: RequestOptions,
+  token: string | null,
+): Promise<T> {
   const { timeoutMs = API_TIMEOUT_MS, signal: callerSignal, headers, ...init } = options
 
   const controller = new AbortController()
@@ -141,7 +245,13 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   try {
     response = await fetch(`${BASE_URL}${path}`, {
       ...init,
-      headers: { Accept: 'application/json', ...headers },
+      headers: {
+        Accept: 'application/json',
+        // 沒 token 就**不送** Authorization：送 `Bearer null` 這種字串，後端
+        // 回 401 且 log 裡看起來像攻擊嘗試。
+        ...(token !== null ? { Authorization: `Bearer ${token}` } : {}),
+        ...headers,
+      },
       signal,
     })
   } catch (cause) {

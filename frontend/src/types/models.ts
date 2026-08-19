@@ -14,3 +14,9 @@ export type ProblemDetail = components['schemas']['ProblemDetail']
 
 /** 422 的欄位級明細。 */
 export type FieldError = components['schemas']['FieldError']
+
+/** 登入／refresh 的回應（09 §2.1）。只有 access token，refresh 走 httpOnly cookie。 */
+export type TokenPairOut = components['schemas']['TokenPairOut']
+
+/** 登入者本人（`GET /users/me`）。 */
+export type UserOut = components['schemas']['UserOut']

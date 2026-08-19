@@ -1,9 +1,20 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
+/**
+ * layout 由 route meta 決定（03 §2）：public 路由（登入）套 AuthLayout，
+ * 其餘一律 DefaultLayout。AdminLayout 等 Phase 2 的管理面進來再加。
+ */
+import { computed } from 'vue'
+import { RouterView, useRoute } from 'vue-router'
+
+import AuthLayout from '@/layouts/AuthLayout.vue'
+import DefaultLayout from '@/layouts/DefaultLayout.vue'
+
+const route = useRoute()
+const layout = computed(() => (route.meta.public === true ? AuthLayout : DefaultLayout))
 </script>
 
 <template>
-  <!-- layouts（DefaultLayout / AuthLayout / AdminLayout，03 §2）於 1E 進來，
-       屆時由 route 的 meta 決定套哪一個。Phase 0 只有 RouterView。 -->
-  <RouterView />
+  <component :is="layout">
+    <RouterView />
+  </component>
 </template>
