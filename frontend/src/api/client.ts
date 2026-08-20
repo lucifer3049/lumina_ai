@@ -2,8 +2,17 @@
  * HTTP 傳輸層——前端唯一碰網路的地方（03 §2）。
  *
  * 職責：接 baseURL、逾時、把後端的 Problem Details（09 §1.3）正規化成一種例外、
- * **永遠不吞錯**，以及 401 refresh（03 §3.3，1E-1 進來）。SSE 走 `api/sse.ts`
- * （1E-3），刻意不在這裡預先鋪。
+ * **永遠不吞錯**，以及 401 refresh（03 §3.3，1E-1 進來）。
+ *
+ * 兩個對外入口，共用同一套認證（1E-3）：
+ *
+ * - `request<T>()`：一問一答，回傳解析好的 body。
+ * - `authorizedFetch()`：回傳**還沒讀過的 `Response`**，給 SSE（`api/sse.ts`）用。
+ *
+ * 串流不能走 `request()`（它把整包讀完才回），但**必須共用 refresh**：另寫一份的話，
+ * access token 在長連線中途過期時串流會死掉，而畫面上是「回答講到一半停住、沒有任何
+ * 錯誤訊息」；更糟的是兩份各自 refresh 會互相作廢對方的 token（rotation 把重複使用
+ * 當成重放攻擊，撤銷整個家族）。
  *
  * 「只有一種例外」是這一層的核心價值：呼叫端不需要分辨 TypeError（網路斷）、
  * AbortError（逾時）與 HTTP 錯誤——它們在畫面上都是「這次操作失敗了」，
@@ -109,10 +118,12 @@ function sharedRefresh(hooks: AuthHooks): Promise<string> {
   refreshInFlight ??= (async () => {
     try {
       // 走 performRequest 而非 request：refresh 自己 401 時不准再觸發 refresh。
-      const pair = await performRequest<TokenPairOut>(
-        '/api/v1/auth/refresh',
-        { method: 'POST', credentials: 'include' },
-        null,
+      const pair = await parseBody<TokenPairOut>(
+        await performRequest(
+          '/api/v1/auth/refresh',
+          { method: 'POST', credentials: 'include' },
+          null,
+        ),
       )
       hooks.onTokenRefreshed(pair.access_token)
       return pair.access_token
@@ -172,20 +183,31 @@ async function toApiError(response: Response): Promise<ApiError> {
   })
 }
 
+/** 發一個請求並回傳解析後的 body（204 / 空 body 回 null）。認證見 `authorizedFetch`。 */
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return parseBody<T>(await authorizedFetch(path, options))
+}
+
 /**
- * 發一個請求並回傳解析後的 body（204 / 空 body 回 null）。
+ * 帶認證發一個請求，回傳**還沒讀過 body 的 `Response`**（非 2xx 一律拋 ApiError）。
  *
  * 401 且 `code === 'AUTH_TOKEN_EXPIRED'`（09 附錄 A：該碼的語意就是「client 走
- * refresh」）時 refresh 後帶新 token 重放**一次**。上限一次是硬的：後端若因
- * 時鐘偏移把新 token 也判過期，沒有上限就是無窮迴圈。其他 401（帳密錯、token
- * 被撤銷）直接放行——對它們 refresh 只是把真正的錯誤遮起來。
+ * refresh」）時 refresh 後帶新 token 重放**一次**。上限一次是硬的：後端若因時鐘偏移
+ * 把新 token 也判過期，沒有上限就是無窮迴圈。其他 401（帳密錯、token 被撤銷）直接
+ * 放行——對它們 refresh 只是把真正的錯誤遮起來。
+ *
+ * **逾時只涵蓋到收到回應標頭為止**（`fetch` 的 resolve 時機），不涵蓋讀 body——
+ * 這正是串流要的：連不上要快點放棄，但講三分鐘的回答不該被 15 秒切斷。
  */
-export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+export async function authorizedFetch(
+  path: string,
+  options: RequestOptions = {},
+): Promise<Response> {
   const hooks = authHooks
   const usedToken = hooks?.getToken() ?? null
 
   try {
-    return await performRequest<T>(path, options, usedToken)
+    return await performRequest(path, options, usedToken)
   } catch (error) {
     if (
       hooks === null ||
@@ -201,7 +223,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     // 那就直接帶現在的 token 重放，不再多打一次 refresh。
     const current = hooks.getToken()
     if (current !== null && current !== usedToken) {
-      return performRequest<T>(path, options, current)
+      return performRequest(path, options, current)
     }
 
     let fresh: string
@@ -212,21 +234,35 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       // 拿到 refresh 端點的錯誤只會誤導。session 清理已由 onSessionExpired 做掉。
       throw error
     }
-    return performRequest<T>(path, options, fresh)
+    return performRequest(path, options, fresh)
   }
 }
 
 /**
- * 實際發出一個請求（不含 refresh 邏輯）。
+ * 讀完 body 並解析（204 / 空 body 回 null）。
+ *
+ * 204 與空 body 都要回 null：`JSON.parse('')` 會丟 SyntaxError，而那不是 ApiError，
+ * 呼叫端的 catch 分支接不住，會變成未處理的例外。
+ */
+async function parseBody<T>(response: Response): Promise<T> {
+  if (response.status === 204 || response.headers.get('Content-Length') === '0') {
+    return null as T
+  }
+  const text = await response.text()
+  return (text ? (JSON.parse(text) as T) : null) as T
+}
+
+/**
+ * 實際發出一個請求（不含 refresh 邏輯），回傳未讀取的 Response。
  *
  * 逾時用 AbortController 而非只是 reject：只 reject 的話連線會留著直到伺服器
  * 回應，使用者反覆切分頁時會累積。
  */
-async function performRequest<T>(
+async function performRequest(
   path: string,
   options: RequestOptions,
   token: string | null,
-): Promise<T> {
+): Promise<Response> {
   const { timeoutMs = API_TIMEOUT_MS, signal: callerSignal, headers, ...init } = options
 
   const controller = new AbortController()
@@ -285,11 +321,5 @@ async function performRequest<T>(
     throw await toApiError(response)
   }
 
-  // 204 與空 body 都要回 null：JSON.parse('') 會丟 SyntaxError，而那不是 ApiError，
-  // 呼叫端的 catch 分支接不住，會變成未處理的例外。
-  if (response.status === 204 || response.headers.get('Content-Length') === '0') {
-    return null as T
-  }
-  const text = await response.text()
-  return (text ? (JSON.parse(text) as T) : null) as T
+  return response
 }

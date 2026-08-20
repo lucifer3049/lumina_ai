@@ -36,3 +36,21 @@ export type KnowledgeBaseListOut = components['schemas']['KnowledgeBaseListOut']
 export type DocumentOut = components['schemas']['DocumentOut']
 
 export type DocumentListOut = components['schemas']['DocumentListOut']
+
+/** 一場對話（09 §2.4）。清單只列自己的——擁有者制。 */
+export type ConversationOut = components['schemas']['ConversationOut']
+
+export type ConversationListOut = components['schemas']['ConversationListOut']
+export type ConversationCreateIn = components['schemas']['ConversationCreateIn']
+export type ConversationUpdateIn = components['schemas']['ConversationUpdateIn']
+
+/** 一則訊息。`citations` 與 SSE 的 `citations` 事件共用形狀（09 §3.2）。 */
+export type MessageOut = components['schemas']['MessageOut']
+
+export type MessageListOut = components['schemas']['MessageListOut']
+
+/**
+ * 送出問題的回應（1D-4a 拆兩步的第一步）。`message_id` 在收到任何位元組之前就到手，
+ * 讀串流、按停止、斷線後抓最終訊息都靠它。
+ */
+export type TurnStartedOut = components['schemas']['TurnStartedOut']

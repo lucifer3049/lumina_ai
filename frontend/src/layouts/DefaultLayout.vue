@@ -2,8 +2,7 @@
 /**
  * 主應用外框（03 §2）：sidebar + header。
  *
- * 選單隨工作包長出來：首頁（1E-1）、知識庫（1E-2），對話留給 1E-3
- * ——先放假選項會讓「點了沒反應」看起來像壞掉。
+ * 選單隨工作包長出來：首頁（1E-1）、知識庫（1E-2）、對話（1E-3）。
  */
 import { NButton, NLayout, NLayoutContent, NLayoutHeader, NLayoutSider, NMenu } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
@@ -17,13 +16,19 @@ const router = useRouter()
 
 const menuOptions: MenuOption[] = [
   { label: '首頁', key: 'home' },
+  { label: '對話', key: 'chat' },
   { label: '知識庫', key: 'knowledge' },
 ]
 // 選單 key 就是 route name（onMenuSelect 直接 push 它）。文件頁是知識庫的子頁，
 // 停在那裡時選單仍要亮著「知識庫」，否則使用者會覺得自己離開了那一區。
+// 子頁停留時選單仍要亮著它所屬的那一區，否則使用者會覺得自己離開了。
+const PARENT_OF: Record<string, string> = {
+  'knowledge-documents': 'knowledge',
+  'chat-conversation': 'chat',
+}
 const activeKey = computed(() => {
   const name = String(router.currentRoute.value.name ?? '')
-  return name === 'knowledge-documents' ? 'knowledge' : name
+  return PARENT_OF[name] ?? name
 })
 
 function onMenuSelect(key: string): void {

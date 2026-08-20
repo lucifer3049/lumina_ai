@@ -11,9 +11,12 @@
 import { assertType, describe, expectTypeOf, it } from 'vitest'
 
 import type {
+  ConversationOut,
   DocumentOut,
   KnowledgeBaseOut,
+  MessageOut,
   ProblemDetail,
+  TurnStartedOut,
   components,
   paths,
 } from '@/types/models'
@@ -70,5 +73,48 @@ describe('知識庫與文件的型別（1E-2）', () => {
 
     expectTypeOf<DocumentOut['status']>().toEqualTypeOf<string>()
     expectTypeOf<DocumentOut['doc_version']>().toEqualTypeOf<number>()
+  })
+})
+
+describe('對話與訊息的型別（1E-3）', () => {
+  it('exposes ConversationOut with the fields the sidebar renders', () => {
+    assertType<ConversationOut>({
+      id: '3f9f2b1e-0000-4000-8000-0000000000c1',
+      title: '年假問題',
+      kb_ids: [],
+      prompt_key: 'chat.default',
+      status: 'active',
+      pinned: false,
+      message_count: 2,
+      last_message_at: null,
+    })
+  })
+
+  it('exposes MessageOut with citations as a list of objects (09 §3.2)', () => {
+    // `citations` 在 openapi 是 `list[dict]`（後端與 SSE 事件共用同一份形狀），
+    // 不是強型別——前端自己的 Citation 型別在 utils/citations.ts，這裡只釘住
+    // 「它是一串物件」，別讓 codegen 壞掉時變成 any 而沒人發現。
+    assertType<MessageOut>({
+      id: 'm1',
+      role: 'assistant',
+      content: '年假是 14 天[c:1]',
+      citations: [{ marker: '1' }],
+      model: 'mock',
+      status: 'complete',
+      usage: {},
+      created_at: '2026-08-20T00:00:00Z',
+    })
+    expectTypeOf<MessageOut['citations']>().not.toBeAny()
+  })
+
+  it('exposes TurnStartedOut — the id the client needs before any byte arrives', () => {
+    // 1D-4a 拆兩步的核心：message_id 在收到任何位元組之前就到手，
+    // 讀串流、按停止、斷線後抓最終訊息都靠它。
+    assertType<TurnStartedOut>({
+      message_id: 'm-assistant',
+      user_message_id: 'm-user',
+      conversation_id: '3f9f2b1e-0000-4000-8000-0000000000c1',
+      stream_url: '/api/v1/conversations/c1/messages/m-assistant/stream',
+    })
   })
 })
