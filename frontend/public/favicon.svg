@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- 品牌印章（白文印）。favicon 尺寸小，省略位移濾鏡，只留不規則印面與缺角。 -->
+  <g transform="rotate(-1.5 50 50)">
+    <path d="M9 11 C 7 6.5, 11 3.5, 17 4.5 C 40 2.5, 65 3, 87 4.5 C 93.5 5, 96.5 8.5, 95.5 15 C 97 38, 96.5 63, 95 85 C 94.5 91.5, 90.5 95.5, 84 94.5 C 61 96.5, 36 96, 15 94.5 C 9 94, 5 90.5, 6 83.5 C 4 59, 4.5 34, 9 11 Z" fill="#B23A2E"/>
+    <ellipse cx="7" cy="30" rx="2.6" ry="5" fill="#F6F3EC" opacity="0.9"/>
+    <ellipse cx="93" cy="68" rx="2.2" ry="4.4" fill="#F6F3EC" opacity="0.85"/>
+    <ellipse cx="72" cy="5" rx="4" ry="1.8" fill="#F6F3EC" opacity="0.8"/>
+    <text x="50" y="53" text-anchor="middle" dominant-baseline="central" font-size="66" font-weight="900" fill="#F6F3EC" font-family="'Noto Serif TC','Songti TC',serif">智</text>
+  </g>
+</svg>

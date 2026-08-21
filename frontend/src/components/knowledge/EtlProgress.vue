@@ -9,10 +9,12 @@
  * 失敗時進度條讓位給原因：`error.message` 是後端已經過濾過的對外訊息
  * （`services/knowledge/failures.py`——第三方例外的字串一律換成固定句子，
  * 避免夾帶 bucket 名、SQL 片段或 API key 前綴），可以直接顯示給租戶看。
+ * 階段/例外型別的除錯細節放 title（hover 可見），不佔版面。
  */
-import { NProgress, NTag, NText, NTooltip } from 'naive-ui'
 import { computed } from 'vue'
 
+import InkProgress from '@/components/ui/InkProgress.vue'
+import InkTag from '@/components/ui/InkTag.vue'
 import {
   documentProgressPercent,
   documentStatusLabel,
@@ -45,31 +47,35 @@ const failureDetail = computed(() => {
 <template>
   <div class="etl-progress">
     <template v-if="failed">
-      <NTooltip v-if="failureDetail" trigger="hover">
-        <template #trigger>
-          <NTag type="error" size="small" round>{{ label }}</NTag>
-        </template>
-        {{ failureDetail }}
-      </NTooltip>
-      <NTag v-else type="error" size="small" round>{{ label }}</NTag>
-      <NText depth="3" class="message">{{ failureMessage }}</NText>
+      <span :title="failureDetail || undefined">
+        <InkTag tone="error">{{ label }}</InkTag>
+      </span>
+      <span class="message">{{ failureMessage }}</span>
     </template>
 
     <template v-else-if="settled">
-      <NTag type="success" size="small" round>{{ label }}</NTag>
+      <InkTag tone="success">
+        <svg
+          width="11"
+          height="11"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M4 12.5 L 9.5 18 L 20 6.5"></path>
+        </svg>
+        {{ label }}
+      </InkTag>
     </template>
 
     <template v-else>
-      <NTag type="info" size="small" round>{{ label }}</NTag>
+      <InkTag tone="info">{{ label }}</InkTag>
       <!-- 進度條只在跑的時候出現：終點狀態再放一條 100% 的線只是噪音。 -->
-      <NProgress
-        type="line"
-        :percentage="percent"
-        :show-indicator="false"
-        :height="4"
-        class="bar"
-        processing
-      />
+      <InkProgress :percent="percent" class="bar" />
     </template>
   </div>
 </template>
@@ -78,7 +84,7 @@ const failureDetail = computed(() => {
 .etl-progress {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 12rem;
 }
 
@@ -89,5 +95,6 @@ const failureDetail = computed(() => {
 
 .message {
   font-size: 0.8125rem;
+  color: var(--ink-4);
 }
 </style>

@@ -1,0 +1,191 @@
+/**
+ * Design tokens——「唐宋青綠山水」設計語言（2026-08-21 v4 定案，視覺稿 v4 板）。
+ *
+ * 兩層結構：
+ * 1. 語意色（paper/ink/輔助/朱砂）：paper-* 永遠是「面」、ink-* 永遠是「字與線」。
+ *    深色模式（[data-theme='dark']）只換數值不換語意——元件一律取變數，禁止寫死色碼。
+ * 2. 場景色（--scene-*）：登入頁與工作頁角落的山水用色，夜間模式整幅轉為月下青綠。
+ *
+ * 純黑 #000 與純白 #FFF 全站禁用。線稿描邊禁用——形體靠填色、漸層與空氣透視。
+ */
+:root {
+  /* only light：預設宣紙；也向瀏覽器的強制深色（Auto Dark）表態不要反相 */
+  color-scheme: only light;
+
+  /* 基底（宣紙） */
+  --paper-1: #f6f3ec;
+  --paper-2: #f1ede2;
+  --paper-3: #ede7d6;
+  --paper-4: #e6dcc5;
+  --paper-5: #d9d3c6;
+
+  /* 墨色五層＝資訊層級（青綠時代：墨偏松煙的青灰） */
+  --ink-1: #2e3532;
+  --ink-2: #4a5450;
+  --ink-3: #6b7a72;
+  --ink-4: #9aa096;
+  --ink-5: #c6c9bb;
+
+  /* 主動作色：黛青（取代墨黑按鈕——v4 校正） */
+  --accent-deep: #35423f;
+  --accent-deep-ink: #f2efe3;
+
+  /* 自然輔助色 */
+  --celadon: #a7b8a8;
+  --celadon-ink: #5f7a64;
+  --indigo: #4a6b70; /* 石青：連結 */
+  --indigo-deep: #38565b;
+  --tea-brown: #8a7661;
+
+  /* 朱砂＝落款：品牌章、失敗朱印、引用編號。每頁至多三處。 */
+  --cinnabar: #a8442f;
+
+  /* 字體階層：L1 標題宋體、題字楷體、內文黑體 */
+  --font-serif: 'Noto Serif TC', 'Songti TC', 'PMingLiU', serif;
+  --font-kai: 'LXGW WenKai TC', 'Kaiti TC', 'DFKai-SB', serif;
+  --font-body: 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+
+  /* 侘寂圓角：小而不等值 */
+  --radius-a: 2px 3px 2px 3px;
+  --radius-b: 2px 4px 2px 4px;
+  --radius-c: 3px 4px 3px 5px;
+
+  /* 陰影如霧氣 */
+  --shadow-mist: 0 1px 4px rgba(46, 53, 50, 0.06);
+  --shadow-ink: 0 1px 3px rgba(46, 53, 50, 0.2);
+
+  /* 動畫：慢、柔、如霧移水流 */
+  --ease-ink: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --dur-fast: 200ms;
+  --dur-med: 320ms;
+  --dur-slow: 480ms;
+
+  /* ── 場景色（晨光青綠） ── */
+  --sky-1: #f0eee4;
+  --sky-2: #ede9da;
+  --sky-3: #e9e1c9;
+  --glow: #f6eeda; /* 天際柔光（晝＝晨光；夜＝月光） */
+  --peak-far: #c0cec4;
+  --peak-mid: #a3bcad;
+  --peak-near: #7fa18e;
+  --ridge: #6c907d;
+  --pine-1: #587962;
+  --pine-2: #4e6e58;
+  --roof-1: #45555a;
+  --roof-2: #54666b;
+  --roof-3: #414e52;
+  --roof-4: #4f6065;
+  --wall-1: #efead9;
+  --wall-2: #dfd8c2;
+  --wood: #63564a;
+  --stone-1: #a8a695;
+  --stone-2: #8b9489;
+  --stone-3: #6f7a70;
+  --stone-4: #a2aa9c;
+  --bridge-1: #95a08d;
+  --bridge-2: #8a9583;
+  --bridge-3: #7e8a78;
+  --lattice-dark: #5a6a6d;
+  --lattice-line: #8b9598;
+  --window-lit: #e3be85;
+  --window-lit-line: #b29465;
+  --bamboo-1: #6f9678;
+  --bamboo-2: #5e8770;
+  --bamboo-3: #4e6e58;
+  --bamboo-4: #7fa286;
+  --bamboo-5: #8faf94;
+  --banana-1: #5f8a6e;
+  --banana-2: #547e63;
+  --water-1: #e3e4d2;
+  --water-2: #d9decb;
+  --water-3: #cbd4c0;
+  --shimmer: #f7f3e4;
+  --water-line: #b9c6b0;
+  --boat-1: #3e4a48;
+  --boat-2: #8a8471;
+  --figure-1: #4a5651;
+  --figure-2: #57645e;
+  --mist: #f2efe3;
+  --flower-1: #d9c3a4;
+  --flower-2: #c89a87;
+}
+
+/* ── 夜色：月下青綠山水 ── */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --paper-1: #1f2422;
+  --paper-2: #262c29;
+  --paper-3: #2d332f;
+  --paper-4: #363d38;
+  --paper-5: #414843;
+
+  --ink-1: #e9e5d6;
+  --ink-2: #cfccbb;
+  --ink-3: #a8a898;
+  --ink-4: #82847a;
+  --ink-5: #565b52;
+
+  --accent-deep: #47584f;
+  --accent-deep-ink: #f0edde;
+
+  --celadon: #6e8a78;
+  --celadon-ink: #a4c2ac;
+  --indigo: #9ab6ba;
+  --indigo-deep: #b6cdd0;
+  --tea-brown: #a08a72;
+
+  --cinnabar: #c25640;
+
+  --shadow-mist: 0 1px 5px rgba(0, 0, 0, 0.28);
+  --shadow-ink: 0 1px 4px rgba(0, 0, 0, 0.45);
+
+  /* 場景：月下 */
+  --sky-1: #20272a;
+  --sky-2: #1e2425;
+  --sky-3: #22271f;
+  --glow: #8fa294;
+  --peak-far: #39463f;
+  --peak-mid: #313d37;
+  --peak-near: #2a352f;
+  --ridge: #26312b;
+  --pine-1: #22302a;
+  --pine-2: #1d2a24;
+  --roof-1: #151b1c;
+  --roof-2: #1f292b;
+  --roof-3: #131819;
+  --roof-4: #1d2628;
+  --wall-1: #39403a;
+  --wall-2: #2f3631;
+  --wood: #2b2620;
+  --stone-1: #3f453c;
+  --stone-2: #333a33;
+  --stone-3: #272d28;
+  --stone-4: #454c42;
+  --bridge-1: #3b433a;
+  --bridge-2: #333b32;
+  --bridge-3: #2b322a;
+  --lattice-dark: #11181a;
+  --lattice-line: #3a4a4c;
+  --window-lit: #e0a95e;
+  --window-lit-line: #8a6a3c;
+  --bamboo-1: #37493d;
+  --bamboo-2: #2e4034;
+  --bamboo-3: #26372c;
+  --bamboo-4: #405346;
+  --bamboo-5: #4a5e4f;
+  --banana-1: #2f4237;
+  --banana-2: #283a2f;
+  --water-1: #242b28;
+  --water-2: #202724;
+  --water-3: #1c2320;
+  --shimmer: #b9c4ae;
+  --water-line: #39443a;
+  --boat-1: #141a1b;
+  --boat-2: #4a463c;
+  --figure-1: #1a2321;
+  --figure-2: #232e2b;
+  --mist: #252b28;
+  --flower-1: #6a6152;
+  --flower-2: #5d4a44;
+}

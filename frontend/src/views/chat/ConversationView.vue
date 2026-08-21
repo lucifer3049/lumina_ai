@@ -10,13 +10,16 @@
  * 還在 `streaming`，就對它開一條串流——後端的生成不因為 client 離開而停止（06 §4
  * 的 G-06），所以接回去看到的是完整的後半段。
  */
-import { NButton, NCard, NResult, NSpace, NSpin, useMessage } from 'naive-ui'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import CitationPanel from '@/components/chat/CitationPanel.vue'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
+import BrushDivider from '@/components/ui/BrushDivider.vue'
+import InkButton from '@/components/ui/InkButton.vue'
+import InkSpinner from '@/components/ui/InkSpinner.vue'
 import { useChatStream } from '@/composables/useChatStream'
+import { useToast } from '@/composables/useToast'
 import { useChatStore } from '@/stores/chat'
 import type { CitationItem } from '@/utils/citations'
 import { errorMessage } from '@/utils/errors'
@@ -25,7 +28,7 @@ const props = defineProps<{ conversationId: string }>()
 
 const store = useChatStore()
 const stream = useChatStream()
-const message = useMessage()
+const toast = useToast()
 
 const scroller = ref<HTMLElement | null>(null)
 const activeCitation = ref<number | null>(null)
@@ -67,7 +70,7 @@ watch(
       await resumeUnfinished(conversationId)
       await scrollToBottom()
     } catch (error) {
-      message.error(errorMessage(error))
+      toast.error(errorMessage(error))
     }
   },
   { immediate: true },
@@ -108,7 +111,7 @@ async function send(content: string): Promise<void> {
     await scrollToBottom()
     await stream.start({ conversationId: props.conversationId, messageId: turn.message_id })
   } catch (error) {
-    message.error(errorMessage(error))
+    toast.error(errorMessage(error))
   }
 }
 
@@ -116,7 +119,7 @@ async function stop(): Promise<void> {
   try {
     await store.stopStreaming()
   } catch (error) {
-    message.error(errorMessage(error))
+    toast.error(errorMessage(error))
   }
 }
 
@@ -131,10 +134,15 @@ async function retry(): Promise<void> {
 </script>
 
 <template>
-  <div class="conversation">
-    <NCard :title="title" class="thread">
+  <div class="conversation ink-appear">
+    <section class="thread">
+      <header class="head">
+        <h1 class="page-title">{{ title }}</h1>
+        <BrushDivider class="head-divider" />
+      </header>
+
       <div ref="scroller" class="scroller">
-        <NSpin v-if="store.loadingMessages" size="small" />
+        <InkSpinner v-if="store.loadingMessages" text="載入中……" />
 
         <MessageBubble
           v-for="item in store.messages"
@@ -154,25 +162,14 @@ async function retry(): Promise<void> {
           @citation-click="activeCitation = $event"
         />
 
-        <NResult
-          v-if="store.streaming?.status === 'error'"
-          status="warning"
-          :title="store.streaming.error?.title ?? '生成失敗'"
-          size="small"
-          class="failure"
-        >
-          <template #footer>
-            <NSpace>
-              <NButton v-if="store.streaming.error?.retryable" size="small" @click="retry">
-                重試
-              </NButton>
-            </NSpace>
-          </template>
-        </NResult>
+        <div v-if="store.streaming?.status === 'error'" class="failure" role="alert">
+          <span class="failure-title">{{ store.streaming.error?.title ?? '生成失敗' }}</span>
+          <InkButton v-if="store.streaming.error?.retryable" size="small" @click="retry">重試</InkButton>
+        </div>
       </div>
 
       <ChatComposer :generating="store.isGenerating" @send="send" @stop="stop" />
-    </NCard>
+    </section>
 
     <CitationPanel :citations="citations" :active-index="activeCitation" />
   </div>
@@ -181,26 +178,56 @@ async function retry(): Promise<void> {
 <style scoped>
 .conversation {
   display: flex;
-  gap: 16px;
+  gap: 34px;
   align-items: flex-start;
+  height: 100%;
 }
 
 .thread {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.head-divider {
+  width: 210px;
 }
 
 .scroller {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  height: 60vh;
+  gap: 16px;
+  height: 58vh;
   overflow-y: auto;
-  margin-bottom: 16px;
   padding-right: 8px;
 }
 
 .failure {
   align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--cinnabar) 50%, transparent);
+  border-radius: var(--radius-a);
+  background: color-mix(in srgb, var(--cinnabar) 6%, transparent);
+}
+
+.failure-title {
+  font-size: 0.875rem;
+  color: var(--cinnabar);
 }
 </style>

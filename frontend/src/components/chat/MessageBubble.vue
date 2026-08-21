@@ -8,8 +8,9 @@
  *
  * 對不上來源的 `[c:n]` 在 `renderAnswer()` 就消失了（13 §3 缺口①）——這裡不需要
  * 再判斷一次，也不該：兩個地方各判一次，遲早會有一邊漏掉。
+ *
+ * 視覺：使用者＝濃墨落紙，助理＝紙上墨字；引用編號是小朱印（設計語言）。
  */
-import { NTag, NText } from 'naive-ui'
 import { computed } from 'vue'
 
 import { renderAnswer, type CitationItem } from '@/utils/citations'
@@ -33,27 +34,22 @@ const segments = computed(() => renderAnswer(props.content, props.citations ?? [
     <div class="body">
       <template v-for="(segment, index) in segments" :key="index">
         <span v-if="segment.kind === 'text'" class="text">{{ segment.text }}</span>
-        <NTag
+        <button
           v-else
-          size="small"
-          round
+          type="button"
           class="citation"
           :title="segment.docName"
           @click="emit('citationClick', segment.index)"
         >
           {{ segment.index }}
-        </NTag>
+        </button>
       </template>
       <!-- 游標畫在文字流的最後，跟著字一起長——固定在角落的話，長回答會看不到它。 -->
       <span v-if="props.streaming" class="cursor" aria-hidden="true">▍</span>
     </div>
-    <NText
-      v-if="!isUser && !props.streaming && (props.citations?.length ?? 0) === 0"
-      depth="3"
-      class="hint"
-    >
+    <span v-if="!isUser && !props.streaming && (props.citations?.length ?? 0) === 0" class="hint">
       本回答未引用知識庫內容
-    </NText>
+    </span>
   </div>
 </template>
 
@@ -61,20 +57,26 @@ const segments = computed(() => renderAnswer(props.content, props.citations ?? [
 .bubble {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   max-width: 46rem;
-  padding: 10px 14px;
-  border-radius: 10px;
-  line-height: 1.7;
+  padding: 12px 17px;
+  line-height: 1.9;
+  font-size: 0.875rem;
 }
 
 .bubble--user {
   align-self: flex-end;
-  background: var(--n-color-embedded, rgba(128, 128, 128, 0.12));
+  background: var(--accent-deep);
+  color: var(--accent-deep-ink);
+  border-radius: 5px 5px 2px 5px;
+  box-shadow: var(--shadow-ink);
 }
 
 .bubble--assistant {
   align-self: flex-start;
+  background: color-mix(in srgb, var(--paper-2) 80%, transparent);
+  border: 1px solid var(--paper-5);
+  border-radius: 3px 4px 4px 2px;
 }
 
 .body {
@@ -82,11 +84,28 @@ const segments = computed(() => renderAnswer(props.content, props.citations ?? [
   word-break: break-word;
 }
 
+/* 引用編號＝小朱印 */
 .citation {
-  margin: 0 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  margin: 0 3px;
+  padding: 0 3px;
+  vertical-align: 2px;
+  border: 1px solid color-mix(in srgb, var(--cinnabar) 50%, transparent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--cinnabar) 8%, transparent);
+  color: var(--cinnabar);
+  font-size: 0.6875rem;
+  line-height: 1;
   cursor: pointer;
-  vertical-align: super;
-  font-size: 0.72rem;
+  transition: background-color var(--dur-fast) var(--ease-ink);
+}
+
+.citation:hover {
+  background: color-mix(in srgb, var(--cinnabar) 16%, transparent);
 }
 
 .cursor {
@@ -95,6 +114,7 @@ const segments = computed(() => renderAnswer(props.content, props.citations ?? [
 
 .hint {
   font-size: 0.8125rem;
+  color: var(--ink-4);
 }
 
 @keyframes blink {

@@ -3,7 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 預設宣紙（晝）；自家夜色由 data-theme 控制。meta 擋掉瀏覽器的強制反相 -->
+    <meta name="color-scheme" content="only light" />
+    <script>
+      // 首屏防閃：app 掛載前先套用已存的主題偏好（與 useTheme 同一個 key）
+      try {
+        if (localStorage.getItem('lumina.theme') === 'dark') {
+          document.documentElement.setAttribute('data-theme', 'dark')
+        }
+      } catch (e) {}
+    </script>
     <title>Lumina AI</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@500;600;700;900&family=LXGW+WenKai+TC:wght@300;400;700&display=swap"
+    />
   </head>
   <body>
     <div id="app"></div>

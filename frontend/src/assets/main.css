@@ -1,11 +1,147 @@
-/* design tokens 與 UI 套件的樣式（03 §2 assets/）於 1E 選型定案後進來。
-   這裡只放讓骨架不至於難以辨識的最小值。 */
+/**
+ * 全域基底與跨頁共用樣式。色值一律取自 tokens.css 的變數。
+ *
+ * 紙紋與筆觸線都是行內 SVG data URI：不依賴外部圖檔，且透明度壓在
+ * 「感覺得到質感、看不出是圖」的程度（設計語言：背景存在但不搶戲）。
+ */
+@import './tokens.css';
+
 :root {
-  color-scheme: light dark;
-  font-family: system-ui, -apple-system, 'Segoe UI', 'Noto Sans TC', sans-serif;
-  line-height: 1.6;
+  /* color-scheme 在 tokens.css：預設 only light，[data-theme='dark'] 時轉 dark */
+  font-family: var(--font-body);
+  line-height: 1.7;
 }
 
 body {
   margin: 0;
+  color: var(--ink-1);
+  background-color: var(--paper-1);
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='240'%20height='240'%3E%3Cfilter%20id='p'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.8'%20numOctaves='2'%20stitchTiles='stitch'/%3E%3CfeColorMatrix%20values='0%200%200%200%200.34%200%200%200%200%200.32%200%200%200%200%200.27%200%200%200%200.04%200'/%3E%3C/filter%3E%3Crect%20width='240'%20height='240'%20filter='url(%23p)'/%3E%3C/svg%3E");
+  -webkit-font-smoothing: antialiased;
+  transition:
+    background-color var(--dur-slow) var(--ease-ink),
+    color var(--dur-slow) var(--ease-ink);
+}
+
+/* 夜色的紙纖維：改成極淡的亮紋，深底上才看得見 */
+:root[data-theme='dark'] body {
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='240'%20height='240'%3E%3Cfilter%20id='p'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.8'%20numOctaves='2'%20stitchTiles='stitch'/%3E%3CfeColorMatrix%20values='0%200%200%200%200.85%200%200%200%200%200.86%200%200%200%200%200.78%200%200%200%200.025%200'/%3E%3C/filter%3E%3Crect%20width='240'%20height='240'%20filter='url(%23p)'/%3E%3C/svg%3E");
+}
+
+a {
+  color: var(--indigo);
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-ink);
+}
+
+a:hover {
+  color: var(--indigo-deep);
+}
+
+/* 鍵盤導覽的焦點框：細墨線，不用瀏覽器預設藍 */
+:focus-visible {
+  outline: 2px solid var(--ink-3);
+  outline-offset: 2px;
+}
+
+/* 元素淡入如墨滲 */
+@keyframes ink-appear {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ink-appear {
+  animation: ink-appear var(--dur-slow) var(--ease-ink) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+/* 頁面標題組：L1 宋體大字＋楷體副題 */
+.page-title {
+  display: flex;
+  align-items: baseline;
+  gap: 11px;
+  font-family: var(--font-serif);
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--ink-1);
+}
+
+.page-subtitle {
+  font-family: var(--font-kai);
+  font-size: 0.875rem;
+  letter-spacing: 0.18em;
+  color: var(--ink-4);
+}
+
+/*
+ * 清單表格：資訊直接落在紙上，不關進卡片。
+ * 表頭下的墨線是一條帶飛白的筆觸（background-image 貼在 thead 底部）。
+ */
+.ink-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ink-table thead th {
+  padding: 6px 10px 12px;
+  font-size: 0.75rem;
+  font-weight: 400;
+  letter-spacing: 0.2em;
+  text-align: left;
+  color: var(--ink-4);
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20900%207'%20preserveAspectRatio='none'%3E%3Cpath%20d='M2%204%20C%20140%201.8%2C%20360%201.4%2C%20560%202.8%20C%20720%203.8%2C%20830%203.6%2C%20898%203.2%20C%20896%204.2%2C%20760%205.6%2C%20540%205%20C%20340%204.5%2C%20120%205.2%2C%204%205.4%20Z'%20fill='%234A5450'%20opacity='0.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  background-size: 100% 7px;
+}
+
+:root[data-theme='dark'] .ink-table thead th {
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20900%207'%20preserveAspectRatio='none'%3E%3Cpath%20d='M2%204%20C%20140%201.8%2C%20360%201.4%2C%20560%202.8%20C%20720%203.8%2C%20830%203.6%2C%20898%203.2%20C%20896%204.2%2C%20760%205.6%2C%20540%205%20C%20340%204.5%2C%20120%205.2%2C%204%205.4%20Z'%20fill='%23CFCCBB'%20opacity='0.45'/%3E%3C/svg%3E");
+}
+
+.ink-table tbody td {
+  padding: 16px 10px;
+  font-size: 0.875rem;
+  color: var(--ink-1);
+  border-bottom: 1px solid var(--paper-4);
+  vertical-align: middle;
+}
+
+.ink-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ink-table tbody tr {
+  transition: background-color var(--dur-med) var(--ease-ink);
+}
+
+.ink-table tbody tr:hover {
+  background-color: color-mix(in srgb, var(--paper-3) 55%, transparent);
+}
+
+.ink-table .cell-secondary {
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+
+.ink-table .cell-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
 }

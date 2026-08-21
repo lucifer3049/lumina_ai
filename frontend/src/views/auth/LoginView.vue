@@ -6,14 +6,15 @@
  * RLS 之下沒有租戶就查不到任何使用者（backend/api/schemas/auth.py）。
  *
  * 這一頁刻意薄（03 §1「views 不含業務規則」）：驗證交給後端、狀態交給
- * store，這裡只做展示與轉場。單元測試因此不設（03 §6.1 元件層選配），
- * 真驗證是 1E-4 Playwright 的第一步。
+ * store，這裡只做展示與轉場。登入面用書畫裝裱式雙線框（設計語言）。
  */
-import { NAlert, NButton, NCard, NForm, NFormItem, NInput } from 'naive-ui'
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '@/api/client'
+import InkButton from '@/components/ui/InkButton.vue'
+import InkInput from '@/components/ui/InkInput.vue'
+import SealMark from '@/components/ui/SealMark.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
@@ -61,38 +62,165 @@ async function onSubmit(): Promise<void> {
 </script>
 
 <template>
-  <NCard title="登入 Lumina AI" class="login-card">
-    <NForm label-placement="top" @submit.prevent="onSubmit">
-      <NFormItem label="租戶代號">
-        <NInput v-model:value="tenantSlug" placeholder="例如 acme" :disabled="submitting" />
-      </NFormItem>
-      <NFormItem label="Email">
-        <NInput v-model:value="email" placeholder="you@example.com" :disabled="submitting" />
-      </NFormItem>
-      <NFormItem label="密碼">
-        <NInput
-          v-model:value="password"
-          type="password"
-          show-password-on="click"
-          :disabled="submitting"
-          @keyup.enter="onSubmit"
-        />
-      </NFormItem>
-      <NAlert v-if="errorMessage" type="error" class="login-error" :show-icon="true">
-        {{ errorMessage }}
-      </NAlert>
-      <NButton type="primary" block attr-type="submit" :loading="submitting"> 登入 </NButton>
-    </NForm>
-  </NCard>
+  <div class="login">
+    <div class="brand">
+      <SealMark char="智" :size="40" />
+      <div class="brand-name">Lumina AI</div>
+      <div class="brand-tagline">智啟千年 · 知識如水</div>
+    </div>
+
+    <div class="panel">
+      <form class="panel-inner" @submit.prevent="onSubmit">
+        <div class="panel-title">登入</div>
+
+        <div class="field">
+          <label class="label" for="login-tenant">租戶代號</label>
+          <InkInput
+            id="login-tenant"
+            v-model="tenantSlug"
+            variant="underline"
+            placeholder="例如 acme"
+            :disabled="submitting"
+          />
+        </div>
+
+        <div class="field">
+          <label class="label" for="login-email">Email</label>
+          <InkInput
+            id="login-email"
+            v-model="email"
+            variant="underline"
+            placeholder="you@example.com"
+            :disabled="submitting"
+          />
+        </div>
+
+        <div class="field">
+          <label class="label" for="login-password">密碼</label>
+          <InkInput
+            id="login-password"
+            v-model="password"
+            type="password"
+            variant="underline"
+            :disabled="submitting"
+            @keyup.enter="onSubmit"
+          />
+        </div>
+
+        <p v-if="errorMessage" class="error" role="alert">{{ errorMessage }}</p>
+
+        <!-- hover 時「入卷」小印浮現——落款只在筆將落紙的那一刻出現 -->
+        <div class="submit-row">
+          <InkButton variant="primary" class="submit" attr-type="submit" :loading="submitting">
+            登入
+          </InkButton>
+          <SealMark char="入卷" :size="34" class="seal-hint" />
+        </div>
+      </form>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.login-card {
+.login {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26px;
   width: 100%;
-  max-width: 22rem;
+  max-width: 24rem;
 }
 
-.login-error {
-  margin-bottom: 16px;
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-name {
+  font-family: var(--font-serif);
+  font-size: 1.9375rem;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+  color: var(--ink-1);
+}
+
+.brand-tagline {
+  font-family: var(--font-kai);
+  font-size: 0.875rem;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em;
+  color: var(--ink-3);
+}
+
+/* 書畫裝裱式雙線框：半透明宣紙，浮在雲霧與山水之間 */
+.panel {
+  width: 100%;
+  border: 1px solid var(--ink-5);
+  padding: 5px;
+  background: color-mix(in srgb, var(--paper-2) 82%, transparent);
+  box-sizing: border-box;
+}
+
+.panel-inner {
+  border: 1px solid var(--ink-5);
+  padding: 26px 32px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.panel-title {
+  font-family: var(--font-serif);
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--ink-1);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+}
+
+.error {
+  margin: 0;
+  padding: 9px 13px;
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  color: var(--cinnabar);
+  border: 1px solid color-mix(in srgb, var(--cinnabar) 50%, transparent);
+  border-radius: var(--radius-a);
+  background: color-mix(in srgb, var(--cinnabar) 6%, transparent);
+}
+
+.submit-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.submit {
+  flex: 1;
+}
+
+.seal-hint {
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease-ink);
+}
+
+.submit-row:hover .seal-hint,
+.submit-row:focus-within .seal-hint {
+  opacity: 1;
 }
 </style>

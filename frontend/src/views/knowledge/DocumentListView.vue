@@ -8,22 +8,17 @@
  * 輪詢的開關綁在 `hasPendingDocuments`：有東西在跑才問，全部到終點就停
  * （`usePolling` 另外處理不重疊、退讓與放棄）。
  */
-import {
-  NButton,
-  NCard,
-  NDataTable,
-  NEmpty,
-  NPopconfirm,
-  NSpace,
-  NText,
-  useMessage,
-} from 'naive-ui'
-import type { DataTableColumns } from 'naive-ui'
-import { computed, h, onMounted, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 
 import EtlProgress from '@/components/knowledge/EtlProgress.vue'
 import UploadDropzone from '@/components/knowledge/UploadDropzone.vue'
+import BrushDivider from '@/components/ui/BrushDivider.vue'
+import InkButton from '@/components/ui/InkButton.vue'
+import InkConfirm from '@/components/ui/InkConfirm.vue'
+import InkEmpty from '@/components/ui/InkEmpty.vue'
+import InkSpinner from '@/components/ui/InkSpinner.vue'
 import { usePolling } from '@/composables/usePolling'
+import { useToast } from '@/composables/useToast'
 import { describeUploadError } from '@/services/uploadService'
 import { DOCUMENT_POLL_INTERVAL_MS, useKnowledgeStore } from '@/stores/knowledge'
 import type { DocumentOut } from '@/types/models'
@@ -34,13 +29,13 @@ import { formatBytes } from '@/utils/format'
 const props = defineProps<{ kbId: string }>()
 
 const store = useKnowledgeStore()
-const message = useMessage()
+const toast = useToast()
 
 const polling = usePolling(() => store.refreshDocuments(), {
   intervalMs: DOCUMENT_POLL_INTERVAL_MS,
   onGiveUp: () => {
     // 連續失敗到放棄：畫面得說出來，否則進度會就這樣靜止在半路。
-    message.error('無法取得處理進度，請重新整理頁面')
+    toast.error('無法取得處理進度，請重新整理頁面')
   },
 })
 
@@ -66,7 +61,7 @@ watch(
     try {
       await store.fetchDocuments(kbId)
     } catch (error) {
-      message.error(errorMessage(error))
+      toast.error(errorMessage(error))
     }
   },
   { immediate: true },
@@ -89,9 +84,9 @@ watch(
 async function upload(file: File): Promise<void> {
   try {
     await store.uploadDocument(props.kbId, file)
-    message.success(`${file.name} 已收下，開始處理`)
+    toast.success(`${file.name} 已收下，開始處理`)
   } catch (error) {
-    message.error(describeUploadError(error))
+    toast.error(describeUploadError(error))
     throw error // 讓上傳區把這一列標成失敗
   }
 }
@@ -99,76 +94,20 @@ async function upload(file: File): Promise<void> {
 async function reingest(row: DocumentOut): Promise<void> {
   try {
     await store.reingestDocument(row.id)
-    message.success('已重新排入處理')
+    toast.success('已重新排入處理')
   } catch (error) {
-    message.error(errorMessage(error))
+    toast.error(errorMessage(error))
   }
 }
 
 async function remove(row: DocumentOut): Promise<void> {
   try {
     await store.deleteDocument(row.id)
-    message.success('已刪除')
+    toast.success('已刪除')
   } catch (error) {
-    message.error(errorMessage(error))
+    toast.error(errorMessage(error))
   }
 }
-
-const columns = computed<DataTableColumns<DocumentOut>>(() => [
-  {
-    title: '檔名',
-    key: 'filename',
-    render: (row) =>
-      h('div', [
-        h('div', row.filename),
-        // 版本只在重跑過之後才有意義（第 1 版是每份文件的預設）。
-        row.doc_version > 1
-          ? h(NText, { depth: 3, style: 'font-size: 0.8125rem' }, () => `第 ${row.doc_version} 版`)
-          : null,
-      ]),
-  },
-  {
-    title: '大小',
-    key: 'size_bytes',
-    width: 110,
-    render: (row) => formatBytes(row.size_bytes),
-  },
-  {
-    title: '狀態',
-    key: 'status',
-    width: 280,
-    render: (row) => h(EtlProgress, { status: row.status, error: row.error ?? null }),
-  },
-  {
-    title: '',
-    key: 'actions',
-    width: 180,
-    render: (row) =>
-      h(NSpace, { size: 'small' }, () => [
-        h(
-          NButton,
-          {
-            size: 'small',
-            quaternary: true,
-            // 後端在處理中的狀態會回 409（documents.py），這裡先把按鈕關掉——
-            // 兩邊的判定有時間差是正常的，真的撞上時錯誤訊息仍會顯示。
-            disabled: !canReingest(row.status),
-            onClick: () => void reingest(row),
-          },
-          () => '重新處理',
-        ),
-        h(
-          NPopconfirm,
-          { onPositiveClick: () => void remove(row) },
-          {
-            default: () => '刪除後，這份文件的內容與向量都會移除。確定嗎？',
-            trigger: () =>
-              h(NButton, { size: 'small', quaternary: true, type: 'error' }, () => '刪除'),
-          },
-        ),
-      ]),
-  },
-])
 
 const pendingCount = computed(
   () => store.documents.filter((document) => !isDocumentSettled(document.status)).length,
@@ -176,29 +115,131 @@ const pendingCount = computed(
 </script>
 
 <template>
-  <NCard :title="title">
-    <template #header-extra>
-      <NText v-if="pendingCount > 0" depth="3">處理中 {{ pendingCount }} 份</NText>
-    </template>
+  <section class="view ink-appear">
+    <header class="head">
+      <div class="head-titles">
+        <h1 class="page-title">
+          {{ title }}
+          <span class="title-seal" aria-hidden="true"></span>
+        </h1>
+        <BrushDivider class="head-divider" />
+        <p class="page-subtitle">江南煙雨後，書卷皆有靈</p>
+      </div>
+      <span v-if="pendingCount > 0" class="pending">處理中 {{ pendingCount }} 份</span>
+    </header>
 
-    <UploadDropzone :upload="upload" class="dropzone" />
+    <UploadDropzone :upload="upload" />
 
-    <NDataTable
-      :columns="columns"
-      :data="store.documents"
-      :loading="store.loadingDocuments"
-      :row-key="(row: DocumentOut) => row.id"
-      :bordered="false"
-    >
-      <template #empty>
-        <NEmpty description="這個知識庫還沒有文件。傳一份上來，處理完就能拿來問答。" />
-      </template>
-    </NDataTable>
-  </NCard>
+    <InkSpinner v-if="store.loadingDocuments" />
+    <InkEmpty
+      v-else-if="store.documents.length === 0"
+      description="這個知識庫還沒有文件。傳一份上來，處理完就能拿來問答。"
+    />
+    <table v-else class="ink-table">
+      <thead>
+        <tr>
+          <th>檔案名稱</th>
+          <th class="col-size">大小</th>
+          <th class="col-status">狀態</th>
+          <th class="col-actions"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="row in store.documents" :key="row.id">
+          <td>
+            <div class="name-cell">
+              <span>{{ row.filename }}</span>
+              <!-- 版本只在重跑過之後才有意義（第 1 版是每份文件的預設）。 -->
+              <span v-if="row.doc_version > 1" class="cell-secondary">第 {{ row.doc_version }} 版</span>
+            </div>
+          </td>
+          <td class="cell-secondary">{{ formatBytes(row.size_bytes) }}</td>
+          <td><EtlProgress :status="row.status" :error="row.error ?? null" /></td>
+          <td>
+            <div class="cell-actions">
+              <!-- 後端在處理中的狀態會回 409（documents.py），這裡先把按鈕關掉——
+                   兩邊的判定有時間差是正常的，真的撞上時錯誤訊息仍會顯示。 -->
+              <InkButton variant="quiet" size="small" :disabled="!canReingest(row.status)" @click="reingest(row)">
+                重新處理
+              </InkButton>
+              <InkConfirm
+                text="刪除後，這份文件的內容與向量都會移除。確定嗎？"
+                confirm-label="刪除"
+                @confirm="remove(row)"
+              >
+                <InkButton variant="danger" size="small">刪除</InkButton>
+              </InkConfirm>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
 </template>
 
 <style scoped>
-.dropzone {
-  margin-bottom: 16px;
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+.head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.head-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.page-title {
+  margin: 0;
+}
+
+/* 標題旁的落款小印 */
+.title-seal {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  background: var(--cinnabar);
+  border-radius: 2px;
+  transform: rotate(2deg);
+}
+
+.head-divider {
+  width: 280px;
+}
+
+.page-subtitle {
+  margin: 0;
+}
+
+.pending {
+  font-size: 0.8125rem;
+  color: var(--ink-4);
+  padding-bottom: 6px;
+}
+
+.name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.col-size {
+  width: 100px;
+}
+
+.col-status {
+  width: 260px;
+}
+
+.col-actions {
+  width: 190px;
 }
 </style>
