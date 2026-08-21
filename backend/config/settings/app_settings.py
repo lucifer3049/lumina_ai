@@ -198,6 +198,10 @@ class AppSettings(BaseSettings):
     # 延遲太短會變成空轉輪詢、太長會拉長大批上傳的完成時間。
     etl_max_concurrent_per_tenant: int = 2
     etl_fairness_requeue_seconds: int = 15
+    # 停滯門檻（補償掃描）：uploaded/chunked 停超過這個秒數視為訊息遺失、補送。
+    # 太短會把正常處理中的文件再送一次（冪等擋得住重算、擋不住浪費），太長則
+    # 使用者看著「上傳完沒下文」乾等。
+    etl_stuck_after_seconds: int = 600
 
     @property
     def redis_url(self) -> SecretStr:

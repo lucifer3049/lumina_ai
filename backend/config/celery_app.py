@@ -37,6 +37,7 @@ from core.tasks import (  # noqa: E402
     INGEST_DOCUMENT_TASK,
     MAINTAIN_PARTITIONS_TASK,
     RECONCILE_QUOTA_TASK,
+    RESCUE_STUCK_DOCUMENTS_TASK,
 )
 
 # worker 的日誌走與 API 同一條 pipeline（12 §1.1）。少了這行，task 內的 structlog
@@ -62,6 +63,7 @@ celery_app.conf.update(
         MAINTAIN_PARTITIONS_TASK: {"queue": "maintenance"},
         RECONCILE_QUOTA_TASK: {"queue": "maintenance"},
         CLEANUP_CHUNKS_TASK: {"queue": "maintenance"},
+        RESCUE_STUCK_DOCUMENTS_TASK: {"queue": "maintenance"},
     },
     # 序列化只收 JSON：pickle 能執行任意程式碼，而 broker 是一個「只要進得去就會被
     # 執行」的介面。任務參數因此一律是字串/數字（見 worker/etl_tasks.py 的 uuid 轉換）。
@@ -109,6 +111,12 @@ celery_app.conf.update(
         "cleanup-chunks-daily": {
             "task": CLEANUP_CHUNKS_TASK,
             "schedule": crontab(minute=0, hour=4),
+        },
+        # 補償掃描每 15 分鐘：停滯對使用者是「上傳完就沒下文」，等一天太久；
+        # 掃描本身是兩個帶索引的查詢，空手而回的成本近乎零。
+        "rescue-stuck-documents": {
+            "task": RESCUE_STUCK_DOCUMENTS_TASK,
+            "schedule": crontab(minute="*/15"),
         },
     },
 )

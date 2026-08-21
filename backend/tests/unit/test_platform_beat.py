@@ -17,7 +17,13 @@ import re
 from celery.schedules import crontab
 
 from config.celery_app import celery_app
-from core.tasks import CLEANUP_CHUNKS_TASK, MAINTAIN_PARTITIONS_TASK, RECONCILE_QUOTA_TASK
+from core.tasks import (
+    ANALYTICS_ROLLUP_TASK,
+    CLEANUP_CHUNKS_TASK,
+    MAINTAIN_PARTITIONS_TASK,
+    RECONCILE_QUOTA_TASK,
+    RESCUE_STUCK_DOCUMENTS_TASK,
+)
 from tests.unit.test_dev_launcher import _MAKEFILE  # 同一份 Makefile 快照
 
 
@@ -42,11 +48,27 @@ class TestBeatRegistration:
 
         assert schedule.day_of_month == set(range(1, 32))
 
+    def test_stuck_document_rescue_runs_sub_hourly(self) -> None:
+        """補償掃描（enqueue 是 best-effort，訊息會丟）。頻率要密於小時級：
+        停滯的文件對使用者是「上傳完就沒下文」，等一天才救太久。"""
+        schedule = _schedule_of(RESCUE_STUCK_DOCUMENTS_TASK)
+
+        assert len(schedule.minute) >= 2, "一小時內要跑不只一次"
+
+    def test_usage_rollup_runs_hourly(self) -> None:
+        """彙總每小時跑（2A-3）：Dashboard 上「今天」的數字最多晚一小時。
+        每天一次的話，使用者一整天看到的都是零。"""
+        schedule = _schedule_of(ANALYTICS_ROLLUP_TASK)
+
+        assert schedule.hour == set(range(24)), "每個小時都要跑"
+
     def test_the_tasks_are_registered_in_the_worker(self) -> None:
         import worker.maintenance_tasks  # noqa: F401
 
         assert RECONCILE_QUOTA_TASK in celery_app.tasks
         assert CLEANUP_CHUNKS_TASK in celery_app.tasks
+        assert RESCUE_STUCK_DOCUMENTS_TASK in celery_app.tasks
+        assert ANALYTICS_ROLLUP_TASK in celery_app.tasks
 
 
 class TestEveryBeatTaskHasAConsumer:

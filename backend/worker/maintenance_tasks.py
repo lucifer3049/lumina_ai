@@ -15,8 +15,14 @@ from typing import Any
 from celery import shared_task
 
 from config.logging import get_logger
-from core.tasks import CLEANUP_CHUNKS_TASK, MAINTAIN_PARTITIONS_TASK, RECONCILE_QUOTA_TASK
+from core.tasks import (
+    CLEANUP_CHUNKS_TASK,
+    MAINTAIN_PARTITIONS_TASK,
+    RECONCILE_QUOTA_TASK,
+    RESCUE_STUCK_DOCUMENTS_TASK,
+)
 from services.knowledge.cleanup import ChunkCleanupService
+from services.knowledge.rescue import StuckDocumentRescueService
 from services.platform.maintenance import ensure_future_partitions
 from services.platform.reconciliation import QuotaReconciliationService
 
@@ -49,3 +55,12 @@ def cleanup_chunks() -> dict[str, Any]:
     purged = ChunkCleanupService().purge_all()
     logger.info("chunk_cleanup_done", purged=purged)
     return {"purged": purged}
+
+
+@shared_task(name=RESCUE_STUCK_DOCUMENTS_TASK)
+def rescue_stuck_documents() -> dict[str, Any]:
+    """把停滯的文件補送回佇列（enqueue 是 best-effort，訊息會丟；2A-2b 收尾）。"""
+    rescued = StuckDocumentRescueService().rescue_all()
+    if rescued:
+        logger.info("stuck_rescue_done", rescued=rescued)
+    return {"rescued": rescued}

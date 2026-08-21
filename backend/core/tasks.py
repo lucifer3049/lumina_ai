@@ -27,6 +27,8 @@ MAINTAIN_PARTITIONS_TASK = "platform.maintain_partitions"
 # 2A-2b：quota 日結對帳（DB 蓋 Redis）與 superseded chunk 清理。
 RECONCILE_QUOTA_TASK = "platform.reconcile_quota"
 CLEANUP_CHUNKS_TASK = "knowledge.cleanup_chunks"
+# 停滯文件的補償掃描（enqueue 是 best-effort，訊息會丟；1B/1C 遺留的缺口）。
+RESCUE_STUCK_DOCUMENTS_TASK = "knowledge.rescue_stuck_documents"
 
 
 def warm_up() -> None:
