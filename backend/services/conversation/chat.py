@@ -28,7 +28,7 @@ import contextlib
 import time
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ai.gateway import AIGateway, build_gateway
@@ -55,6 +55,7 @@ from rag.retrievers.vector import RetrievedChunk
 from repositories.conversation import ConversationRepository, MessageRepository
 from services.ai.prompts import SYSTEM_RAG_PROMPT_KEY, PromptService
 from services.conversation.conversations import MessageView, message_view
+from services.platform.quota import QuotaExceededError, QuotaReservation, QuotaService
 from services.platform.usage import UsageEvent, UsageService
 from services.rag.retrieval import RetrievalService
 
@@ -91,6 +92,9 @@ class TurnStarted:
     kb_ids: tuple[uuid.UUID, ...] = ()
     # 2A-1：usage 落地要記「誰花的錢」，而第二段跑在背景、手上只有這個物件。
     user_id: uuid.UUID | None = None
+    # 2A-2a：第一段預留的額度，第二段收尾時 commit（實際 token）／release（並發位）。
+    token_reservation: QuotaReservation | None = None
+    stream_reservation: QuotaReservation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,12 +117,14 @@ class ChatService:
         retrieval: RetrievalService | None = None,
         gateway: AIGateway | None = None,
         usage: UsageService | None = None,
+        quota: QuotaService | None = None,
     ) -> None:
         self._conversations = conversations or ConversationRepository()
         self._messages = messages or MessageRepository()
         self._prompts = prompts or PromptService()
         self._retrieval = retrieval or RetrievalService()
         self._usage = usage or UsageService()
+        self._quota = quota or QuotaService()
         # Gateway 惰性建立，理由同 `RetrievalService`：`build_gateway()` 會解析 provider
         # 名稱，而缺金鑰時直接 raise——建構 service 本身不該因此失敗。
         self._gateway = gateway
@@ -149,6 +155,47 @@ class ChatService:
             # 空問題不該花一次 LLM 呼叫的錢，而且它一定是 client 的 bug。
             raise EmptyMessageError()
 
+        # 配額擋線（2A-2a）：在**建立任何訊息之前**。擋在後面的話，429 的請求會留下
+        # 「有問題、永遠沒有回答」的半個回合，而它還吃掉了一則訊息額度。
+        # 任何一關被擋就把前面預留的全部歸還——被擋的請求不得消耗額度。
+        reservations: list[QuotaReservation] = []
+        token_reservation: QuotaReservation | None = None
+        stream_reservation: QuotaReservation | None = None
+        try:
+            if r := self._quota.check_and_reserve(tenant_id, "messages_day", 1):
+                reservations.append(r)
+            token_reservation = self._quota.check_and_reserve(
+                tenant_id, "tokens_month", get_app_settings().quota_token_reserve_estimate
+            )
+            if token_reservation:
+                reservations.append(token_reservation)
+            stream_reservation = self._quota.check_and_reserve(tenant_id, "streams", 1)
+            if stream_reservation:
+                reservations.append(stream_reservation)
+        except QuotaExceededError:
+            for reservation in reservations:
+                self._quota.release(reservation)
+            raise
+
+        try:
+            turn = self._create_turn(tenant_id, user_id, conversation_id, question=question)
+        except Exception:
+            # DB 那一步失敗（對話不存在、寫入錯誤）不能吃掉額度。
+            for reservation in reservations:
+                self._quota.release(reservation)
+            raise
+        return replace(
+            turn, token_reservation=token_reservation, stream_reservation=stream_reservation
+        )
+
+    def _create_turn(
+        self,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        *,
+        question: str,
+    ) -> TurnStarted:
         with tenant_context(tenant_id), unit_of_work():
             conversation = self._conversations.get_by_id(conversation_id)
             if conversation is None or conversation.user_id != user_id:
@@ -183,7 +230,20 @@ class ChatService:
     # ── 第二段：生成（非同步，跑在背景）──────────────────────────
 
     async def generate(self, tenant_id: uuid.UUID, turn: TurnStarted) -> None:
-        """跑完一次生成，把每一段寫進緩衝區，最後收尾持久化。
+        """跑完一次生成（`_generate`），並保證並發位在**任何**路徑都被歸還。
+
+        finally 而不是散在各收尾點：generate 的出口有完成、中止、error、例外四種，
+        散寫漏掉哪一種，那一種就開始洩漏並發位——第 N 輪之後這個租戶永遠 429，
+        而那看起來像「配額壞了」。
+        """
+        try:
+            await self._generate(tenant_id, turn)
+        finally:
+            if turn.stream_reservation is not None:
+                await run_orm(self._quota.release, turn.stream_reservation)
+
+    async def _generate(self, tenant_id: uuid.UUID, turn: TurnStarted) -> None:
+        """把每一段寫進緩衝區，最後收尾持久化。
 
         **不往上拋任何例外**：這個函式跑在背景 task 裡，沒有人接得住——而使用者那邊
         看到的會是一則永遠停在「正在輸入」的訊息。所有失敗都轉成 `error` 事件加上一次
@@ -344,6 +404,20 @@ class ChatService:
                 prepared=prepared,
                 cause=type(exc).__name__,
             )
+
+    async def _settle_token_quota(self, turn: TurnStarted, usage: dict[str, Any]) -> None:
+        """token 額度的第二段（2A-2a）：有實際用量就 commit 校正，沒有就整筆歸還。
+
+        不歸還的話，provider 一個字都沒吐的失敗回合也吃掉 2000 的預留量——
+        連續幾次失敗之後，額度被「失敗」吃光，而 usage_logs 裡一筆帳都沒有。
+        """
+        if turn.token_reservation is None:
+            return
+        if usage:
+            actual = int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0)
+            await run_orm(self._quota.commit, turn.token_reservation, actual=actual)
+        else:
+            await run_orm(self._quota.release, turn.token_reservation)
 
     def require_readable(
         self,
@@ -523,6 +597,7 @@ class ChatService:
                     conversation_id=turn.conversation_id,
                 ),
             )
+        await self._settle_token_quota(turn, usage)
         await self._emit_citations(buffer, prepared, citations)
         await buffer.append(
             "done", {"message_id": str(turn.message_id), "finish_reason": finish_reason}
@@ -576,6 +651,7 @@ class ChatService:
             citations=citations,
             error={"code": str(code), "cause": cause} if cause else {"code": str(code)},
         )
+        await self._settle_token_quota(turn, usage)
         await self._emit_citations(buffer, prepared, citations)
         await buffer.append("error", {"code": str(code), "title": message, "retryable": retryable})
         logger.warning(

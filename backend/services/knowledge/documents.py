@@ -30,6 +30,7 @@ from repositories.knowledge import (
     KnowledgeBaseRepository,
 )
 from services.knowledge.uploads import detect_media_type, ensure_within_limit, sha256_of
+from services.platform.quota import QuotaService
 
 logger = get_logger(__name__)
 
@@ -77,10 +78,12 @@ class DocumentService:
         documents: DocumentRepository | None = None,
         knowledge_bases: KnowledgeBaseRepository | None = None,
         chunks: ChunkRepository | None = None,
+        quota: QuotaService | None = None,
     ) -> None:
         self._documents = documents or DocumentRepository()
         self._knowledge_bases = knowledge_bases or KnowledgeBaseRepository()
         self._chunks = chunks or ChunkRepository()
+        self._quota = quota or QuotaService()
 
     def list_for_kb(self, tenant_id: uuid.UUID, kb_id: uuid.UUID) -> list[DocumentView]:
         with tenant_context(tenant_id), unit_of_work():
@@ -112,6 +115,12 @@ class DocumentService:
         原本的錯誤蓋掉（使用者要看到的是「上傳失敗」，不是「刪除暫存檔失敗」）。
         """
         ensure_within_limit(len(content))
+        # 配額擋線（2A-2a），在碰物件儲存之前：文件數與儲存量都是 DB 聚合的存量
+        # 檢查（services/platform/quota.py），被擋的請求什麼都不會留下。
+        # 32MB 的 ensure_within_limit 與這裡是兩件事：那是單請求的解析資源保護
+        # （413、永遠適用），這是租戶的商務額度（429、可談可調）。
+        self._quota.check_and_reserve(tenant_id, "documents", 1)
+        self._quota.check_and_reserve(tenant_id, "storage_bytes", len(content))
         media_type = detect_media_type(content, filename=filename)
         content_hash = sha256_of(content)
         document_id = uuid.uuid4()

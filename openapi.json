@@ -599,6 +599,78 @@
         "title": "ProblemDetail",
         "type": "object"
       },
+      "QuotaItemOut": {
+        "description": "一種資源的即時額度（2A-2a）。`limit`／`remaining` 為 null＝不限制，\n`resets_at` 為 null＝存量或 gauge（沒有週期）。",
+        "properties": {
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit"
+          },
+          "remaining": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remaining"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resets At"
+          },
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          },
+          "used": {
+            "title": "Used",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "resource",
+          "limit",
+          "used",
+          "remaining",
+          "resets_at"
+        ],
+        "title": "QuotaItemOut",
+        "type": "object"
+      },
+      "QuotaOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/QuotaItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "QuotaOut",
+        "type": "object"
+      },
       "RagQueryIn": {
         "properties": {
           "kb_id": {
@@ -2904,6 +2976,68 @@
           }
         },
         "summary": "Update Current",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
+    "/api/v1/tenants/current/quota": {
+      "get": {
+        "description": "配額與用量的即時狀態（09 §2.2）——使用者在被 429 之前該有地方看到「快用完了」。",
+        "operationId": "tenants_get_current_quota",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "請求格式錯誤"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "不存在或無權可見"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "語意驗證失敗"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "內部錯誤"
+          }
+        },
+        "summary": "Get Current Quota",
         "tags": [
           "tenants"
         ]

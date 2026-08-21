@@ -19,9 +19,8 @@
 
 from __future__ import annotations
 
-from services.platform.quota import RESOURCES, resolve_limits
-
 from config.settings.app_settings import get_app_settings
+from services.platform.quota import RESOURCES, resolve_limits
 
 
 class TestDefaults:

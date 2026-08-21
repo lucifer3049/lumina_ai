@@ -181,6 +181,18 @@ class AppSettings(BaseSettings):
     # 從第一天起全是 None，Analytics 接上時像「成本功能沒做」。
     ai_model_prices: str = "mock-chat:0.15/0.60;mock-embedding:0.02/0"
 
+    # 配額（04 §8.1，2A-2a）。plan 預設值，格式同價目表的 `resource:value;...`；
+    # 沒列的資源＝不限制。租戶覆寫住 `tenant.settings["quota"]`（2C 設定畫面那層），
+    # 解析在 `services/platform/quota.py`。起始值：tokens_month 的一百萬對齊
+    # 09 §1.3 的錯誤範例；其餘是保守猜測，等真實用量數據再調。
+    quota_plan_free: str = (
+        "tokens_month:1000000;messages_day:200;documents:100;storage_bytes:1073741824;streams:2"
+    )
+    # chat 開場對 token/月 的預留量（reserve/commit 的 reserve 值）：實際用量要到
+    # 生成結束才知道，先按這個數擋線、結束時校正為實際值。太小＝併發下集體衝線，
+    # 太大＝月底「還剩一點額度」的回合被過度擋下。
+    quota_token_reserve_estimate: int = 2000
+
     @property
     def redis_url(self) -> SecretStr:
         """`redis://:pw@host:port/db`；密碼經 percent-encoding，特殊字元不會拆壞 URL。"""

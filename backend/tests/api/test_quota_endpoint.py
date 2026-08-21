@@ -16,12 +16,12 @@ from typing import Any
 
 import httpx
 import pytest
-from services.platform.quota import RESOURCES
 
 from api.main import create_app
 from common.passwords import hash_password
 from core.db import run_orm
 from core.redis import get_redis, tenant_key
+from services.platform.quota import RESOURCES
 from tests.conftest import TENANT_A
 from tests.factories.identity import make_tenant, make_user, make_user_role, tenant_scope
 from tests.seed import ensure_identity_seed

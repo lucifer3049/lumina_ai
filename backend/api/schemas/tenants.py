@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -23,3 +24,18 @@ class TenantUpdateIn(BaseModel):
     """
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class QuotaItemOut(BaseModel):
+    """一種資源的即時額度（2A-2a）。`limit`／`remaining` 為 null＝不限制，
+    `resets_at` 為 null＝存量或 gauge（沒有週期）。"""
+
+    resource: str
+    limit: int | None
+    used: int
+    remaining: int | None
+    resets_at: datetime | None
+
+
+class QuotaOut(BaseModel):
+    items: list[QuotaItemOut]

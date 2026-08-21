@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypedDict
 
-from django.db import connection
+from django.db import connection, models
 from django.utils import timezone
 from pgvector import HalfVector
 from pgvector.django import CosineDistance
@@ -89,6 +89,19 @@ class DocumentRepository(SoftDeletableRepository[Document]):
 
     def count_for_kb(self, kb_id: uuid.UUID) -> int:
         return self.get_queryset().filter(kb_id=kb_id).count()
+
+    # ── 配額的存量聚合（04 §8.1，2A-2a）────────────────────────
+    #
+    # 文件數與儲存量的額度依據就是這兩個查詢——**不是 Redis 計數器**：存量必須活得
+    # 比 Redis 久，且刪除要立即釋放。`get_queryset()` 已排除軟刪除（額度放的是使用
+    # 者能控制的邏輯容量；物件儲存的實體位元組等清理 job）。
+
+    def active_count(self) -> int:
+        return self.get_queryset().count()
+
+    def active_size_bytes(self) -> int:
+        total = self.get_queryset().aggregate(total=models.Sum("size_bytes"))["total"]
+        return int(total or 0)
 
     def find_by_content_hash(self, *, kb_id: uuid.UUID, content_hash: str) -> Document | None:
         """上傳前的去重查詢。

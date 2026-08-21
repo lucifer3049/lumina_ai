@@ -342,6 +342,26 @@ export interface paths {
         patch: operations["tenants_update_current"];
         trace?: never;
     };
+    "/api/v1/tenants/current/quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Current Quota
+         * @description 配額與用量的即時狀態（09 §2.2）——使用者在被 429 之前該有地方看到「快用完了」。
+         */
+        get: operations["tenants_get_current_quota"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -690,6 +710,28 @@ export interface components {
              * @description 錯誤類型的 URI reference；無額外語意時為 about:blank
              */
             type: string;
+        };
+        /**
+         * QuotaItemOut
+         * @description 一種資源的即時額度（2A-2a）。`limit`／`remaining` 為 null＝不限制，
+         *     `resets_at` 為 null＝存量或 gauge（沒有週期）。
+         */
+        QuotaItemOut: {
+            /** Limit */
+            limit: number | null;
+            /** Remaining */
+            remaining: number | null;
+            /** Resets At */
+            resets_at: string | null;
+            /** Resource */
+            resource: string;
+            /** Used */
+            used: number;
+        };
+        /** QuotaOut */
+        QuotaOut: {
+            /** Items */
+            items: components["schemas"]["QuotaItemOut"][];
         };
         /** RagQueryIn */
         RagQueryIn: {
@@ -2360,6 +2402,62 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TenantOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    tenants_get_current_quota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotaOut"];
                 };
             };
             /** @description 請求格式錯誤 */

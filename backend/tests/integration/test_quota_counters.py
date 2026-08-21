@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from typing import cast
 
 import pytest
-from services.platform.quota import QuotaExceededError, QuotaService
 
 from core.redis import get_redis, tenant_key
+from services.platform.quota import QuotaExceededError, QuotaService
 from tests.conftest import TENANT_A, TENANT_B
 from tests.factories.identity import make_tenant, tenant_scope
 
@@ -159,7 +160,7 @@ class TestKeyHygiene:
         keys = list(client.scan_iter(match=tenant_key(TENANT_A, "quota", "*")))
         assert len(keys) >= 3, "quota 計數器必須住在 t:{tenant}:quota: 之下"
         for key in keys:
-            assert client.ttl(key) > 0, f"{key!r} 沒有 TTL"
+            assert cast("int", client.ttl(key)) > 0, f"{key!r} 沒有 TTL"
 
     def test_day_and_month_periods_use_separate_keys(self, tenants: None) -> None:
         """日與月的計數各自歸零——共用一把 key 的話，其中一種的語意一定是錯的。"""
