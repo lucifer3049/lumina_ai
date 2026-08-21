@@ -66,6 +66,9 @@ function locationOf(citation: CitationItem): string {
   flex-direction: column;
   gap: 16px;
   box-sizing: border-box;
+  /* 與對話欄同高（父層 stretch），來源多時在紙內捲，不把畫面撐長 */
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .head {

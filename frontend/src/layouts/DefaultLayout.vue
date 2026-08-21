@@ -111,10 +111,12 @@ async function onLogout(): Promise<void> {
 </template>
 
 <style scoped>
+/* height 而非 min-height：對話頁要把「訊息捲動、輸入框釘底」做在頁內，
+   高度鏈（layout → main → content → 頁面）必須從這裡就是定值。 */
 .default-layout {
   position: relative;
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
   overflow: hidden;
 }
 
@@ -243,10 +245,15 @@ async function onLogout(): Promise<void> {
   color: var(--ink-1);
 }
 
+/* 長頁面在這一層捲（sidebar 與 header 釘住不動）；flex column 讓
+   要吃滿高度的頁（對話）可以自己宣告 flex: 1。 */
 .content {
   flex: 1;
   min-height: 0;
   padding: 40px 56px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 @media (max-width: 900px) {

@@ -136,51 +136,71 @@ async function retry(): Promise<void> {
 <template>
   <div class="conversation ink-appear">
     <section class="thread">
-      <header class="head">
+      <header class="head col">
         <h1 class="page-title">{{ title }}</h1>
         <BrushDivider class="head-divider" />
       </header>
 
       <div ref="scroller" class="scroller">
-        <InkSpinner v-if="store.loadingMessages" text="載入中……" />
+        <div class="scroller-inner col">
+          <InkSpinner v-if="store.loadingMessages" text="載入中……" />
 
-        <MessageBubble
-          v-for="item in store.messages"
-          :key="item.id"
-          :role="item.role"
-          :content="item.content"
-          :citations="(item.citations as CitationItem[]) ?? []"
-          @citation-click="activeCitation = $event"
-        />
+          <!-- 空對話不能是一片虛空：視線得有地方落。題句居中，落在輸入框正上方。 -->
+          <div
+            v-else-if="store.messages.length === 0 && store.streaming === null"
+            class="empty-state"
+          >
+            <p class="empty-greeting">以文會友，答疑解惑</p>
+            <p class="empty-hint">問一句吧——回答引用知識庫時，來源會攤在右側的箋紙上。</p>
+          </div>
 
-        <MessageBubble
-          v-if="store.streaming !== null"
-          role="assistant"
-          :content="store.streaming.text"
-          :citations="store.streaming.citations"
-          :streaming="store.streaming.status !== 'error'"
-          @citation-click="activeCitation = $event"
-        />
+          <MessageBubble
+            v-for="item in store.messages"
+            :key="item.id"
+            :role="item.role"
+            :content="item.content"
+            :citations="(item.citations as CitationItem[]) ?? []"
+            @citation-click="activeCitation = $event"
+          />
 
-        <div v-if="store.streaming?.status === 'error'" class="failure" role="alert">
-          <span class="failure-title">{{ store.streaming.error?.title ?? '生成失敗' }}</span>
-          <InkButton v-if="store.streaming.error?.retryable" size="small" @click="retry">重試</InkButton>
+          <MessageBubble
+            v-if="store.streaming !== null"
+            role="assistant"
+            :content="store.streaming.text"
+            :citations="store.streaming.citations"
+            :streaming="store.streaming.status !== 'error'"
+            @citation-click="activeCitation = $event"
+          />
+
+          <div v-if="store.streaming?.status === 'error'" class="failure" role="alert">
+            <span class="failure-title">{{ store.streaming.error?.title ?? '生成失敗' }}</span>
+            <InkButton v-if="store.streaming.error?.retryable" size="small" @click="retry">重試</InkButton>
+          </div>
         </div>
       </div>
 
-      <ChatComposer :generating="store.isGenerating" @send="send" @stop="stop" />
+      <ChatComposer class="col" :generating="store.isGenerating" @send="send" @stop="stop" />
     </section>
 
-    <CitationPanel :citations="citations" :active-index="activeCitation" />
+    <!-- 有引用才攤開箋紙：氣泡自帶「未引用」提示，空面板只是第三塊漂浮物。 -->
+    <Transition name="panel">
+      <CitationPanel
+        v-if="citations.length > 0"
+        :citations="citations"
+        :active-index="activeCitation"
+      />
+    </Transition>
   </div>
 </template>
 
 <style scoped>
+/* stretch 而非 flex-start：箋紙與對話欄同高，才是一幅畫而不是兩張卡。 */
 .conversation {
   display: flex;
-  gap: 34px;
-  align-items: flex-start;
-  height: 100%;
+  gap: 30px;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
 }
 
 .thread {
@@ -189,6 +209,15 @@ async function retry(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+/* 單一閱讀軸：標題、訊息、輸入框全落在同一條 50rem 的欄上——
+   三塊各對各的邊，就是畫面「散成三塊」的根源。 */
+.col {
+  width: 100%;
+  max-width: 50rem;
+  margin-inline: auto;
+  box-sizing: border-box;
 }
 
 .head {
@@ -206,13 +235,72 @@ async function retry(): Promise<void> {
   width: 210px;
 }
 
+/* flex: 1 取代寫死的 58vh：訊息區吃掉剩餘高度，輸入框自然釘底。 */
 .scroller {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+/* min-height: 100% 讓空狀態能用 margin: auto 垂直置中。 */
+.scroller-inner {
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  height: 58vh;
-  overflow-y: auto;
-  padding-right: 8px;
+  box-sizing: border-box;
+}
+
+.empty-state {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 24px;
+  text-align: center;
+}
+
+.empty-greeting {
+  margin: 0;
+  font-family: var(--font-kai);
+  font-size: 1.375rem;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em; /* 抵銷末字後的字距，視覺才真正置中 */
+  color: var(--ink-3);
+}
+
+.empty-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--ink-4);
+}
+
+.panel-enter-active,
+.panel-leave-active {
+  transition:
+    opacity var(--dur-slow) var(--ease-ink),
+    transform var(--dur-slow) var(--ease-ink);
+}
+
+.panel-enter-from,
+.panel-leave-to {
+  opacity: 0;
+  transform: translateX(14px);
+}
+
+@media (max-width: 1024px) {
+  .conversation {
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* 窄幅時箋紙移到下方，高度封頂、自己捲，不把輸入框擠出畫面 */
+  .conversation > :deep(.panel) {
+    width: 100%;
+    max-height: 36vh;
+  }
 }
 
 .failure {
