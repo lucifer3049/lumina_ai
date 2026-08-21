@@ -169,6 +169,18 @@ class AppSettings(BaseSettings):
     chunk_target_tokens: int = 512
     chunk_overlap_tokens: int = 64
 
+    # 模型價目表（05 §3.3、2A-1）。格式 `model:prompt/completion;...`，單位
+    # USD / 1M tokens（業界報價單位，抄價目表不必換算）。不用 JSON——同
+    # `ai_chat_fallback_models` 的理由。解析在 `services/platform/pricing.py`
+    # （壞條目只失去那一條，讀取容忍）。
+    #
+    # **範圍偏離紀錄（2026-08-21 人類核可）**：05 §3.3 的落點是
+    # `model_configs.pricing`，但那張表連同 Model 管理模組（04 §5.1）都還不存在；
+    # 先住這裡，model_configs 落地時搬儲存位置、`compute_cost` 介面不變。
+    # mock 兩個模型 day-1 就有價（數字是隨意起始點）：沒有的話開發環境的 cost
+    # 從第一天起全是 None，Analytics 接上時像「成本功能沒做」。
+    ai_model_prices: str = "mock-chat:0.15/0.60;mock-embedding:0.02/0"
+
     @property
     def redis_url(self) -> SecretStr:
         """`redis://:pw@host:port/db`；密碼經 percent-encoding，特殊字元不會拆壞 URL。"""

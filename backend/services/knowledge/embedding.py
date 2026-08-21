@@ -42,6 +42,7 @@ from repositories.knowledge import (
     KnowledgeBaseRepository,
 )
 from services.knowledge.failures import error_payload
+from services.platform.usage import UsageEvent, UsageService
 
 logger = get_logger(__name__)
 
@@ -99,6 +100,7 @@ class EmbeddingService:
         chunks: ChunkRepository | None = None,
         embeddings: EmbeddingRepository | None = None,
         jobs: EtlJobRepository | None = None,
+        usage: UsageService | None = None,
     ) -> None:
         # Gateway 惰性建立：`build_gateway()` 會讀設定並解析 provider 名稱，而未實作的
         # provider 會直接 raise。建構 service 本身不該因此失敗——mark_retries_exhausted
@@ -109,6 +111,7 @@ class EmbeddingService:
         self._chunks = chunks or ChunkRepository()
         self._embeddings = embeddings or EmbeddingRepository()
         self._jobs = jobs or EtlJobRepository()
+        self._usage = usage or UsageService()
 
     @property
     def gateway(self) -> AIGateway:
@@ -145,7 +148,7 @@ class EmbeddingService:
             self._documents.set_status(target.document_id, status=STATUS_EMBEDDING, error=None)
 
         try:
-            embedded, tokens, batches = self._embed_pending(tenant_id, target)
+            embedded, tokens, batches, reported_model = self._embed_pending(tenant_id, target)
         except ProviderError as exc:
             if exc.retryable:
                 # 429／5xx／逾時：稍後再送就會成功。往上拋讓 Celery 走 08 §6 的退避。
@@ -161,6 +164,21 @@ class EmbeddingService:
 
         stats = {"embedded_count": embedded, "prompt_tokens": tokens, "batches": batches}
         self._finish(tenant_id, job_id, stats=stats)
+
+        # usage_logs 落地（2A-1）。**只在有消費時記**：冪等重跑（task 重試、手動重推）
+        # 沒送任何東西去算就沒有列——記 0 會灌水呼叫次數，而重試不是使用者的行為。
+        # record 不往外拋（旁路原則）；已知縮水：中途失敗的批次其 tokens 不會入帳
+        # （成功批次的向量留在 DB、重跑只補缺），2A-2 對帳時評估要不要逐批記。
+        if tokens > 0:
+            self._usage.record(
+                tenant_id,
+                UsageEvent(
+                    category="embedding",
+                    model=reported_model,
+                    prompt_tokens=tokens,
+                    request_id=f"embed:{target.document_id}:v{target.doc_version}",
+                ),
+            )
 
         with tenant_context(tenant_id), unit_of_work():
             self._documents.set_status(target.document_id, status=STATUS_READY, error=None)
@@ -208,8 +226,8 @@ class EmbeddingService:
 
     # ── 編排 ────────────────────────────────────────────────
 
-    def _embed_pending(self, tenant_id: uuid.UUID, target: _Target) -> tuple[int, int, int]:
-        """算完所有還沒有向量的 chunk；回傳 (筆數, token 數, 批次數)。
+    def _embed_pending(self, tenant_id: uuid.UUID, target: _Target) -> tuple[int, int, int, str]:
+        """算完所有還沒有向量的 chunk；回傳 (筆數, token 數, 批次數, provider 回報的 model)。
 
         每一批各自寫入（見模組 docstring 的第 2 條）：中途失敗時前面幾批留在 DB，
         重跑只補剩下的。
@@ -219,11 +237,12 @@ class EmbeddingService:
             # 空批次不打 provider（Gateway 也會擋，這裡先擋是為了連 job 都不必轉一圈）。
             # 零 chunk 的文件（空檔、只有圖的 PDF）是**成功**，不是失敗——標成 failed
             # 的話使用者會看到一個沒有東西可修的錯誤。
-            return 0, 0, 0
+            return 0, 0, 0, target.model
 
         embedded = 0
         tokens = 0
         batches = 0
+        reported_model = target.model
         for start in range(0, len(pending), EMBED_BATCH_SIZE):
             batch = pending[start : start + EMBED_BATCH_SIZE]
             result = self.gateway.embed([content for _, content in batch], model=target.model)
@@ -243,8 +262,10 @@ class EmbeddingService:
             embedded += len(rows)
             tokens += result.usage.total_tokens
             batches += 1
+            # 計價按實際被用到的那一個（同 upsert 記 result.model 的理由）。
+            reported_model = result.model or reported_model
 
-        return embedded, tokens, batches
+        return embedded, tokens, batches, reported_model
 
     def _pending_chunks(self, tenant_id: uuid.UUID, target: _Target) -> list[tuple[uuid.UUID, str]]:
         """還沒有向量的 chunk（id 與內容），**只含目前版本且未 superseded 的**。

@@ -26,7 +26,6 @@ from typing import Any
 
 import httpx
 import pytest
-from services.platform.pricing import compute_cost
 
 from ai.gateway.chat import (
     ChatRequest,
@@ -42,6 +41,7 @@ from apps.platform.models import UsageLog
 from common.passwords import hash_password
 from core.db import run_orm
 from core.redis import get_redis, tenant_key
+from services.platform.pricing import compute_cost
 from tests.conftest import TENANT_A
 from tests.factories.conversation import make_conversation
 from tests.factories.identity import make_tenant, make_user, make_user_role, tenant_scope

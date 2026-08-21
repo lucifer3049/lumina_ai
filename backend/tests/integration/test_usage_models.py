@@ -15,6 +15,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import cast
 
 import pytest
 from django.db import connection
@@ -33,7 +34,7 @@ MIN_MONTHS_AHEAD = 3
 def _one(sql: str) -> tuple[object, ...] | None:
     with connection.cursor() as cursor:
         cursor.execute(sql)
-        return cursor.fetchone()
+        return cast("tuple[object, ...] | None", cursor.fetchone())
 
 
 class TestPartitioning:
@@ -64,7 +65,7 @@ class TestPartitioning:
         )
 
         assert row is not None
-        assert set(row[0]) == {"id", "created_at"}
+        assert set(cast("list[str]", row[0])) == {"id", "created_at"}
 
     def test_there_is_no_default_partition(self) -> None:
         """有 DEFAULT 的話，超出範圍的資料安靜地全部擠進去，分區等於沒有作用；
@@ -100,9 +101,7 @@ class TestPartitioning:
         assert row is not None and row[0] is not None, "一個分區都沒有"
         now = datetime.now(UTC)
         months_ahead = row[0] - (now.year * 12 + now.month)
-        assert months_ahead >= MIN_MONTHS_AHEAD, (
-            f"未來分區只剩 {months_ahead} 個月，該建下一批了"
-        )
+        assert months_ahead >= MIN_MONTHS_AHEAD, f"未來分區只剩 {months_ahead} 個月，該建下一批了"
 
 
 class TestIndexes:
@@ -110,9 +109,7 @@ class TestIndexes:
         """05 §4：(tenant_id, created_at) 給對帳與統計、(request_id) 給追蹤。
         建在父表上才會傳播到之後新建的分區。"""
         with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT indexdef FROM pg_indexes WHERE tablename = 'platform_usagelog'"
-            )
+            cursor.execute("SELECT indexdef FROM pg_indexes WHERE tablename = 'platform_usagelog'")
             defs = [row[0] for row in cursor.fetchall()]
 
         assert any("tenant_id, created_at" in d for d in defs), defs

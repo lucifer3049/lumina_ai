@@ -55,6 +55,7 @@ from rag.retrievers.vector import RetrievedChunk
 from repositories.conversation import ConversationRepository, MessageRepository
 from services.ai.prompts import SYSTEM_RAG_PROMPT_KEY, PromptService
 from services.conversation.conversations import MessageView, message_view
+from services.platform.usage import UsageEvent, UsageService
 from services.rag.retrieval import RetrievalService
 
 logger = get_logger(__name__)
@@ -88,6 +89,8 @@ class TurnStarted:
     model: str
     question: str = ""
     kb_ids: tuple[uuid.UUID, ...] = ()
+    # 2A-1：usage 落地要記「誰花的錢」，而第二段跑在背景、手上只有這個物件。
+    user_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,11 +112,13 @@ class ChatService:
         prompts: PromptService | None = None,
         retrieval: RetrievalService | None = None,
         gateway: AIGateway | None = None,
+        usage: UsageService | None = None,
     ) -> None:
         self._conversations = conversations or ConversationRepository()
         self._messages = messages or MessageRepository()
         self._prompts = prompts or PromptService()
         self._retrieval = retrieval or RetrievalService()
+        self._usage = usage or UsageService()
         # Gateway 惰性建立，理由同 `RetrievalService`：`build_gateway()` 會解析 provider
         # 名稱，而缺金鑰時直接 raise——建構 service 本身不該因此失敗。
         self._gateway = gateway
@@ -172,6 +177,7 @@ class ChatService:
             model=get_app_settings().ai_chat_model,
             question=question,
             kb_ids=kb_ids,
+            user_id=user_id,
         )
 
     # ── 第二段：生成（非同步，跑在背景）──────────────────────────
@@ -498,6 +504,25 @@ class ChatService:
             prompt_version=prompt_version,
             citations=citations,
         )
+        # usage_logs 落地（2A-1）。在 `done` **之前**：done 是前端停止讀取的訊號，也是
+        # 測試查帳的時點，排在它後面的話「串流結束了、帳還沒到」是常態而不是異常。
+        # record 不往外拋（旁路原則，services/platform/usage.py），且自帶交易——
+        # 不會污染 _persist 已經收尾的寫入。中止的回合 usage 可能是空的（provider
+        # 還沒回報就停了），那時沒有數字可記，跳過而不是記一列 0。
+        if usage:
+            await run_orm(
+                self._usage.record,
+                tenant_id,
+                UsageEvent(
+                    category="llm",
+                    model=model,
+                    prompt_tokens=int(usage.get("prompt_tokens") or 0),
+                    completion_tokens=int(usage.get("completion_tokens") or 0),
+                    request_id=str(turn.message_id),
+                    user_id=turn.user_id,
+                    conversation_id=turn.conversation_id,
+                ),
+            )
         await self._emit_citations(buffer, prepared, citations)
         await buffer.append(
             "done", {"message_id": str(turn.message_id), "finish_reason": finish_reason}

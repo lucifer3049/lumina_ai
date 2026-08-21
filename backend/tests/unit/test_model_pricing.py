@@ -23,9 +23,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from services.platform.pricing import ModelPrice, compute_cost, parse_model_prices
-
 from config.settings.app_settings import get_app_settings
+from services.platform.pricing import ModelPrice, compute_cost, parse_model_prices
 
 
 class TestDefaults:

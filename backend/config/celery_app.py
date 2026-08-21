@@ -18,6 +18,7 @@ import os
 
 import django
 from celery import Celery
+from celery.schedules import crontab
 
 # **`django.setup()` 必須在 import 期完成**，理由與 `config/asgi.py` 相同：worker
 # 啟動時會 import task → service → repository → model，而 Django model 在 import
@@ -30,7 +31,11 @@ django.setup()
 
 from config.logging import configure_logging  # noqa: E402
 from config.settings.app_settings import get_app_settings  # noqa: E402
-from core.tasks import EMBED_DOCUMENT_TASK, INGEST_DOCUMENT_TASK  # noqa: E402
+from core.tasks import (  # noqa: E402
+    EMBED_DOCUMENT_TASK,
+    INGEST_DOCUMENT_TASK,
+    MAINTAIN_PARTITIONS_TASK,
+)
 
 # worker 的日誌走與 API 同一條 pipeline（12 §1.1）。少了這行，task 內的 structlog
 # 事件會退回 stdlib 預設：純文字、沒有 tenant_id、WARNING 以下全部消失。
@@ -77,6 +82,16 @@ celery_app.conf.update(
     broker_transport_options={"socket_timeout": 2.0, "socket_connect_timeout": 2.0},
     timezone="UTC",
     enable_utc=True,
+    # Beat 排程（2A-1 起）。目前只有分區維護；日結對帳（2A-2）、統計彙總（2A-3）
+    # 依序加入。**日期釘「每月 1 日」**：排 29–31 日在小月不存在，排程會安靜地
+    # 整月不跑（tests/unit/test_partition_beat.py 釘住）。
+    beat_schedule={
+        "maintain-partitions-monthly": {
+            "task": MAINTAIN_PARTITIONS_TASK,
+            # 03:00 UTC：避開整點高峰與備份窗（12 §4.1 的每日 02:00 全量備份）。
+            "schedule": crontab(minute=0, hour=3, day_of_month="1"),
+        },
+    },
 )
 
 # task 模組**只在 worker 啟動時**才被 import（`force=False` 把它掛在 worker 的
@@ -91,3 +106,4 @@ celery_app.conf.update(
 # 「那條佇列的訊息堆著沒人處理」——worker 啟動成功、log 乾淨，只是它不認得那個任務名。
 celery_app.autodiscover_tasks(["worker"], related_name="etl_tasks")
 celery_app.autodiscover_tasks(["worker"], related_name="embedding_tasks")
+celery_app.autodiscover_tasks(["worker"], related_name="maintenance_tasks")

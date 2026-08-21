@@ -20,6 +20,9 @@ INGEST_DOCUMENT_TASK = "etl.ingest_document"
 # worker/embedding_tasks.py 同理。**佇列與 ETL 分開**（06 §2 的 Q2）：兩者的資源特性
 # 相反，ETL 吃 CPU 與記憶體，embedding 吃的是外部 API 的等待時間。
 EMBED_DOCUMENT_TASK = "embedding.embed_document"
+# worker/maintenance_tasks.py（2A-1）：Beat 每月補分區（05 §5.2）。走 default 佇列
+# ——它一個月跑一次、幾毫秒完事，不值得一條專屬佇列。
+MAINTAIN_PARTITIONS_TASK = "platform.maintain_partitions"
 
 
 def warm_up() -> None:

@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import pytest
 from django.db import connection
+
 from services.platform.maintenance import PARTITIONED_TABLES, ensure_future_partitions
 
-pytestmark = pytest.mark.django_db(transaction=True)
+# admin：分區維護走 owner 連線（應用角色沒有 DDL 權限，見 repositories/partitions.py）。
+pytestmark = pytest.mark.django_db(transaction=True, databases=["default", "admin"])
 
 # 遠到 migration 的 12 個月預建絕對蓋不到，函式才有東西可建。
 _FAR_AHEAD = 15
@@ -45,17 +47,25 @@ class TestRegistry:
         assert set(PARTITIONED_TABLES) >= {"conversation_message", "platform_usagelog"}
 
 
-class TestEnsureFuturePartitions:
-    def test_it_creates_partitions_for_every_registered_table(self) -> None:
-        created = ensure_future_partitions(months_ahead=_FAR_AHEAD)
+def _month_label(months_from_now: int) -> str:
+    from datetime import UTC, datetime
 
-        assert created, "遠期分區應該還不存在，卻一個都沒建"
+    now = datetime.now(UTC)
+    total = now.year * 12 + (now.month - 1) + months_from_now
+    return f"{total // 12:04d}_{total % 12 + 1:02d}"
+
+
+class TestEnsureFuturePartitions:
+    def test_every_registered_table_ends_up_covered(self) -> None:
+        """斷言**狀態**（跑完之後涵蓋到第 N 個月）而不是增量（這次建了幾個）：
+        同一個 worker 的 DB 是跨測試共用的，增量斷言會被執行順序左右。"""
+        ensure_future_partitions(months_ahead=_FAR_AHEAD)
+
+        expected_suffix = _month_label(_FAR_AHEAD)
         for table in PARTITIONED_TABLES:
-            assert any(name.startswith(table) for name in created), (
-                f"{table} 沒有建出任何新分區：{created}"
+            assert f"{table}_{expected_suffix}" in _partitions_of(table), (
+                f"{table} 沒有涵蓋到 {_FAR_AHEAD} 個月後"
             )
-            for name in created:
-                assert name in _partitions_of(table) or not name.startswith(table)
 
     def test_new_partitions_are_created_with_rls(self) -> None:
         created = ensure_future_partitions(months_ahead=_FAR_AHEAD)
