@@ -20,9 +20,13 @@ INGEST_DOCUMENT_TASK = "etl.ingest_document"
 # worker/embedding_tasks.py 同理。**佇列與 ETL 分開**（06 §2 的 Q2）：兩者的資源特性
 # 相反，ETL 吃 CPU 與記憶體，embedding 吃的是外部 API 的等待時間。
 EMBED_DOCUMENT_TASK = "embedding.embed_document"
-# worker/maintenance_tasks.py（2A-1）：Beat 每月補分區（05 §5.2）。走 default 佇列
-# ——它一個月跑一次、幾毫秒完事，不值得一條專屬佇列。
+# worker/maintenance_tasks.py 的三個維運任務。**路由到 maintenance 佇列**
+# （config/celery_app.py），而 worker 必須收聽它——2A-2b 之前 maintain_partitions
+# 沒有路由、落在沒有人聽的 default 佇列（tests/unit/test_platform_beat.py 釘住）。
 MAINTAIN_PARTITIONS_TASK = "platform.maintain_partitions"
+# 2A-2b：quota 日結對帳（DB 蓋 Redis）與 superseded chunk 清理。
+RECONCILE_QUOTA_TASK = "platform.reconcile_quota"
+CLEANUP_CHUNKS_TASK = "knowledge.cleanup_chunks"
 
 
 def warm_up() -> None:
@@ -49,7 +53,9 @@ def warm_up() -> None:
         get_logger(__name__).warning("celery_warm_up_failed", exc_info=True)
 
 
-def enqueue_ingestion(*, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str | None:
+def enqueue_ingestion(
+    *, tenant_id: uuid.UUID, document_id: uuid.UUID, delay_seconds: int = 0
+) -> str | None:
     """把一份文件排進 etl 佇列，回傳 task id（送不出去時回 None）。
 
     **在交易提交之後才呼叫。** 交易內送出的話，worker 可能在 COMMIT 之前就開始處理，
@@ -59,10 +65,17 @@ def enqueue_ingestion(*, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str | 
     `uploaded`，重跑的入口本來就存在（08 §2 的狀態機允許從失敗的階段續跑）。讓使用者
     的上傳因為背景設施而失敗，是把一個可回復的問題變成不可回復的。
     """
-    return _send(INGEST_DOCUMENT_TASK, tenant_id=tenant_id, document_id=document_id)
+    return _send(
+        INGEST_DOCUMENT_TASK,
+        tenant_id=tenant_id,
+        document_id=document_id,
+        delay_seconds=delay_seconds,
+    )
 
 
-def enqueue_embedding(*, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str | None:
+def enqueue_embedding(
+    *, tenant_id: uuid.UUID, document_id: uuid.UUID, delay_seconds: int = 0
+) -> str | None:
     """把一份已切塊的文件排進 embedding 佇列（06 §2 的 Q2），回傳 task id。
 
     **在 chunk 落地並提交之後才呼叫**，理由與 `enqueue_ingestion` 相同：worker 可能
@@ -73,10 +86,17 @@ def enqueue_embedding(*, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str | 
     存在。**代價要記著**：目前沒有掃描器會把停在 chunked 的文件撿回來（與 1B 帶進來
     的 enqueue 補償缺口是同一個，需 Celery Beat，排 2A）。
     """
-    return _send(EMBED_DOCUMENT_TASK, tenant_id=tenant_id, document_id=document_id)
+    return _send(
+        EMBED_DOCUMENT_TASK,
+        tenant_id=tenant_id,
+        document_id=document_id,
+        delay_seconds=delay_seconds,
+    )
 
 
-def _send(task_name: str, *, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str | None:
+def _send(
+    task_name: str, *, tenant_id: uuid.UUID, document_id: uuid.UUID, delay_seconds: int = 0
+) -> str | None:
     """送一個以 (tenant, document) 為參數的任務；送不出去回 None。
 
     兩個 enqueue 共用同一份送出邏輯——分開寫的話，`retry=False` 或例外處理總有一邊
@@ -91,6 +111,8 @@ def _send(task_name: str, *, tenant_id: uuid.UUID, document_id: uuid.UUID) -> st
         result = celery_app.send_task(
             task_name,
             kwargs={"tenant_id": str(tenant_id), "document_id": str(document_id)},
+            # 公平佇列的讓位重排（2A-2b）：>0 時延後投遞，讓別的租戶先被服務。
+            countdown=delay_seconds or None,
             # 不在請求路徑上重試：kombu 預設會退避重試數次，而使用者正在等上傳回應。
             # 送不出去就記 log 走人（見各 enqueue 的 docstring）——文件已經在 DB 裡。
             retry=False,

@@ -26,13 +26,21 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from services.platform.fairness import TenantSlotLimiter
 
 from config.settings.app_settings import get_app_settings
 from core.redis import get_redis, tenant_key
+from services.platform.fairness import TenantSlotLimiter
 from tests.conftest import TENANT_A, TENANT_B
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+
+def _capture_into(store: list[dict[str, Any]]) -> Any:
+    def _fake_enqueue(**kwargs: Any) -> str:
+        store.append(kwargs)
+        return "task-id"
+
+    return _fake_enqueue
 
 
 @pytest.fixture(autouse=True)
@@ -118,7 +126,7 @@ class TestWorkerDeference:
         monkeypatch.setattr(
             etl_tasks,
             "enqueue_ingestion",
-            lambda **kwargs: requeued.append(kwargs) or "task-id",
+            _capture_into(requeued),
         )
         self._fill_slots(TENANT_A)
         document_id = uuid.uuid4()
@@ -151,7 +159,7 @@ class TestWorkerDeference:
         monkeypatch.setattr(
             embedding_tasks,
             "enqueue_embedding",
-            lambda **kwargs: requeued.append(kwargs) or "task-id",
+            _capture_into(requeued),
         )
         limiter = TenantSlotLimiter("embedding")
         for _ in range(get_app_settings().etl_max_concurrent_per_tenant):

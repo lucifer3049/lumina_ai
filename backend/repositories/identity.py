@@ -124,6 +124,18 @@ class TenantDirectoryRepository:
         )
         return row
 
+    def active_tenant_ids(self) -> list[uuid.UUID]:
+        """所有 active 租戶的 id——**只給逐租戶的維運迴圈用**（日結對帳、清理 job）。
+
+        這是對「本類別只准 slug 換 id」約定的一次有紀錄的放寬（2A-2b 人類核可）：
+        維運 job 天生跨租戶，而它拿到 id 之後仍逐一進 `tenant_context` 工作——
+        回傳的仍然只有 id，不含任何客戶資料。任何在**請求路徑**上呼叫本方法的
+        程式碼都該被當成設計錯誤處理。
+        """
+        return list(
+            TenantDirectory.objects.filter(status="active").values_list("tenant_id", flat=True)
+        )
+
 
 class RoleRepository(TenantScopedRepository[Role]):
     """角色查詢：本租戶自訂角色 ＋ 全租戶共用的系統內建角色。

@@ -170,7 +170,7 @@ class QuotaService:
 
         存量資源（DB 聚合）只檢查不預留——文件列本身就是紀錄，回 None。
         """
-        limit = self._limits(tenant_id).get(resource)
+        limit = self.limits(tenant_id).get(resource)
         if limit is None:
             return None
 
@@ -215,9 +215,16 @@ class QuotaService:
         if remaining < 0:
             client.incrby(reservation.key, -remaining)
 
+    def correct(self, tenant_id: uuid.UUID, resource: str, value: int) -> None:
+        """對帳用（2A-2b）：把計數器直接擺成事實值。**方向永遠是 DB 蓋 Redis**，
+        反向會把漂移永久化。只對 Redis 計量的資源有意義（存量本來就以 DB 為準）。"""
+        now = datetime.now(UTC)
+        key, ttl = self._key_and_ttl(tenant_id, resource, now)
+        get_redis().set(key, max(value, 0), ex=ttl)
+
     def status(self, tenant_id: uuid.UUID) -> list[QuotaStatus]:
         """五種資源的即時狀態（`GET /tenants/current/quota` 與 2A-5 通知的資料源）。"""
-        limits = self._limits(tenant_id)
+        limits = self.limits(tenant_id)
         now = datetime.now(UTC)
         client = get_redis()
         statuses: list[QuotaStatus] = []
@@ -245,7 +252,9 @@ class QuotaService:
 
     # ── 內部 ────────────────────────────────────────────
 
-    def _limits(self, tenant_id: uuid.UUID) -> dict[str, int | None]:
+    def limits(self, tenant_id: uuid.UUID) -> dict[str, int | None]:
+        """這個租戶生效中的限額（plan 預設 → 租戶覆寫）。對帳快照也讀它——
+        歷史報表要知道「當時的上限」。"""
         with tenant_context(tenant_id), unit_of_work():
             tenant = self._tenants.current()
             if tenant is None:

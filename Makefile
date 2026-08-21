@@ -257,10 +257,20 @@ dev: ## 開發伺服器：單 worker + 熱重載 + console log（前景，Ctrl-C
 # worker fixture 當時用 `--pool solo`（為了少一層行程），於是測到的形狀與部署的形狀
 # 不同，而**差異剛好就在出事的那一項**。兩邊現在一致，並由 test_dev_launcher.py 對帳。
 WORKER_CMD = LOG_FORMAT=console $(UV_RUN) python -m celery -A config.celery_app worker \
-	--queues etl,embedding --pool threads --concurrency $(ETL_CONCURRENCY) --loglevel info
+	--queues etl,embedding,maintenance --pool threads --concurrency $(ETL_CONCURRENCY) --loglevel info
 
-worker: ## 啟動背景 worker（Celery，etl + embedding 佇列；需先 make up）
+worker: ## 啟動背景 worker（Celery，etl + embedding + maintenance 佇列；需先 make up）
 	$(WORKER_CMD)
+
+# Beat 排程器（2A-2b）。**單一行程**：Beat 是排程的唯一發令者，跑兩份會讓每個
+# 排程任務都被投遞兩次——冪等擋得住錯誤但擋不住浪費。schedule 檔放 .run/（與
+# pid/log 同處，make stop 之後殘留無害）。
+BEAT_CMD = LOG_FORMAT=console $(UV_RUN) python -m celery -A config.celery_app beat \
+	--schedule ../.run/celerybeat-schedule --loglevel info
+
+beat: ## 啟動 Beat 排程器（分區維護／日結對帳／chunk 清理；需先 make up）
+	@mkdir -p .run
+	$(BEAT_CMD)
 
 # ── 一鍵啟停 ────────────────────────────────────────────────────
 # 實作在 scripts/dev.sh：背景行程要處理 process group、重導向與 pid 檔，寫成 make
@@ -276,7 +286,7 @@ worker: ## 啟動背景 worker（Celery，etl + embedding 佇列；需先 make u
 # 一個看不懂的 RuntimeError。
 DEV_SH = DEV_PORT=$(DEV_PORT) FE_PORT=$(FE_PORT) \
 	API_CMD='$(DEV_CMD)' FE_CMD='$(PNPM) run dev --port $(FE_PORT)' \
-	WORKER_CMD='$(WORKER_CMD)' \
+	WORKER_CMD='$(WORKER_CMD)' BEAT_CMD='$(BEAT_CMD)' \
 	bash scripts/dev.sh
 
 start: up migrate gen-jwt-keys ## 一鍵啟動：容器 + API + 前端（背景執行，log 在 .run/）

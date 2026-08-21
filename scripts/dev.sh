@@ -42,6 +42,9 @@ FE_CMD="${FE_CMD:?請經 make start 呼叫（FE_CMD 未設定）}"
 # ETL worker（1B-6）。沒有它的話上傳的文件會停在 uploaded——訊息進了佇列卻沒有人
 # 處理，而 API 側完全看不出來（回應是 201，狀態欄看起來只是「還在處理」）。
 WORKER_CMD="${WORKER_CMD:?請經 make start 呼叫（WORKER_CMD 未設定）}"
+# Beat 排程器（2A-2b）。沒有它的話，分區維護／日結對帳／chunk 清理三個排程全部
+# 安靜地不跑——排程表是死的資料，得有一個行程照著它把任務丟進佇列。
+BEAT_CMD="${BEAT_CMD:?請經 make start 呼叫（BEAT_CMD 未設定）}"
 
 pid_file() { echo "${RUN_DIR}/$1.pid"; }
 log_file() { echo "${RUN_DIR}/$1.log"; }
@@ -173,11 +176,13 @@ case "${1:-}" in
     start_one api "${API_CMD}"
     start_one frontend "${FE_CMD}"
     start_one worker "${WORKER_CMD}"
+    start_one beat "${BEAT_CMD}"
     wait_for api "http://127.0.0.1:${API_PORT}/openapi.json"
     wait_for frontend "http://127.0.0.1:${FE_PORT}/"
     # worker 沒有埠可以探測，改驗「起來之後還活著」：缺 .env、broker 連不上這類
     # 失敗會讓它在數秒內退出，而 pid 檔照樣建得起來。
     wait_alive worker
+    wait_alive beat
     cat <<EOF
 
   前端      http://127.0.0.1:${FE_PORT}
@@ -191,9 +196,10 @@ EOF
     stop_one api
     stop_one frontend
     stop_one worker
+    stop_one beat
     ;;
   status)
-    for name in api frontend worker; do
+    for name in api frontend worker beat; do
       if is_running "${name}"; then
         echo "${name}     執行中（pid $(cat "$(pid_file "${name}")")）"
       else
@@ -202,8 +208,8 @@ EOF
     done
     ;;
   logs)
-    touch "$(log_file api)" "$(log_file frontend)" "$(log_file worker)"
-    tail -f "$(log_file api)" "$(log_file frontend)" "$(log_file worker)"
+    touch "$(log_file api)" "$(log_file frontend)" "$(log_file worker)" "$(log_file beat)"
+    tail -f "$(log_file api)" "$(log_file frontend)" "$(log_file worker)" "$(log_file beat)"
     ;;
   *)
     echo "用法：$0 {start|stop|status|logs}" >&2

@@ -27,11 +27,11 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
-from services.platform.reconciliation import QuotaReconciliationService
 
 from apps.platform.models import QuotaCounter, UsageLog
 from core.redis import get_redis, tenant_key
 from services.platform.quota import QuotaService
+from services.platform.reconciliation import QuotaReconciliationService
 from tests.conftest import TENANT_A, TENANT_B
 from tests.factories.conversation import make_conversation, make_message
 from tests.factories.identity import make_tenant, make_user, tenant_scope

@@ -16,9 +16,11 @@ from typing import Any
 from celery import shared_task
 
 from config.logging import get_logger
+from config.settings.app_settings import get_app_settings
 from core.exceptions import NotFoundError
-from core.tasks import INGEST_DOCUMENT_TASK
+from core.tasks import INGEST_DOCUMENT_TASK, enqueue_ingestion
 from services.knowledge.ingestion import IngestionService
+from services.platform.fairness import TenantSlotLimiter
 
 logger = get_logger(__name__)
 
@@ -36,6 +38,28 @@ _MAX_RETRIES = len(_RETRY_BACKOFF_SECONDS)
 )
 def ingest_document(self: Any, tenant_id: str, document_id: str) -> dict[str, Any]:
     """把一份文件跑完 Extract → Clean → Chunk。"""
+    tenant_uuid = uuid.UUID(tenant_id)
+    # 公平佇列（08 §6，2A-2b）：這個租戶的並發已滿就讓位——重新排隊（帶延遲）並
+    # 立刻讓出 worker，佇列裡下一個（別的租戶）馬上有人服務。**不是 self.retry**：
+    # retry 會吃掉 3 次錯誤重試的額度，排隊夠長時任務會被誤判成故障進 DLQ。
+    limiter = TenantSlotLimiter("etl")
+    if not limiter.acquire(tenant_uuid):
+        enqueue_ingestion(
+            tenant_id=tenant_uuid,
+            document_id=uuid.UUID(document_id),
+            delay_seconds=get_app_settings().etl_fairness_requeue_seconds,
+        )
+        logger.info("ingestion_task_deferred", document_id=document_id, tenant_id=tenant_id)
+        return {"document_id": document_id, "status": "deferred", "chunk_count": 0}
+    try:
+        return _run_ingest(self, tenant_id, document_id)
+    finally:
+        # 每一種出口（成功、missing、重試、DLQ）都要歸還——漏一條路徑，這個租戶的
+        # ETL 併發會慢慢降到零，症狀是「他的文件全卡住，別人都正常」。
+        limiter.release(tenant_uuid)
+
+
+def _run_ingest(self: Any, tenant_id: str, document_id: str) -> dict[str, Any]:
     service = IngestionService()
     try:
         result = service.ingest(uuid.UUID(tenant_id), uuid.UUID(document_id))

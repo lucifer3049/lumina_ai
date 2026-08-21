@@ -15,8 +15,10 @@ from typing import Any
 from celery import shared_task
 
 from config.logging import get_logger
-from core.tasks import MAINTAIN_PARTITIONS_TASK
+from core.tasks import CLEANUP_CHUNKS_TASK, MAINTAIN_PARTITIONS_TASK, RECONCILE_QUOTA_TASK
+from services.knowledge.cleanup import ChunkCleanupService
 from services.platform.maintenance import ensure_future_partitions
+from services.platform.reconciliation import QuotaReconciliationService
 
 logger = get_logger(__name__)
 
@@ -27,3 +29,23 @@ def maintain_partitions() -> dict[str, Any]:
     created = ensure_future_partitions(months_ahead=3)
     logger.info("partition_maintenance_done", created=created)
     return {"created": created}
+
+
+@shared_task(name=RECONCILE_QUOTA_TASK)
+def reconcile_quota() -> dict[str, Any]:
+    """quota 日結對帳（04 §8.1、2A-2b）：DB 蓋 Redis＋quota_counters 快照。
+
+    逐租戶的失敗處理在 service（單一租戶失敗不中斷整輪）；同樣不設 Celery 重試
+    ——明天的日結就是重試。
+    """
+    processed = QuotaReconciliationService().reconcile_all()
+    logger.info("quota_reconciliation_done", tenants=processed)
+    return {"tenants": processed}
+
+
+@shared_task(name=CLEANUP_CHUNKS_TASK)
+def cleanup_chunks() -> dict[str, Any]:
+    """superseded chunk 的每日清理（06 §2.2、2A-2b）。"""
+    purged = ChunkCleanupService().purge_all()
+    logger.info("chunk_cleanup_done", purged=purged)
+    return {"purged": purged}

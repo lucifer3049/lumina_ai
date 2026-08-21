@@ -193,6 +193,12 @@ class AppSettings(BaseSettings):
     # 太大＝月底「還剩一點額度」的回合被過度擋下。
     quota_token_reserve_estimate: int = 2000
 
+    # 公平佇列（08 §6，2A-2b）：每租戶在 etl／embedding 佇列上的並發上限，與被
+    # 讓位的任務多久後回來再試。上限決定公平的粒度（愈小愈公平、單租戶吞吐愈低），
+    # 延遲太短會變成空轉輪詢、太長會拉長大批上傳的完成時間。
+    etl_max_concurrent_per_tenant: int = 2
+    etl_fairness_requeue_seconds: int = 15
+
     @property
     def redis_url(self) -> SecretStr:
         """`redis://:pw@host:port/db`；密碼經 percent-encoding，特殊字元不會拆壞 URL。"""

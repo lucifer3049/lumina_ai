@@ -22,9 +22,9 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from services.knowledge.cleanup import ChunkCleanupService
 
 from apps.knowledge.models import Chunk, Embedding
+from services.knowledge.cleanup import ChunkCleanupService
 from tests.conftest import TENANT_A, TENANT_B
 from tests.factories.identity import make_tenant, tenant_scope
 from tests.factories.knowledge import (

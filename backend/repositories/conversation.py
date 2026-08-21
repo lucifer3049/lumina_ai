@@ -145,6 +145,14 @@ class MessageRepository(TenantScopedRepository[Message]):
         newest = list(queryset.order_by("-created_at", "-id")[:limit])
         return sorted(newest, key=lambda message: (message.created_at, str(message.id)))
 
+    def assistant_count_since(self, since: Any) -> int:
+        """當期 assistant 訊息數——messages_day 對帳的事實來源（2A-2b）。
+
+        用訊息表而不是 usage_logs：被中止且 provider 未回報的回合沒有 usage 列，
+        但那一輪確實發生過、也確實在開場時扣了額度。
+        """
+        return self.get_queryset().filter(role="assistant", created_at__gte=since).count()
+
     def page_for_conversation(
         self, conversation_id: uuid.UUID, *, limit: int, cursor: dict[str, Any] | None = None
     ) -> tuple[list[Message], dict[str, Any] | None]:

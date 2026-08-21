@@ -16,9 +16,11 @@ from typing import Any
 from celery import shared_task
 
 from config.logging import get_logger
+from config.settings.app_settings import get_app_settings
 from core.exceptions import NotFoundError
-from core.tasks import EMBED_DOCUMENT_TASK
+from core.tasks import EMBED_DOCUMENT_TASK, enqueue_embedding
 from services.knowledge.embedding import EmbeddingService
+from services.platform.fairness import TenantSlotLimiter
 
 logger = get_logger(__name__)
 
@@ -35,6 +37,25 @@ _MAX_RETRIES = len(_RETRY_BACKOFF_SECONDS)
 )
 def embed_document(self: Any, tenant_id: str, document_id: str) -> dict[str, Any]:
     """把一份文件的 chunk 全部轉成向量，成功後文件變成 ``ready``。"""
+    tenant_uuid = uuid.UUID(tenant_id)
+    # 公平佇列同 etl（worker/etl_tasks.py 的註解）：只擋前半段的話，
+    # 洪水只是換一條佇列淹。
+    limiter = TenantSlotLimiter("embedding")
+    if not limiter.acquire(tenant_uuid):
+        enqueue_embedding(
+            tenant_id=tenant_uuid,
+            document_id=uuid.UUID(document_id),
+            delay_seconds=get_app_settings().etl_fairness_requeue_seconds,
+        )
+        logger.info("embedding_task_deferred", document_id=document_id, tenant_id=tenant_id)
+        return {"document_id": document_id, "status": "deferred", "embedded_count": 0}
+    try:
+        return _run_embed(self, tenant_id, document_id)
+    finally:
+        limiter.release(tenant_uuid)
+
+
+def _run_embed(self: Any, tenant_id: str, document_id: str) -> dict[str, Any]:
     service = EmbeddingService()
     try:
         result = service.embed_document(uuid.UUID(tenant_id), uuid.UUID(document_id))

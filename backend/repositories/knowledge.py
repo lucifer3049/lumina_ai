@@ -182,6 +182,18 @@ class DocumentRepository(SoftDeletableRepository[Document]):
 class ChunkRepository(TenantScopedRepository[Chunk]):
     model = Chunk
 
+    def purge_superseded_of_ready(self) -> int:
+        """硬刪 **ready 文件**的 superseded chunk 及其向量；回傳刪掉的 chunk 數（2A-2b）。
+
+        只挑 ready：文件還在 embedding／failed 時，舊版是唯一完整的資料，重跑失敗時
+        它是最後的退路。順序是先向量後 chunk——`Embedding.chunk` 是 PROTECT，反過來
+        會被 DB 擋下（那個擋是對的：它保證這裡永遠不會只刪一半）。
+        """
+        chunks = self.get_queryset().filter(superseded=True, document__status="ready")
+        Embedding.objects.filter(chunk__in=chunks).delete()
+        deleted, _ = chunks.delete()
+        return deleted
+
     def for_document(self, document_id: uuid.UUID) -> list[Chunk]:
         """一份文件的全部 chunk，**按 ``seq`` 排序**。
 

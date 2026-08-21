@@ -50,3 +50,38 @@ class UsageLog(models.Model):
 
     def __str__(self) -> str:
         return f"UsageLog({self.category}: {self.model})"
+
+
+class QuotaCounter(models.Model):
+    """quota 的對帳快照（05 §3.3；2A-2b）。
+
+    即時計數在 Redis，這張表是它的耐久影子：日結對帳把事實來源算出來的用量落地。
+    **普通表、不分區**：一天每租戶最多幾列（資源 × 期別），成長率與 usage_logs
+    差三個數量級。
+
+    `(tenant, resource, period, period_start)` 唯一——對帳重跑是 upsert，
+    同一期永遠只有一列。
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="quota_counters")
+    resource = models.TextField()
+    # day / month。存量資源（documents、storage_bytes）快照為 day。
+    period = models.TextField()
+    period_start = models.DateField()
+    used = models.BigIntegerField(default=0)
+    # None＝當時不限制（存 0 會把「不限制」讀成「禁止」）。
+    limit = models.BigIntegerField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "platform_quotacounter"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "resource", "period", "period_start"],
+                name="uq_quotacounter_period",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"QuotaCounter({self.resource} {self.period_start})"

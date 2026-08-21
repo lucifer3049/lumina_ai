@@ -1,11 +1,14 @@
-"""Platform context 的資料存取（05 §3.3，2A-1）。"""
+"""Platform context 的資料存取（05 §3.3，2A-1／2A-2b）。"""
 
 from __future__ import annotations
 
+import datetime
 import uuid
 from decimal import Decimal
 
-from apps.platform.models import UsageLog
+from django.db import models
+
+from apps.platform.models import QuotaCounter, UsageLog
 from core.tenant import get_current_tenant_id
 from core.uow import unit_of_work
 from repositories.base import TenantScopedRepository
@@ -47,3 +50,36 @@ class UsageLogRepository(TenantScopedRepository[UsageLog]):
                 user_id=user_id,
                 conversation_id=conversation_id,
             )
+
+    def llm_token_total(self, *, since: datetime.datetime) -> int:
+        """當期 llm 消費的 token 總和——tokens_month 對帳的事實來源（2A-2b）。"""
+        row = (
+            self.get_queryset()
+            .filter(category="llm", created_at__gte=since)
+            .aggregate(total=models.Sum(models.F("prompt_tokens") + models.F("completion_tokens")))
+        )
+        return int(row["total"] or 0)
+
+
+class QuotaCounterRepository(TenantScopedRepository[QuotaCounter]):
+    """對帳快照的 upsert——同一期永遠一列（uq_quotacounter_period）。"""
+
+    model = QuotaCounter
+
+    def upsert(
+        self,
+        *,
+        resource: str,
+        period: str,
+        period_start: datetime.date,
+        used: int,
+        limit: int | None,
+    ) -> QuotaCounter:
+        row, _ = QuotaCounter.objects.update_or_create(
+            tenant_id=get_current_tenant_id(operation="QuotaCounterRepository.upsert"),
+            resource=resource,
+            period=period,
+            period_start=period_start,
+            defaults={"used": used, "limit": limit},
+        )
+        return row

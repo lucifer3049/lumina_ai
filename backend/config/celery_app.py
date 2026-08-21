@@ -32,9 +32,11 @@ django.setup()
 from config.logging import configure_logging  # noqa: E402
 from config.settings.app_settings import get_app_settings  # noqa: E402
 from core.tasks import (  # noqa: E402
+    CLEANUP_CHUNKS_TASK,
     EMBED_DOCUMENT_TASK,
     INGEST_DOCUMENT_TASK,
     MAINTAIN_PARTITIONS_TASK,
+    RECONCILE_QUOTA_TASK,
 )
 
 # worker 的日誌走與 API 同一條 pipeline（12 §1.1）。少了這行，task 內的 structlog
@@ -53,6 +55,13 @@ celery_app.conf.update(
     task_routes={
         INGEST_DOCUMENT_TASK: {"queue": "etl"},
         EMBED_DOCUMENT_TASK: {"queue": "embedding"},
+        # 維運任務自成一條佇列（2A-2b）：塞在 etl 後面的話，大批上傳會把日結對帳
+        # 推遲到不知何時。**新增 Beat 任務必須路由到 worker 有聽的佇列**——
+        # tests/unit/test_platform_beat.py 對每一條 beat_schedule 驗這件事
+        # （2A-1 的 maintain_partitions 曾落在沒有人聽的 default，正是這個洞）。
+        MAINTAIN_PARTITIONS_TASK: {"queue": "maintenance"},
+        RECONCILE_QUOTA_TASK: {"queue": "maintenance"},
+        CLEANUP_CHUNKS_TASK: {"queue": "maintenance"},
     },
     # 序列化只收 JSON：pickle 能執行任意程式碼，而 broker 是一個「只要進得去就會被
     # 執行」的介面。任務參數因此一律是字串/數字（見 worker/etl_tasks.py 的 uuid 轉換）。
@@ -90,6 +99,16 @@ celery_app.conf.update(
             "task": MAINTAIN_PARTITIONS_TASK,
             # 03:00 UTC：避開整點高峰與備份窗（12 §4.1 的每日 02:00 全量備份）。
             "schedule": crontab(minute=0, hour=3, day_of_month="1"),
+        },
+        # 2A-2b 的兩個每日維運：時間錯開（都在備份窗之後），對帳先跑——清理會刪
+        # chunk，先清再對帳的話 storage 快照拍的是清理前後不一致的狀態。
+        "reconcile-quota-daily": {
+            "task": RECONCILE_QUOTA_TASK,
+            "schedule": crontab(minute=30, hour=3),
+        },
+        "cleanup-chunks-daily": {
+            "task": CLEANUP_CHUNKS_TASK,
+            "schedule": crontab(minute=0, hour=4),
         },
     },
 )
