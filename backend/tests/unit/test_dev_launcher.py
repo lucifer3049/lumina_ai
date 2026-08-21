@@ -24,6 +24,9 @@ SERVICES = {
     "api": "API_CMD",
     "frontend": "FE_CMD",
     "worker": "WORKER_CMD",
+    # 2A-2b：Beat 排程器。沒有它的話，分區維護／日結對帳／chunk 清理三個排程
+    # 全部安靜地不跑——排程表是死的資料，得有一個行程照著它把任務丟進佇列。
+    "beat": "BEAT_CMD",
 }
 
 
