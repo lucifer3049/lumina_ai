@@ -11,7 +11,7 @@ import BrushDivider from '@/components/ui/BrushDivider.vue'
     <h1 class="page-title">Lumina AI</h1>
     <BrushDivider class="divider" />
     <p class="page-subtitle">智啟千年 · 知識如水</p>
-    <p class="note">從左側選單進入「對話」或「知識庫」開始使用。</p>
+    <p class="note">從上方選單進入「對話」或「知識庫」開始使用。</p>
   </main>
 </template>
 

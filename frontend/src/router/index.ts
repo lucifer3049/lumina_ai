@@ -38,15 +38,19 @@ const router = createRouter({
       props: true,
     },
     {
+      // 兩條 chat 路由共用同一個 view（ChatGPT 版式：側欄常駐，`/chat` 是「新對話」
+      // 狀態）。`meta.bare`＝內容區不加 padding，版面（貼緣側欄）由頁面自己管。
       path: '/chat',
       name: 'chat',
-      component: () => import('@/views/chat/ConversationListView.vue'),
+      component: () => import('@/views/chat/ConversationView.vue'),
+      meta: { bare: true },
     },
     {
       path: '/chat/:conversationId',
       name: 'chat-conversation',
       component: () => import('@/views/chat/ConversationView.vue'),
       props: true,
+      meta: { bare: true },
     },
     {
       path: '/login',

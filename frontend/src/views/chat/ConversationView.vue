@@ -1,6 +1,14 @@
 <script setup lang="ts">
 /**
- * 一場對話（1E-3；09 §2.4、§3.2、03 §3.2）。
+ * 對話頁（ChatGPT 版式、青綠皮膚；09 §2.4、§3.2、03 §3.2）。
+ *
+ * 左＝對話側欄（搜尋＋日期分組），中＝訊息與輸入，右＝引用箋紙（有引用才攤開）。
+ * `/chat`（無 conversationId）與 `/chat/:conversationId` 共用本元件：兩條路由切換
+ * 只是 prop 變化，側欄不重掛、SSE（useChatStream 的 onScopeDispose）不會被切斷。
+ *
+ * 對話**在第一句送出時才建立**（同 ChatGPT）：先建後問的話，開了又不問的對話會
+ * 在清單裡堆成一排（未命名）。自建後自己 push 路由，用 `selfNavigated` 讓 watch
+ * 跳過那一次抓取——全新對話沒有歷史可抓，抓了反而跟樂觀塞入的那句賽跑。
  *
  * 送出與串流是**兩步**（1D-4a）：`sendMessage()` 建立回合並拿到 `message_id`，
  * 再用它開串流。合成一步的話，網路閃斷時使用者分不出送出去了沒，重送就是兩則
@@ -10,12 +18,13 @@
  * 還在 `streaming`，就對它開一條串流——後端的生成不因為 client 離開而停止（06 §4
  * 的 G-06），所以接回去看到的是完整的後半段。
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import CitationPanel from '@/components/chat/CitationPanel.vue'
+import ConversationSidebar from '@/components/chat/ConversationSidebar.vue'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
-import BrushDivider from '@/components/ui/BrushDivider.vue'
 import InkButton from '@/components/ui/InkButton.vue'
 import InkSpinner from '@/components/ui/InkSpinner.vue'
 import { useChatStream } from '@/composables/useChatStream'
@@ -24,19 +33,24 @@ import { useChatStore } from '@/stores/chat'
 import type { CitationItem } from '@/utils/citations'
 import { errorMessage } from '@/utils/errors'
 
-const props = defineProps<{ conversationId: string }>()
+const props = defineProps<{ conversationId?: string }>()
 
 const store = useChatStore()
 const stream = useChatStream()
 const toast = useToast()
+const router = useRouter()
 
 const scroller = ref<HTMLElement | null>(null)
 const activeCitation = ref<number | null>(null)
+let selfNavigated = false
 
 const conversation = computed(
   () => store.conversations.find((item) => item.id === props.conversationId) ?? null,
 )
 const title = computed(() => {
+  if (props.conversationId === undefined) {
+    return '新對話'
+  }
   const name = conversation.value?.title ?? ''
   return name === '' ? '對話' : name
 })
@@ -55,16 +69,19 @@ const citations = computed<CitationItem[]>(() => {
   return (lastWithCitations?.citations ?? []) as CitationItem[]
 })
 
-onMounted(() => {
-  if (store.conversations.length === 0) {
-    // 深層連結進來時清單還沒載——標題要用它。失敗不打擾：主體是訊息，不是標題。
-    void store.fetchConversations().catch(() => {})
-  }
-})
-
 watch(
   () => props.conversationId,
   async (conversationId) => {
+    if (selfNavigated) {
+      selfNavigated = false
+      return
+    }
+    if (conversationId === undefined) {
+      // 回到「新對話」：清空畫面，但不動 streaming——上一場的生成在背景收尾。
+      store.currentConversationId = null
+      store.messages = []
+      return
+    }
     try {
       await store.fetchMessages(conversationId)
       await resumeUnfinished(conversationId)
@@ -107,9 +124,19 @@ async function resumeUnfinished(conversationId: string): Promise<void> {
 
 async function send(content: string): Promise<void> {
   try {
-    const turn = await store.sendMessage(props.conversationId, content)
+    let conversationId = props.conversationId
+    if (conversationId === undefined) {
+      // 標題＝第一句的前 24 字。09 §2.4 的「以第一句命名」後端尚未實作（已記回報
+      // 清單）；建立時就帶上，側欄不會堆一排（未命名），後端補上時拿掉這行即可。
+      const title = content.replace(/\s+/g, ' ').trim().slice(0, 24)
+      const created = await store.createConversation({ kb_ids: [], title })
+      conversationId = created.id
+      selfNavigated = true
+      await router.push({ name: 'chat-conversation', params: { conversationId } })
+    }
+    const turn = await store.sendMessage(conversationId, content)
     await scrollToBottom()
-    await stream.start({ conversationId: props.conversationId, messageId: turn.message_id })
+    await stream.start({ conversationId, messageId: turn.message_id })
   } catch (error) {
     toast.error(errorMessage(error))
   }
@@ -131,14 +158,34 @@ async function retry(): Promise<void> {
   }
   await send(lastUserMessage.content)
 }
+
+function openConversation(conversationId: string): void {
+  void router.push({ name: 'chat-conversation', params: { conversationId } })
+}
+
+function startNew(): void {
+  void router.push({ name: 'chat' })
+}
+
+function onDeleted(conversationId: string): void {
+  if (conversationId === props.conversationId) {
+    void router.push({ name: 'chat' })
+  }
+}
 </script>
 
 <template>
-  <div class="conversation ink-appear">
+  <div class="chat ink-appear">
+    <ConversationSidebar
+      :active-id="props.conversationId ?? null"
+      @select="openConversation"
+      @create="startNew"
+      @deleted="onDeleted"
+    />
+
     <section class="thread">
       <header class="head col">
-        <h1 class="page-title">{{ title }}</h1>
-        <BrushDivider class="head-divider" />
+        <h1 class="thread-title">{{ title }}</h1>
       </header>
 
       <div ref="scroller" class="scroller">
@@ -182,7 +229,7 @@ async function retry(): Promise<void> {
       <ChatComposer class="col" :generating="store.isGenerating" @send="send" @stop="stop" />
     </section>
 
-    <!-- 有引用才攤開箋紙：氣泡自帶「未引用」提示，空面板只是第三塊漂浮物。 -->
+    <!-- 有引用才攤開箋紙：氣泡自帶「未引用」提示，空面板只是一塊漂浮物。 -->
     <Transition name="panel">
       <CitationPanel
         v-if="citations.length > 0"
@@ -194,10 +241,9 @@ async function retry(): Promise<void> {
 </template>
 
 <style scoped>
-/* stretch 而非 flex-start：箋紙與對話欄同高，才是一幅畫而不是兩張卡。 */
-.conversation {
+/* 佈局是 route meta.bare（無 content padding）：側欄要貼齊左緣、撐滿高度。 */
+.chat {
   display: flex;
-  gap: 30px;
   align-items: stretch;
   flex: 1;
   min-height: 0;
@@ -208,11 +254,12 @@ async function retry(): Promise<void> {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
+  padding: 22px 36px 28px;
+  box-sizing: border-box;
 }
 
-/* 單一閱讀軸：標題、訊息、輸入框全落在同一條 50rem 的欄上——
-   三塊各對各的邊，就是畫面「散成三塊」的根源。 */
+/* 單一閱讀軸：標題、訊息、輸入框全落在同一條 50rem 的欄上 */
 .col {
   width: 100%;
   max-width: 50rem;
@@ -220,22 +267,19 @@ async function retry(): Promise<void> {
   box-sizing: border-box;
 }
 
-.head {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.page-title {
+.thread-title {
   margin: 0;
-  font-size: 1.5rem;
+  font-family: var(--font-serif);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.head-divider {
-  width: 210px;
-}
-
-/* flex: 1 取代寫死的 58vh：訊息區吃掉剩餘高度，輸入框自然釘底。 */
+/* flex: 1 而非固定高：訊息區吃掉剩餘高度，輸入框自然釘底 */
 .scroller {
   flex: 1;
   min-height: 0;
@@ -243,7 +287,7 @@ async function retry(): Promise<void> {
   padding-right: 8px;
 }
 
-/* min-height: 100% 讓空狀態能用 margin: auto 垂直置中。 */
+/* min-height: 100% 讓空狀態能用 margin: auto 垂直置中 */
 .scroller-inner {
   min-height: 100%;
   display: flex;
@@ -290,16 +334,20 @@ async function retry(): Promise<void> {
   transform: translateX(14px);
 }
 
-@media (max-width: 1024px) {
-  .conversation {
-    flex-direction: column;
-    gap: 20px;
-  }
+/* 箋紙不貼畫面右緣（thread 有自己的 padding，面板是獨立欄） */
+.chat > :deep(.panel) {
+  margin: 22px 24px 28px 0;
+}
 
-  /* 窄幅時箋紙移到下方，高度封頂、自己捲，不把輸入框擠出畫面 */
-  .conversation > :deep(.panel) {
-    width: 100%;
-    max-height: 36vh;
+@media (max-width: 1024px) {
+  .chat > :deep(.panel) {
+    display: none; /* 窄幅先讓位給對話；引用記號仍在氣泡內。2D 跳原文時再一併設計 */
+  }
+}
+
+@media (max-width: 900px) {
+  .thread {
+    padding: 16px 16px 20px;
   }
 }
 

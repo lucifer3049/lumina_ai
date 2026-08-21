@@ -1,10 +1,13 @@
 <script setup lang="ts">
 /**
- * 主應用外框（03 §2）：sidebar + header，樣式為「卷軸邊欄」——側欄無底色、
- * 細墨線分隔；active 記號是朱砂小點（落款用法）。
+ * 主應用外框（03 §2）：**頂部導覽列**＋內容區（2026-08-22 改版：原左側欄讓位給
+ * 對話頁的 ChatGPT 式對話清單——兩條左欄並排會打架，全站導覽因此上移）。
  *
- * 選單隨工作包長出來：首頁（1E-1）、知識庫（1E-2）、對話（1E-3）。
+ * 樣式仍是「卷軸」語言：細墨線分隔、無底色；active 記號是朱砂小點（落款用法）。
  * 工作頁的背景場景只留右下遠山一角（設計語言 §視覺焦點：登入濃、工作淡）。
+ *
+ * 路由標 `meta.bare` 的頁面（對話）拿到無 padding 的內容區——它的側欄要貼齊
+ * 左緣、撐滿高度，版面自己管。
  */
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
@@ -31,6 +34,8 @@ const activeKey = computed(() => {
   const name = String(router.currentRoute.value.name ?? '')
   return PARENT_OF[name] ?? name
 })
+
+const bare = computed(() => router.currentRoute.value.meta.bare === true)
 
 function onMenuSelect(key: string): void {
   void router.push({ name: key })
@@ -77,11 +82,12 @@ async function onLogout(): Promise<void> {
       <rect x="0" y="160" width="760" height="80" fill="url(#dl-mist)"></rect>
     </svg>
 
-    <aside class="sidebar">
+    <header class="topbar">
       <div class="brand">
         <SealMark char="智" :size="27" />
         <span class="brand-name">Lumina AI</span>
       </div>
+
       <nav class="menu">
         <button
           v-for="option in menuOptions"
@@ -95,27 +101,27 @@ async function onLogout(): Promise<void> {
           {{ option.label }}
         </button>
       </nav>
-    </aside>
 
-    <div class="main">
-      <header class="header">
+      <div class="side">
         <ThemeToggle />
         <span class="user-name">{{ auth.user?.display_name ?? '' }}</span>
         <button type="button" class="logout" @click="onLogout">登出</button>
-      </header>
-      <main class="content">
-        <slot />
-      </main>
-    </div>
+      </div>
+    </header>
+
+    <main class="content" :class="{ 'content--bare': bare }">
+      <slot />
+    </main>
   </div>
 </template>
 
 <style scoped>
 /* height 而非 min-height：對話頁要把「訊息捲動、輸入框釘底」做在頁內，
-   高度鏈（layout → main → content → 頁面）必須從這裡就是定值。 */
+   高度鏈（layout → content → 頁面）必須從這裡就是定值。 */
 .default-layout {
   position: relative;
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
 }
@@ -129,15 +135,14 @@ async function onLogout(): Promise<void> {
   pointer-events: none;
 }
 
-.sidebar {
-  position: relative;
-  width: 210px;
+.topbar {
+  height: 56px;
   flex-shrink: 0;
-  border-right: 1px solid var(--paper-4);
   display: flex;
-  flex-direction: column;
-  gap: 34px;
-  padding: 26px 16px;
+  align-items: center;
+  gap: 38px;
+  padding: 0 28px;
+  border-bottom: 1px solid var(--paper-4);
   box-sizing: border-box;
 }
 
@@ -145,7 +150,6 @@ async function onLogout(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 10px;
 }
 
 .brand-name {
@@ -154,27 +158,27 @@ async function onLogout(): Promise<void> {
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--ink-1);
+  white-space: nowrap;
 }
 
 .menu {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
 }
 
 .menu-item {
   display: flex;
   align-items: center;
-  gap: 9px;
-  height: 44px;
-  padding: 0 10px;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
   border: none;
   background: transparent;
   font-family: var(--font-body);
   font-size: 0.875rem;
   letter-spacing: 0.14em;
   color: var(--ink-3);
-  text-align: left;
   cursor: pointer;
   border-radius: var(--radius-a);
   transition:
@@ -205,28 +209,17 @@ async function onLogout(): Promise<void> {
   background: var(--cinnabar);
 }
 
-.main {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.header {
-  height: 54px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--paper-4);
+.side {
+  margin-left: auto;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 16px;
-  padding: 0 32px;
 }
 
 .user-name {
   font-size: 0.8125rem;
   color: var(--ink-4);
+  white-space: nowrap;
 }
 
 .logout {
@@ -245,8 +238,8 @@ async function onLogout(): Promise<void> {
   color: var(--ink-1);
 }
 
-/* 長頁面在這一層捲（sidebar 與 header 釘住不動）；flex column 讓
-   要吃滿高度的頁（對話）可以自己宣告 flex: 1。 */
+/* 長頁面在這一層捲（頂欄釘住不動）；flex column 讓要吃滿高度的頁（對話）
+   可以自己宣告 flex: 1。 */
 .content {
   flex: 1;
   min-height: 0;
@@ -256,9 +249,24 @@ async function onLogout(): Promise<void> {
   flex-direction: column;
 }
 
+/* bare：對話頁的側欄要貼齊左緣、撐滿高度，padding 由頁面自己管 */
+.content--bare {
+  padding: 0;
+  overflow-y: hidden;
+}
+
 @media (max-width: 900px) {
+  .topbar {
+    gap: 18px;
+    padding: 0 14px;
+  }
+
   .content {
     padding: 24px 20px;
+  }
+
+  .content--bare {
+    padding: 0;
   }
 }
 </style>
