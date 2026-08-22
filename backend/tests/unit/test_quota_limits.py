@@ -53,6 +53,38 @@ class TestDefaults:
         assert get_app_settings().quota_token_reserve_estimate == 2000
 
 
+class TestTokenReserve:
+    """開場預留 = 設定值 **+ 問題本身的估計量**（`services/conversation/chat.py`）。
+
+    設定值涵蓋的是「答案 + context」——它們的長度要到生成結束才知道，只能先估。但問題
+    本身的長度**現在就知道**，而它可以差好幾個量級：一則貼滿的訊息（schema 上限
+    32,000 字元）光是問題就三萬多 token。用一個固定的 2000 去擋線等於沒擋——真實用量
+    要等收尾 commit 才追認，那時該擋的那幾則已經送出去、錢也花了。
+    """
+
+    def test_a_short_question_costs_about_the_flat_estimate(self) -> None:
+        from services.conversation.chat import _token_reserve_for
+
+        flat = get_app_settings().quota_token_reserve_estimate
+
+        assert flat <= _token_reserve_for("你好") <= flat + 10
+
+    def test_a_long_question_reserves_much_more(self) -> None:
+        """三萬字的問題不該與兩個字的問題預留一樣多。"""
+        from services.conversation.chat import _token_reserve_for
+
+        flat = get_app_settings().quota_token_reserve_estimate
+
+        assert _token_reserve_for("字" * 30_000) > flat * 10
+
+    def test_it_never_goes_below_the_flat_estimate(self) -> None:
+        """空問題走不到這裡（`start_turn` 先擋），但下界仍要是設定值——答案本身
+        的成本與問題多短無關。"""
+        from services.conversation.chat import _token_reserve_for
+
+        assert _token_reserve_for("") == get_app_settings().quota_token_reserve_estimate
+
+
 class TestPlanParsing:
     def test_an_unknown_plan_falls_back_to_free(self) -> None:
         """plan 欄位是自由文字（identity_tenant.plan），打錯字的租戶拿到的該是

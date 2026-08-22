@@ -68,6 +68,43 @@ class TestRegistry:
 
         assert pending_count() == 0
 
+    async def test_a_crash_is_logged_instead_of_disappearing(self) -> None:
+        """**沒有人在 await 這個 task**，所以它的例外要有人主動記下來。
+
+        `ChatService.generate` 設計上不往外拋（失敗一律走完整收尾），所以走得到這裡的
+        是「收尾路徑自己炸了」——寫最終訊息時 DB 斷線、送 error 事件時 Redis 掛掉。
+        少了這個 callback，例外會停在 task 物件裡直到 GC 才以
+        `Task exception was never retrieved` 冒出來：沒有 request_id、沒有租戶，
+        位置指向 GC 發生的地方，而那通常是別的請求正在跑的時候。
+        """
+        from structlog.testing import capture_logs
+
+        async def _boom() -> None:
+            raise RuntimeError("收尾時炸了")
+
+        with capture_logs() as logs:
+            spawn(_boom())
+            await drain(timeout_seconds=5)
+            # done callback 走 `call_soon`：drain 回來時它還沒跑。
+            await asyncio.sleep(0)
+
+        assert [entry for entry in logs if entry["event"] == "background_task_failed"]
+
+    async def test_cancellation_is_not_logged_as_a_failure(self) -> None:
+        """關機時 `drain()` 逾時會取消剩下的——那是預期行為。記成 ERROR 的話，
+        每一次重啟都會在告警上留下一排看起來像故障的紀錄。"""
+        from structlog.testing import capture_logs
+
+        async def _forever() -> None:
+            await asyncio.sleep(60)
+
+        with capture_logs() as logs:
+            spawn(_forever())
+            await drain(timeout_seconds=0.05)
+            await asyncio.sleep(0.05)
+
+        assert not [entry for entry in logs if entry["event"] == "background_task_failed"]
+
 
 class TestDrain:
     async def test_it_waits_for_work_in_flight(self) -> None:

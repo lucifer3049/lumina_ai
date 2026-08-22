@@ -25,6 +25,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from contextlib import aclosing
 from typing import Any
 
 import httpx
@@ -484,3 +485,78 @@ def _slow_provider(monkeypatch: pytest.MonkeyPatch, *, delay: float = 0.05) -> N
     # `ChatService` 會快取 Gateway（惰性建立），而端點模組的 `_chat` 是 module 層單例
     # ——前一條測試早就把它建好了，只 patch 解析函式的話這裡換的東西沒有人會再讀。
     monkeypatch.setattr(endpoint._chat, "_gateway", None, raising=False)
+
+
+class TestVanishedBuffer:
+    """產生那則訊息的行程**硬崩潰**（OOM、kill -9）時，讀取端要收得了尾。
+
+    優雅關機有 `ChatService` 的 shield 收尾，硬殺沒有：終局事件永遠不會寫進來，而緩衝區
+    5 分鐘後過期。原本的迴圈只在收到 `done`／`error` 時結束，於是它會**永遠**送心跳
+    ——前端一直顯示「正在輸入」，一條連線一直掛著。DB 那一列由補償掃描標成 interrupted
+    （2026-08-22 加的），但那救不到已經連上的讀取端：它改得動 DB，改不動一個已經不
+    存在的緩衝區。
+    """
+
+    async def test_it_ends_with_an_error_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from api.v1.conversations import _sse
+        from core.streams import StreamBuffer
+
+        monkeypatch.setattr("api.v1.conversations.HEARTBEAT_SECONDS", 0.05)
+        message_id = uuid.uuid4()
+        buffer = StreamBuffer(tenant_id=TENANT_A, message_id=message_id)
+        await buffer.append("delta", {"text": "答到一半"})
+
+        frames: list[str] = []
+        async with asyncio.timeout(10):
+            async for frame in _sse(TENANT_A, message_id):
+                frames.append(frame)
+                if len(frames) == 1:
+                    # 產生端消失，緩衝區隨 TTL 過期。
+                    await buffer.drop()
+
+        assert "STREAM_INTERRUPTED" in frames[-1]
+        assert frames[-1].startswith("event: error") or "event: error" in frames[-1]
+
+    async def test_the_partial_answer_is_delivered_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """已經寫進緩衝區的內容要先送完——收尾不是「把畫面清掉」。"""
+        from api.v1.conversations import _sse
+        from core.streams import StreamBuffer
+
+        monkeypatch.setattr("api.v1.conversations.HEARTBEAT_SECONDS", 0.05)
+        message_id = uuid.uuid4()
+        buffer = StreamBuffer(tenant_id=TENANT_A, message_id=message_id)
+        await buffer.append("delta", {"text": "第一段"})
+
+        frames: list[str] = []
+        async with asyncio.timeout(10):
+            async for frame in _sse(TENANT_A, message_id):
+                frames.append(frame)
+                if len(frames) == 1:
+                    await buffer.drop()
+
+        assert "第一段" in frames[0]
+
+    async def test_a_live_buffer_keeps_heartbeating(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """**緩衝區還在就不准放棄。** 判定寫得太急的話，一個回答很慢的模型會讓使用者
+        看到「生成已中斷」，而它其實還在跑。"""
+        from api.v1.conversations import _sse
+        from core.streams import StreamBuffer
+
+        monkeypatch.setattr("api.v1.conversations.HEARTBEAT_SECONDS", 0.05)
+        message_id = uuid.uuid4()
+        buffer = StreamBuffer(tenant_id=TENANT_A, message_id=message_id)
+        await buffer.append("delta", {"text": "慢慢想"})
+
+        frames: list[str] = []
+        # `aclosing`：提前 break 的話 generator 要被關掉，否則它會留到 GC 才收
+        # （同 ai/gateway 對每一層 async generator 的處置）。
+        async with aclosing(_sse(TENANT_A, message_id)) as stream, asyncio.timeout(10):
+            async for frame in stream:
+                frames.append(frame)
+                if len(frames) >= 6:
+                    break
+
+        assert all("STREAM_INTERRUPTED" not in frame for frame in frames[1:])
+        assert any(frame.startswith(":") for frame in frames), "沒有心跳"

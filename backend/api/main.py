@@ -194,14 +194,21 @@ def create_app() -> FastAPI:
     """
     app = FastAPI(title="Lumina AI Knowledge Platform", version="0.1.0", lifespan=_lifespan)
 
-    # 在函式內 import，同下方的 router：這條 middleware 經 service 認識 Django
-    # model，而模組層 import 會讓「import api.main」本身要求 settings 已設定。
+    # 在函式內 import，同下方的 router：這兩條 middleware 經 service 認識 Django
+    # model（body_limit 讀 uploads 的上限常數），而模組層 import 會讓
+    # 「import api.main」本身要求 settings 已設定。body_limit 另有一個理由：它反過來
+    # 也要 import 本模組的 `problem_response`。
     from api.middleware.audit import AuditMiddleware
+    from api.middleware.body_limit import BodySizeLimitMiddleware
 
     # **順序有意義**：先掛的在內層（Starlette 由後往前包）。稽核要讀租戶
     # contextvar，而清掉它的是 RequestContextMiddleware 的 finally——稽核必須
     # 在它裡面。由 tests/unit/test_audit_registry.py 釘住，不是只寫在這裡。
     app.add_middleware(AuditMiddleware)
+    # body 上限在稽核**外**、追蹤 context **內**：被擋下的請求連 body 都不解析
+    # （所以不必進稽核那一層），但它仍然要有 request_id 與一筆存取日誌——413 若在
+    # 日誌上完全看不見，「使用者說傳不上去」就查不出是被哪一道擋的。
+    app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RequestContextMiddleware)
 
     @app.exception_handler(DomainError)

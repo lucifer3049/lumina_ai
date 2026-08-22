@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import io
 import zipfile
+from typing import Any
 
 import pytest
 
-from core.exceptions import UnsupportedMediaTypeError
+from core.exceptions import UnsupportedMediaTypeError, UploadTooLargeError
 from services.knowledge.uploads import MAX_UPLOAD_BYTES, detect_media_type, sha256_of
 
 PDF_BYTES = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
@@ -166,3 +167,58 @@ def test_single_request_limit_matches_the_chunked_upload_threshold() -> None:
     流程尚未實作，所以這個區間現在的正確行為是 413 並在訊息裡說明上限。
     """
     assert MAX_UPLOAD_BYTES == 32 * 1024 * 1024
+
+
+class TestChunkedRead:
+    """`_read_within_limit`（`api/v1/knowledge.py`）——**擋在載回記憶體之前**。
+
+    原本是 `await file.read()`：一次把整份內容變成 bytes，而大小判定在 service 裡才跑。
+    32MB 的上限擋的是「收不收」，擋不了「先吃掉多少記憶體」——幾個併發的 2GB 上傳就是
+    一次 OOM，而 uvicorn 預設沒有 body 大小限制。
+    """
+
+    @staticmethod
+    def _file(content: bytes, *, size: int | None) -> Any:
+        from fastapi import UploadFile
+
+        return UploadFile(file=io.BytesIO(content), size=size, filename="x.pdf")
+
+    async def test_a_normal_file_comes_back_whole(self) -> None:
+        from api.v1.knowledge import _read_within_limit
+
+        content = b"%PDF-1.7\n" + b"0" * 1000
+
+        assert await _read_within_limit(self._file(content, size=len(content))) == content
+
+    async def test_a_declared_oversize_is_rejected_without_reading(self) -> None:
+        """`file.size` 有值時連讀都不必讀——multipart 解析器已經數過了。"""
+        from api.v1.knowledge import _read_within_limit
+
+        class _Explodes(io.BytesIO):
+            def read(self, size: int | None = -1) -> bytes:  # pragma: no cover —— 不該被呼叫
+                raise AssertionError("已知過大的內容不該被讀進來")
+
+        from fastapi import UploadFile
+
+        upload = UploadFile(file=_Explodes(b""), size=MAX_UPLOAD_BYTES + 1, filename="x.pdf")
+
+        with pytest.raises(UploadTooLargeError):
+            await _read_within_limit(upload)
+
+    async def test_an_undeclared_oversize_is_stopped_mid_read(self) -> None:
+        """`Content-Length` 缺席（chunked）或說謊時 `size` 是 None——這時只能邊讀邊數，
+        但**超過的那一刻就停**，不是讀完再判斷。"""
+        from api.v1.knowledge import _read_within_limit
+
+        oversized = b"0" * (MAX_UPLOAD_BYTES + 1)
+
+        with pytest.raises(UploadTooLargeError):
+            await _read_within_limit(self._file(oversized, size=None))
+
+    async def test_the_limit_itself_is_inclusive(self) -> None:
+        """剛好等於上限要收——邊界寫錯的話，一個剛好 32MB 的合法檔案會被拒。"""
+        from api.v1.knowledge import _read_within_limit
+
+        exact = b"0" * MAX_UPLOAD_BYTES
+
+        assert len(await _read_within_limit(self._file(exact, size=None))) == MAX_UPLOAD_BYTES

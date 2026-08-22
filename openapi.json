@@ -190,6 +190,7 @@
               "format": "uuid",
               "type": "string"
             },
+            "maxItems": 10,
             "title": "Kb Ids",
             "type": "array"
           },
@@ -611,6 +612,7 @@
         "description": "送出一個問題（1D-4a）。",
         "properties": {
           "content": {
+            "maxLength": 32000,
             "title": "Content",
             "type": "string"
           }

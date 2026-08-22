@@ -49,6 +49,7 @@ from core.exceptions import DomainError, ErrorCode, NotFoundError, ProviderError
 from core.streams import StreamBuffer
 from core.tenant import tenant_context
 from core.uow import unit_of_work
+from etl.tokens import estimate_tokens
 from rag.citation import assemble_citations, marker_for
 from rag.pipeline import build_search_query
 from rag.retrievers.vector import RetrievedChunk
@@ -74,6 +75,20 @@ HISTORY_WINDOW_MESSAGES = 20
 # 往返，而 token 是以百計的。0.2 秒是「使用者按下停止到真的停下來」的上限，那遠低於
 # 人的感知門檻，而省下來的是幾百趟往返。
 STOP_POLL_SECONDS = 0.2
+
+
+def _token_reserve_for(question: str) -> int:
+    """開場要預留多少 token 額度（reserve/commit 的 reserve 值）。
+
+    **設定值 + 這個問題本身的估計量**。設定值（`quota_token_reserve_estimate`）涵蓋的
+    是「答案 + context」那一段——它們的長度要到生成結束才知道，只能先估。但問題本身
+    的長度**現在就知道**，而它可以差好幾個量級：一則貼滿的訊息（schema 上限 32,000
+    字元）光是問題就三萬多 token，用一個固定的 2000 去擋線等於沒擋——真實用量要等
+    收尾 commit 才追認，那時該擋的那幾則已經送出去了。
+
+    高估的代價只有「月底最後幾則被提早擋下」，而低估的代價是超用之後才發現。
+    """
+    return get_app_settings().quota_token_reserve_estimate + estimate_tokens(question)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +180,7 @@ class ChatService:
             if r := self._quota.check_and_reserve(tenant_id, "messages_day", 1):
                 reservations.append(r)
             token_reservation = self._quota.check_and_reserve(
-                tenant_id, "tokens_month", get_app_settings().quota_token_reserve_estimate
+                tenant_id, "tokens_month", _token_reserve_for(question)
             )
             if token_reservation:
                 reservations.append(token_reservation)

@@ -556,3 +556,51 @@ class TestTenantIsolation:
         )
 
         assert response.status_code == 404
+
+
+class TestInputLimits:
+    """輸入的硬上限（`api/schemas/conversation.py`）。
+
+    同一張 schema 的 `title` 有 200、`prompt_key` 有 100，而**內容本身原本什麼都沒有**
+    ——最主要的那條路徑反而沒設防。一則 5MB 的訊息會沿著三條路各放大一次：存進
+    `conversation_message`、進歷史視窗（**之後每一輪都重送一次**）、直送 provider 按
+    prompt token 計價。而開場的 quota 預留是估計值，真實用量要等生成結束才追認。
+
+    422 而不是截斷：截斷會讓使用者以為問題送出去了，而答案是根據半個問題產生的。
+    """
+
+    async def test_an_overlong_message_is_rejected(
+        self, client: httpx.AsyncClient, owner: uuid.UUID
+    ) -> None:
+        from api.schemas.conversation import MAX_MESSAGE_CHARS
+
+        token = await _token(client)
+        created = await client.post(
+            "/api/v1/conversations", json={"title": "長訊息"}, headers=_auth(token)
+        )
+        conversation_id = created.json()["id"]
+
+        response = await client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            json={"content": "字" * (MAX_MESSAGE_CHARS + 1)},
+            headers=_auth(token),
+        )
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "VALIDATION_FAILED"
+
+    async def test_too_many_knowledge_bases_are_rejected(
+        self, client: httpx.AsyncClient, owner: uuid.UUID
+    ) -> None:
+        """KB 數量本身不在 quota 資源清單裡，所以「建幾千個 KB 全掛上同一場對話」是
+        做得到的——而每一則訊息都會為每個 KB 各開一次交易查設定、各跑一次檢索。"""
+        from api.schemas.conversation import MAX_CONVERSATION_KBS
+
+        response = await client.post(
+            "/api/v1/conversations",
+            json={"kb_ids": [str(uuid.uuid4()) for _ in range(MAX_CONVERSATION_KBS + 1)]},
+            headers=_auth(await _token(client)),
+        )
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "VALIDATION_FAILED"

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query, Response, status
@@ -39,8 +39,8 @@ from api.schemas.conversation import (
 from api.schemas.problem import ERROR_RESPONSES
 from api.sse import HEARTBEAT_SECONDS, format_event, format_heartbeat
 from core.db import run_orm
-from core.exceptions import ResumeExpiredError, ValidationFailedError
-from core.streams import StreamBuffer
+from core.exceptions import ErrorCode, ResumeExpiredError, ValidationFailedError
+from core.streams import StreamBuffer, StreamEvent
 from services.conversation.chat import ChatService
 from services.conversation.conversations import (
     DEFAULT_PAGE_SIZE,
@@ -309,7 +309,7 @@ async def stop_message(
 
 async def _sse(
     tenant_id: uuid.UUID, message_id: uuid.UUID, *, after: int = 0
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """緩衝區 → 線上的位元組。
 
     **`after` 之後開始**：沒帶 `Last-Event-ID` 時是 0，也就是從頭。生成在 POST 當下就
@@ -318,14 +318,28 @@ async def _sse(
     """
     buffer = StreamBuffer(tenant_id=tenant_id, message_id=message_id)
     last_seq = after
+    misses = 0
     while True:
         # `int()`：Redis 的 XREAD BLOCK 只吃整數毫秒（浮點會被退回
         # `block must be a non-negative integer`），而測試會把間隔調成 0.05 秒。
         events = await buffer.follow(after=last_seq, block_ms=int(HEARTBEAT_SECONDS * 1000))
         if not events:
+            if await buffer.exists():
+                misses = 0
+            else:
+                misses += 1
+            if misses >= _MISSES_BEFORE_GIVING_UP:
+                # 緩衝區不在了，而且不是「還沒開始寫」（見 `_MISSES_BEFORE_GIVING_UP`）。
+                # 產生它的行程已經不在了——硬崩潰（OOM、kill -9）沒有機會寫終局事件，
+                # 而緩衝區 5 分鐘後就過期。沒有這個判斷的話，這條迴圈會**永遠**送心跳：
+                # 前端一直顯示「正在輸入」、一條連線一直掛著，而 DB 那一列早就被補償
+                # 掃描標成 interrupted 了（它改得動 DB，改不動一個已經不存在的緩衝區）。
+                yield format_event(_interrupted_event(last_seq))
+                return
             # 等待逾時：送一個心跳讓中間的 proxy 看到流量（09 §3.2）。
             yield format_heartbeat()
             continue
+        misses = 0
         for event in events:
             last_seq = event.seq
             yield format_event(event)
@@ -336,3 +350,28 @@ async def _sse(
 # 收到這兩種就結束——`done` 是正常講完，`error` 是中斷（1D-3a 的分水嶺之後）。
 # 少了這個判斷，讀取端會在生成結束後繼續空轉送心跳，直到 client 自己關掉為止。
 _TERMINAL_EVENTS = frozenset({"done", "error"})
+
+# 連續幾次「等不到事件、而且緩衝區也不在」才判定生成已死。
+#
+# **不能只看一次**：讀取端本來就可能比產生端早到（POST 回來之後 client 立刻連上，而
+# 第一個事件還沒寫進去），那一瞬間緩衝區確實不存在。連線當下的那一關已經處理過這件事
+# （`stream_message` 對 `after > 0` 或狀態非 streaming 的組合回 409），這裡處理的是
+# 「連上之後才死掉」，所以取兩次——一次心跳的間隔內出現又消失是不可能的。
+_MISSES_BEFORE_GIVING_UP = 2
+
+
+def _interrupted_event(seq: int) -> StreamEvent:
+    """緩衝區消失時補一個終局事件，形狀與 `ChatService._fail` 送的那個相同。
+
+    **`seq` 沿用最後一個真的事件的編號**：這個事件不是緩衝區裡的一列，給它一個更大的
+    號碼會讓 client 之後拿著它去續傳，而那個編號指向不存在的東西。
+    """
+    return StreamEvent(
+        seq=seq,
+        type="error",
+        data={
+            "code": str(ErrorCode.STREAM_INTERRUPTED),
+            "title": "生成已中斷，請重新載入這則訊息",
+            "retryable": True,
+        },
+    )

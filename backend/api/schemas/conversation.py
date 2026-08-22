@@ -17,6 +17,31 @@ from pydantic import BaseModel, Field, field_validator
 
 from services.conversation.conversations import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 
+# ── 輸入的硬上限 ────────────────────────────────────────────────
+#
+# 形狀同 `services/rag/params.py` 的 `MAX_TOP_K`：**保護我們自己的上限，不是使用者
+# 可調的偏好**，因此住在程式碼裡而不是設定檔（15 §4.1 的例外條款）。可調的那一半是
+# quota（tokens_month／messages_day），那才是「這個租戶可以用多少」。
+
+# 一則訊息的字元上限。同一張 schema 的 `title` 有 200、`prompt_key` 有 100，而**內容
+# 本身原本什麼都沒有**——最主要的那條路徑反而沒設防（`/rag/query` 的 query 早就有
+# 4000）。
+#
+# 沒有上限時，一則 5MB 的訊息會沿著三條路各放大一次：存進 `conversation_message`、
+# 進歷史視窗（**之後每一輪都重送一次**）、直送 provider 按 prompt token 計價。而開場
+# 的 quota 預留是一個固定估計值，真正的用量要等生成結束才追認——擋線在那之前形同虛設。
+#
+# 32,000 取的是「與 context 預算同一個量級」：中文約 1 字 1 token，也就是三萬多
+# token，已經比任何一輪的 context 預算（06 §3.2 的 4,500）大一個量級；再大就不是
+# 「一個問題」，而是應該走文件上傳的東西。
+MAX_MESSAGE_CHARS = 32_000
+
+# 一場對話能掛幾個 KB。**KB 數量本身不在 quota 資源清單裡**（04 §8.1 只有 documents／
+# storage_bytes／tokens／messages／streams），所以租戶建幾千個 KB 全掛上同一場對話是
+# 做得到的——而每一則訊息都會為每個 KB 各開一次交易查設定、各跑一次檢索。
+# 上限先擋在這裡；把 KB 數量列入 quota 是另一件事（記入 backlog）。
+MAX_CONVERSATION_KBS = 10
+
 
 class ConversationOut(BaseModel):
     id: uuid.UUID
@@ -54,7 +79,7 @@ class MessageListOut(BaseModel):
 class MessageCreateIn(BaseModel):
     """送出一個問題（1D-4a）。"""
 
-    content: str
+    content: str = Field(max_length=MAX_MESSAGE_CHARS)
 
 
 class TurnStartedOut(BaseModel):
@@ -85,7 +110,7 @@ def _reject_blank(value: str | None) -> str | None:
 class ConversationCreateIn(BaseModel):
     # 標題可以是空的——新對話通常由第一則訊息自動命名（1D-4）。
     title: str = Field(default="", max_length=200)
-    kb_ids: list[uuid.UUID] = Field(default_factory=list)
+    kb_ids: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_CONVERSATION_KBS)
     prompt_key: str = Field(default="", max_length=100)
 
 

@@ -35,8 +35,10 @@ from api.schemas.knowledge import (
 )
 from api.schemas.problem import ERROR_RESPONSES
 from core.db import run_orm
+from core.exceptions import UploadTooLargeError
 from services.knowledge.documents import DocumentService, DocumentView
 from services.knowledge.knowledge_bases import KnowledgeBaseService, KnowledgeBaseView
+from services.knowledge.uploads import MAX_UPLOAD_BYTES
 
 router = APIRouter(tags=["knowledge"], responses=ERROR_RESPONSES)
 _knowledge_bases = KnowledgeBaseService()
@@ -157,7 +159,7 @@ async def upload_document(
     ``file.content_type`` 刻意不使用——那是 client 自報的字串（見
     `services/knowledge/uploads.py`）。檔名同理只當顯示用，實際型別由內容決定。
     """
-    content = await file.read()
+    content = await _read_within_limit(file)
     view = await run_orm(
         _documents.upload,
         principal.tenant_id,
@@ -168,6 +170,44 @@ async def upload_document(
         uploaded_by=principal.user_id,
     )
     return _document_out(view)
+
+
+# 一次讀多少。1MB 也是 Starlette 把 multipart 從記憶體轉存到磁碟的門檻，取同一個
+# 數量級：更小只是多幾次 syscall，更大則讓「超過上限」這件事晚一點才發現。
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_within_limit(file: UploadFile) -> bytes:
+    """分塊讀取，超過上限**當場**停下來。
+
+    `await file.read()` 一次把整份內容載回記憶體，而判定在 service 裡才跑——32MB 的
+    上限擋的是「收不收」，擋不了「先吃掉多少記憶體」。幾個併發的 2GB 上傳就是一次
+    OOM，而 uvicorn 預設沒有 body 大小限制。
+
+    三道防線，由外而內（愈外面愈早、代價愈小）：
+
+    1. **部署層**（nginx／ingress 的 `client_max_body_size`）——連位元組都不收。這一道
+       不在程式碼裡，記在部署清單上。
+    2. **`BodySizeLimitMiddleware`**——看 `Content-Length` 直接 413，body 一個字都不解析。
+    3. **這裡**——`Content-Length` 缺席或說謊時的最後一道。Starlette 這時已經把 body
+       spool 到磁碟（超過 1MB 的部分），所以擋得住的是「載回 RAM」那一段；能擋住的
+       最貴的一段也就是它。
+
+    `file.size` 由 multipart 解析器填，有值時直接判——連讀都不必讀。
+    """
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+        raise UploadTooLargeError(limit_bytes=MAX_UPLOAD_BYTES)
+
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            # 已讀的部分立刻丟掉：帶著 32MB 進 exception handler 沒有任何用處。
+            chunks.clear()
+            raise UploadTooLargeError(limit_bytes=MAX_UPLOAD_BYTES)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.get("/knowledge-bases/{kb_id}/documents", operation_id="documents_list")

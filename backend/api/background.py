@@ -41,7 +41,26 @@ def spawn(coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
     task = asyncio.create_task(coro)
     _running.add(task)
     task.add_done_callback(_running.discard)
+    task.add_done_callback(_log_failure)
     return task
+
+
+def _log_failure(task: asyncio.Task[None]) -> None:
+    """背景 task 的例外要有人記——**沒有人在 await 它**。
+
+    `ChatService.generate` 設計上不往外拋（失敗一律走完整的收尾路徑），所以正常情況
+    這裡什麼都不會做。走得到的是「收尾路徑自己炸了」：DB 在寫最終訊息時斷線、Redis
+    在送 error 事件時掛掉。那時例外會停在 task 物件裡，直到 GC 才以
+    ``Task exception was never retrieved`` 冒出來——沒有 request_id、沒有 tenant、
+    位置指向 GC 發生的地方，而那通常是別的請求正在跑的時候。
+
+    取消不算失敗：關機的 `drain()` 逾時後會取消剩下的，那是預期行為。
+    """
+    if task.cancelled():
+        return
+    exception = task.exception()
+    if exception is not None:
+        logger.error("background_task_failed", exc_info=exception)
 
 
 def pending_count() -> int:
