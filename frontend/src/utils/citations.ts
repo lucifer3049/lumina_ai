@@ -62,8 +62,8 @@ export function renderAnswer(text: string, citations: readonly CitationItem[]): 
     segments.push({
       kind: 'citation',
       marker,
-      // 顯示的數字是**來源面板的第幾筆**，不是 marker 的值：模型跳號時
-      // （只引用第 2 段與第 5 段）畫面上會是 2、5 而面板裡是 1、2。
+      // 顯示的數字是**來源面板的第幾筆**，不是 marker 的值：模型只引用第 2 段與
+      // 第 5 段時，marker 是 2、5 而畫面與面板上一致地寫 1、2。
       index: position + 1,
       docName:
         typeof citations[position]?.doc_name === 'string' ? citations[position].doc_name : '',

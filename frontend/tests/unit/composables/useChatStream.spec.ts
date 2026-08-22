@@ -221,6 +221,103 @@ describe('生命週期', () => {
     expect(stream.isStreaming.value).toBe(false)
   })
 
+  it('cuts the previous connection before opening a new one', async () => {
+    // `/chat` ↔ `/chat/:id` 的切換不卸載元件，onScopeDispose 不會觸發。舊的
+    // controller 被覆蓋掉的話那條連線還活著，兩條串流同時往同一個 buffer 寫字。
+    let firstAborted = false
+    let opened = 0
+    const encoder = new TextEncoder()
+    server.use(
+      http.get(`${BASE_URL}${STREAM_PATH}`, ({ request }) => {
+        opened += 1
+        const mine = opened
+        request.signal.addEventListener('abort', () => {
+          if (mine === 1) {
+            firstAborted = true
+          }
+        })
+        return new HttpResponse(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode(frame(mine, 'delta', { text: `第${mine}條` })))
+              // 不 close：兩條都維持開著。
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        )
+      }),
+    )
+    startedStore()
+    const { value: stream, dispose } = inScope(() => useChatStream())
+
+    const first = stream.start({ conversationId: C1, messageId: M1, retryBaseMs: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const second = stream.start({ conversationId: C1, messageId: M1, retryBaseMs: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(firstAborted).toBe(true)
+    // 舊的收線不得把新的旗標關掉——症狀會是「停止鈕消失了但字還在跑」。
+    expect(stream.isStreaming.value).toBe(true)
+
+    dispose()
+    await Promise.all([first, second])
+    expect(stream.isStreaming.value).toBe(false)
+  })
+
+  it('does not let a superseded stream write into the new buffer', async () => {
+    // 舊連線的事件指名的是舊的 messageId，而 buffer 已經換人了。
+    const C2 = '3f9f2b1e-0000-4000-8000-0000000000c2'
+    const M2 = 'm-assistant-2'
+    const encoder = new TextEncoder()
+    const releases: Array<() => void> = []
+    server.use(
+      http.get(`${BASE_URL}${STREAM_PATH}`, () => {
+        return new HttpResponse(
+          new ReadableStream({
+            start(controller) {
+              // 第二條串流開起來之後，這一條才吐字——遲到的事件。
+              releases.push(() => {
+                controller.enqueue(encoder.encode(frame(9, 'delta', { text: 'A 遲到的尾巴' })))
+              })
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        )
+      }),
+      http.get(`${BASE_URL}/api/v1/conversations/${C2}/messages/${M2}/stream`, () =>
+        new HttpResponse(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode(frame(1, 'delta', { text: 'B 的字' })))
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      ),
+    )
+    const store = startedStore()
+    const { value: stream, dispose } = inScope(() => useChatStream())
+
+    const first = stream.start({ conversationId: C1, messageId: M1, retryBaseMs: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // 切到 B，B 也有一則沒讀完 → buffer 換人、舊連線被切斷。
+    store.currentConversationId = C2
+    store.beginStreaming({ messageId: M2, conversationId: C2 })
+    const second = stream.start({ conversationId: C2, messageId: M2, retryBaseMs: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    for (const release of releases) {
+      release()
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(store.streaming?.messageId).toBe(M2)
+    expect(store.streaming?.text).toBe('B 的字')
+
+    dispose()
+    await Promise.all([first, second])
+  })
+
   it('aborts the connection when the component goes away', async () => {
     // 沒有這條的話，離開對話頁之後那條連線還開著，事件還在往一個沒人看的 store 寫。
     //

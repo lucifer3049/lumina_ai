@@ -237,6 +237,30 @@ describe('續傳（09 §3.2）', () => {
     expect(attempts).toBe(3)
     expect(outcome.status).toBe('failed')
   })
+
+  it('counts consecutive failures only — receiving events clears the tally', async () => {
+    // 一場三分鐘的生成被代理掐斷四次（每次都成功續傳）不該放棄：`maxRetries` 算的
+    // 是**連續**失敗。只增不減的話，長回答撐不過累計 3 次網路抖動，而使用者看到的
+    // 是回答停在半路。與 usePolling 的「成功即復位」同一條原則。
+    let attempts = 0
+    server.use(
+      http.get(`${BASE_URL}${PATH}`, () => {
+        attempts += 1
+        // 每一段都正常收了字才斷線；第四段講完。
+        return attempts < 4
+          ? sseResponse([frame(attempts, 'delta', { text: `第 ${attempts} 段` })])
+          : sseResponse([frame(4, 'done', { finish_reason: 'stop' })])
+      }),
+    )
+    const sink = collector()
+
+    // maxRetries=1：計數不歸零的話，第二次斷線就直接 failed（回答只剩第一段）。
+    const outcome = await openEventStream(PATH, sink, { retryBaseMs: 1, maxRetries: 1 })
+
+    expect(attempts).toBe(4)
+    expect(outcome.status).toBe('completed')
+    expect(sink.events).toHaveLength(4)
+  })
 })
 
 describe('取消', () => {

@@ -9,6 +9,11 @@
  * - `error` 事件 → 保留已收到的字並標成失敗（它是內容，不是傳輸故障）。
  * - 續傳過期 / 連不上 → buffer 沒有結局可言：前者改抓最終訊息（答案其實已經生成
  *   完了，使用者根本不需要知道中間發生過什麼），後者只能告訴使用者連不上。
+ *
+ * **同一時間只准有一條連線**。`onScopeDispose` 只在元件卸載時觸發，而 `/chat` ↔
+ * `/chat/:id` 的切換不卸載本元件——舊的 controller 被 `start()` 覆蓋掉的話，那條連線
+ * 還活著而且沒有人斷得了它，兩條串流會同時往同一個 buffer 寫字。所以開新的之前先
+ * 斷舊的；後端的生成不因此停止（06 §4 的 G-06），切回去時 `resumeUnfinished` 會接。
  */
 import { onScopeDispose, ref, type Ref } from 'vue'
 
@@ -47,40 +52,57 @@ export function useChatStream(): ChatStream {
   const store = useChatStore()
   const isStreaming = ref(false)
   let controller: AbortController | null = null
-
-  async function onEvent(event: SseEvent): Promise<void> {
-    const data = asRecord(event.data)
-    switch (event.type) {
-      case 'delta':
-        store.appendDelta(asText(data.text))
-        break
-      case 'citations':
-        store.applyCitations(Array.isArray(data.items) ? (data.items as CitationItem[]) : [])
-        break
-      case 'usage':
-        store.applyUsage(data)
-        break
-      case 'done':
-        // await：收線之前要先把最終訊息換上去，否則 start() 回來時畫面還是舊的。
-        await store.finishStreaming()
-        break
-      case 'error':
-        store.failStreaming({
-          code: asText(data.code) || 'INTERNAL_ERROR',
-          title: asText(data.title) || '生成失敗',
-          retryable: data.retryable === true,
-        })
-        break
-      default:
-        // `meta` 目前沒有畫面要用的東西；`tool_call` 等 3A 才有真的工具（決定記於
-        // 1E-3 開工討論）。未知事件一律安靜略過——後端加新事件不該讓前端壞掉。
-        break
-    }
-  }
+  /**
+   * 哪一次 `start()` 才有資格動共用狀態。abort 之後仍可能有一個已經進到 handler 的
+   * 事件在飛，而舊的 `finally` 若晚一步跑完，就會把新串流的 `isStreaming` 關掉、
+   * 把新的 controller 設成 null——症狀是「停止鈕消失了但字還在跑」。
+   */
+  let runId = 0
 
   async function start(options: StartOptions): Promise<void> {
-    controller = new AbortController()
+    controller?.abort()
+    const ownController = new AbortController()
+    const ownRun = (runId += 1)
+    controller = ownController
     isStreaming.value = true
+
+    // store 的寫入一律指名 messageId：這條連線只准寫自己那一則的 buffer。
+    const onEvent = async (event: SseEvent): Promise<void> => {
+      if (ownRun !== runId) {
+        return // 已經被新的串流取代，這是遲到的事件
+      }
+      const data = asRecord(event.data)
+      switch (event.type) {
+        case 'delta':
+          store.appendDelta(options.messageId, asText(data.text))
+          break
+        case 'citations':
+          store.applyCitations(
+            options.messageId,
+            Array.isArray(data.items) ? (data.items as CitationItem[]) : [],
+          )
+          break
+        case 'usage':
+          store.applyUsage(options.messageId, data)
+          break
+        case 'done':
+          // await：收線之前要先把最終訊息換上去，否則 start() 回來時畫面還是舊的。
+          await store.finishStreaming(options.messageId)
+          break
+        case 'error':
+          store.failStreaming(options.messageId, {
+            code: asText(data.code) || 'INTERNAL_ERROR',
+            title: asText(data.title) || '生成失敗',
+            retryable: data.retryable === true,
+          })
+          break
+        default:
+          // `meta` 目前沒有畫面要用的東西；`tool_call` 等 3A 才有真的工具（決定記於
+          // 1E-3 開工討論）。未知事件一律安靜略過——後端加新事件不該讓前端壞掉。
+          break
+      }
+    }
+
     try {
       const outcome = await openEventStream(
         `/api/v1/conversations/${encodeURIComponent(options.conversationId)}/messages/${encodeURIComponent(options.messageId)}/stream`,
@@ -89,21 +111,26 @@ export function useChatStream(): ChatStream {
           lastEventId: options.lastEventId ?? null,
           retryBaseMs: options.retryBaseMs,
           maxRetries: options.maxRetries,
-          signal: controller.signal,
+          signal: ownController.signal,
         },
       )
 
+      if (ownRun !== runId) {
+        return // 結局也一樣：被取代的串流不得再動 store
+      }
       if (outcome.status === 'resume-expired') {
         // 生成本身沒有失敗，只是我們接不回那條串流了。
-        await store.finishStreaming()
+        await store.finishStreaming(options.messageId)
       } else if (outcome.status === 'failed') {
-        store.failStreaming(DISCONNECTED)
+        store.failStreaming(options.messageId, DISCONNECTED)
       }
       // `completed`：done／error 事件已經處理過了。
       // `aborted`：使用者自己離開或按停止，buffer 維持現狀。
     } finally {
-      isStreaming.value = false
-      controller = null
+      if (ownRun === runId) {
+        isStreaming.value = false
+        controller = null
+      }
     }
   }
 

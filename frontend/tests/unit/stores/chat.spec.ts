@@ -22,6 +22,8 @@ import { useChatStore } from '@/stores/chat'
 const BASE_URL = 'http://api.test'
 const C1 = '3f9f2b1e-0000-4000-8000-0000000000c1'
 const C2 = '3f9f2b1e-0000-4000-8000-0000000000c2'
+const M1 = 'm-assistant'
+const M2 = 'm-assistant-2'
 const server = setupServer()
 
 const conversation = (id: string, title: string) => ({
@@ -230,15 +232,15 @@ describe('串流中的 buffer', () => {
   function streamingStore() {
     const store = useChatStore()
     store.currentConversationId = C1
-    store.beginStreaming({ messageId: 'm-assistant', conversationId: C1 })
+    store.beginStreaming({ messageId: M1, conversationId: C1 })
     return store
   }
 
   it('accumulates deltas in arrival order', () => {
     const store = streamingStore()
 
-    store.appendDelta('年假')
-    store.appendDelta('是 14 天')
+    store.appendDelta(M1, '年假')
+    store.appendDelta(M1, '是 14 天')
 
     expect(store.streaming?.text).toBe('年假是 14 天')
   })
@@ -246,8 +248,8 @@ describe('串流中的 buffer', () => {
   it('keeps citations and usage from their own events', () => {
     const store = streamingStore()
 
-    store.applyCitations([{ marker: '1', doc_name: 'a.pdf' }])
-    store.applyUsage({ prompt_tokens: 10, completion_tokens: 20, cost: null })
+    store.applyCitations(M1, [{ marker: '1', doc_name: 'a.pdf' }])
+    store.applyUsage(M1, { prompt_tokens: 10, completion_tokens: 20, cost: null })
 
     expect(store.streaming?.citations).toHaveLength(1)
     expect(store.streaming?.usage).toMatchObject({ completion_tokens: 20 })
@@ -271,9 +273,9 @@ describe('串流中的 buffer', () => {
       ),
     )
     const store = streamingStore()
-    store.appendDelta('年假是 14 天')
+    store.appendDelta(M1, '年假是 14 天')
 
-    await store.finishStreaming()
+    await store.finishStreaming(M1)
 
     expect(store.streaming).toBeNull()
     expect(store.messages.at(-1)).toMatchObject({ id: 'm-assistant', content: '年假是 14 天[c:1]' })
@@ -283,9 +285,9 @@ describe('串流中的 buffer', () => {
     // 09 §3.2 的 error 事件：HTTP 早就 200 了，已經送出的字是有效內容。
     // 清掉它等於把使用者已經讀到的東西沒收。
     const store = streamingStore()
-    store.appendDelta('已經講到一半')
+    store.appendDelta(M1, '已經講到一半')
 
-    store.failStreaming({ code: 'PROVIDER_UNAVAILABLE', title: '模型暫時不可用', retryable: true })
+    store.failStreaming(M1, { code: 'PROVIDER_UNAVAILABLE', title: '模型暫時不可用', retryable: true })
 
     expect(store.streaming?.text).toBe('已經講到一半')
     expect(store.streaming?.status).toBe('error')
@@ -302,7 +304,7 @@ describe('串流中的 buffer', () => {
       }),
     )
     const store = streamingStore()
-    store.appendDelta('講到一半被按停')
+    store.appendDelta(M1, '講到一半被按停')
 
     await store.stopStreaming()
 
@@ -315,7 +317,137 @@ describe('串流中的 buffer', () => {
     // 換頁之後才到的事件。沒有這條守門的話，上一則回答的尾巴會長在新頁面上。
     const store = useChatStore()
 
-    store.appendDelta('遲到的字')
+    store.appendDelta(M1, '遲到的字')
+
+    expect(store.streaming).toBeNull()
+  })
+
+  it('counts a pending stop as still generating', () => {
+    // 202 是「已受理、還沒發生」：這時放開輸入框，使用者送下一句會蓋掉還在寫的 buffer。
+    const store = streamingStore()
+    expect(store.isGenerating).toBe(true)
+
+    store.streaming!.status = 'stopping'
+    expect(store.isGenerating).toBe(true)
+
+    store.streaming!.status = 'error'
+    expect(store.isGenerating).toBe(false)
+  })
+
+  it('does not ask the backend to stop twice', async () => {
+    let calls = 0
+    server.use(
+      http.post(`${BASE_URL}/api/v1/conversations/${C1}/messages/${M1}/stop`, () => {
+        calls += 1
+        return HttpResponse.json({}, { status: 202 })
+      }),
+    )
+    const store = streamingStore()
+
+    await store.stopStreaming()
+    await store.stopStreaming()
+
+    expect(calls).toBe(1)
+  })
+})
+
+describe('buffer 屬於哪一則', () => {
+  /**
+   * 一個 buffer、很多個對話：A 生成中切到 B，A 那條連線的事件仍會到（後端不因為
+   * client 離開而停止，06 §4 的 G-06）。誰先到誰贏的話，A 的字會長在 B 的回答裡。
+   */
+  it('drops events addressed to a message that is no longer buffered', () => {
+    const store = useChatStore()
+    store.currentConversationId = C1
+    store.beginStreaming({ messageId: M1, conversationId: C1 })
+    store.appendDelta(M1, 'A 的字')
+
+    // 切到 B，B 也有一則在生成 → buffer 換人。
+    store.beginStreaming({ messageId: M2, conversationId: C2 })
+    store.currentConversationId = C2
+
+    store.appendDelta(M1, 'A 遲到的尾巴')
+    store.applyCitations(M1, [{ marker: '1', doc_name: 'a.pdf' }])
+    store.applyUsage(M1, { completion_tokens: 99 })
+    store.failStreaming(M1, { code: 'X', title: 'x', retryable: false })
+
+    expect(store.streaming).toMatchObject({ messageId: M2, text: '', status: 'streaming' })
+    expect(store.streaming?.citations).toEqual([])
+    expect(store.streaming?.usage).toBeNull()
+  })
+
+  it('does not swap the visible conversation when another one finishes', async () => {
+    // `fetchMessages` 會連 `currentConversationId` 一起換掉：在看 B 的時候讓 A 的
+    // 完成觸發它，畫面上的訊息整包變成 A 的內容，而它是最新的 requestId，守門機制
+    // 反而站在它那邊。
+    let fetchedA = false
+    server.use(
+      http.get(`${BASE_URL}/api/v1/conversations/${C1}/messages`, () => {
+        fetchedA = true
+        return HttpResponse.json({ items: [message('m-a', 'assistant', 'A 的回答')], next_cursor: null })
+      }),
+    )
+    const store = useChatStore()
+    store.beginStreaming({ messageId: M1, conversationId: C1 })
+    // 使用者切到 B
+    store.currentConversationId = C2
+    store.messages = [message('m-b', 'assistant', 'B 的回答')]
+
+    await store.finishStreaming(M1)
+
+    expect(fetchedA).toBe(false)
+    expect(store.currentConversationId).toBe(C2)
+    expect(store.messages.map((m) => m.content)).toEqual(['B 的回答'])
+    // 但 A 的 buffer 要收掉：它已經有結局了，留著只會被下一頁誤認成生成中。
+    expect(store.streaming).toBeNull()
+  })
+
+  it('still refetches when the finished stream is the one on screen', async () => {
+    server.use(
+      http.get(`${BASE_URL}/api/v1/conversations/${C1}/messages`, () =>
+        HttpResponse.json({ items: [message(M1, 'assistant', '完整的回答')], next_cursor: null }),
+      ),
+    )
+    const store = useChatStore()
+    store.currentConversationId = C1
+    store.beginStreaming({ messageId: M1, conversationId: C1 })
+
+    await store.finishStreaming(M1)
+
+    expect(store.streaming).toBeNull()
+    expect(store.messages.at(-1)).toMatchObject({ content: '完整的回答' })
+  })
+
+  it('keeps another conversation buffer when this one is deleted', async () => {
+    server.use(
+      http.delete(
+        `${BASE_URL}/api/v1/conversations/${C1}`,
+        () => new HttpResponse(null, { status: 204 }),
+      ),
+    )
+    const store = useChatStore()
+    store.conversations = [conversation(C1, '要刪的'), conversation(C2, '還在生成的')]
+    store.currentConversationId = C1
+    store.beginStreaming({ messageId: M2, conversationId: C2 })
+
+    await store.deleteConversation(C1)
+
+    expect(store.streaming?.conversationId).toBe(C2)
+  })
+
+  it('clears the buffer when its own conversation is deleted', async () => {
+    server.use(
+      http.delete(
+        `${BASE_URL}/api/v1/conversations/${C1}`,
+        () => new HttpResponse(null, { status: 204 }),
+      ),
+    )
+    const store = useChatStore()
+    store.conversations = [conversation(C1, '要刪的')]
+    store.currentConversationId = C2
+    store.beginStreaming({ messageId: M1, conversationId: C1 })
+
+    await store.deleteConversation(C1)
 
     expect(store.streaming).toBeNull()
   })

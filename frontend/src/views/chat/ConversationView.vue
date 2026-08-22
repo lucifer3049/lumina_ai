@@ -17,6 +17,10 @@
  * 重新整理（或深層連結）進來時，**沒讀完的那則會自己接回去**：訊息清單裡若有一則
  * 還在 `streaming`，就對它開一條串流——後端的生成不因為 client 離開而停止（06 §4
  * 的 G-06），所以接回去看到的是完整的後半段。
+ *
+ * `store.streaming` 是**全域單例**，而這個元件同時服務所有對話：畫面上的每一處都得
+ * 先問「這條 buffer 是不是這個對話的」（`streamingHere`）。無條件渲染的話，A 生成中
+ * 的回答會出現在 B 的畫面裡——而它連錯誤都不算，看起來只是「怎麼多了一段」。
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -41,8 +45,25 @@ const toast = useToast()
 const router = useRouter()
 
 const scroller = ref<HTMLElement | null>(null)
-const activeCitation = ref<number | null>(null)
+/**
+ * 被點到的引用**連同它屬於哪一則**。只記編號的話，點較早那則的 3 會去 highlight
+ * 面板當下顯示的第 3 筆，而面板顯示的是另一則的來源——兩個 3 毫無關係。
+ */
+const activeCitation = ref<{ messageId: string; index: number } | null>(null)
 let selfNavigated = false
+
+/** 這條 buffer 是不是「畫面上這個對話」的。不是的話，本頁一個字都不該顯示它。 */
+const streamingHere = computed(() =>
+  store.streaming !== null && store.streaming.conversationId === props.conversationId
+    ? store.streaming
+    : null,
+)
+
+/**
+ * 輸入框反映的是**這一頁**的生成狀態：A 在生成不該把 B 的輸入框鎖起來。
+ * 「算不算生成中」（`stopping` 也算）只在 store 定義一次，這裡只加上頁面這個條件。
+ */
+const isGeneratingHere = computed(() => streamingHere.value !== null && store.isGenerating)
 
 const conversation = computed(
   () => store.conversations.find((item) => item.id === props.conversationId) ?? null,
@@ -56,18 +77,49 @@ const title = computed(() => {
 })
 
 /**
- * 面板顯示哪一組來源：正在生成時看 buffer，否則看最後一則有引用的回答。
- * 每則訊息各有各的來源，而畫面上只有一個面板——以「使用者現在在看的那一則」為準。
+ * 面板顯示哪一則的來源：**點過的那一則優先**，其次是正在生成的，最後才是最後一則
+ * 有引用的回答。每則訊息各有各的來源，而畫面上只有一個面板——點誰就看誰。
  */
-const citations = computed<CitationItem[]>(() => {
-  if (store.streaming !== null) {
-    return store.streaming.citations
+const citationSource = computed<{ messageId: string; items: CitationItem[] } | null>(() => {
+  const picked = activeCitation.value
+  const buffer = streamingHere.value
+  if (picked !== null) {
+    if (buffer !== null && buffer.messageId === picked.messageId) {
+      return { messageId: picked.messageId, items: buffer.citations }
+    }
+    const message = store.messages.find((item) => item.id === picked.messageId)
+    if (message !== undefined) {
+      return { messageId: picked.messageId, items: (message.citations ?? []) as CitationItem[] }
+    }
   }
-  const lastWithCitations = [...store.messages]
+  if (buffer !== null) {
+    return { messageId: buffer.messageId, items: buffer.citations }
+  }
+  const last = [...store.messages]
     .reverse()
     .find((item) => Array.isArray(item.citations) && item.citations.length > 0)
-  return (lastWithCitations?.citations ?? []) as CitationItem[]
+  return last === undefined
+    ? null
+    : { messageId: last.id, items: (last.citations ?? []) as CitationItem[] }
 })
+
+const citations = computed<CitationItem[]>(() => citationSource.value?.items ?? [])
+
+/** 只有面板正在顯示那一則時，highlight 才有意義。 */
+const activeIndex = computed<number | null>(() => {
+  const picked = activeCitation.value
+  return picked !== null && picked.messageId === citationSource.value?.messageId
+    ? picked.index
+    : null
+})
+
+// 新的一則開始生成 = 使用者的注意力已經移到它身上，面板跟著走（別再釘在舊的那則）。
+watch(
+  () => store.streaming?.messageId,
+  () => {
+    activeCitation.value = null
+  },
+)
 
 watch(
   () => props.conversationId,
@@ -76,6 +128,7 @@ watch(
       selfNavigated = false
       return
     }
+    activeCitation.value = null
     if (conversationId === undefined) {
       // 回到「新對話」：清空畫面，但不動 streaming——上一場的生成在背景收尾。
       store.currentConversationId = null
@@ -102,7 +155,7 @@ watch(
 // 字一直長出來的時候要跟著捲。watch 而不是在每個事件裡呼叫：來源有三個
 // （送出、串流、重新載入），逐一接線遲早會漏掉一個。
 watch(
-  () => [store.messages.length, store.streaming?.text] as const,
+  () => [store.messages.length, streamingHere.value?.text] as const,
   () => {
     void scrollToBottom()
   },
@@ -138,6 +191,9 @@ async function send(content: string): Promise<void> {
       const created = await store.createConversation({ kb_ids: [], title })
       conversationId = created.id
       selfNavigated = true
+      // watch 被 selfNavigated 跳過，所以「畫面上是哪個對話」得自己說一次——
+      // `finishStreaming` 靠它判斷該不該重抓，漏了的話回答生成完卻不會出現。
+      store.currentConversationId = conversationId
       await router.push({ name: 'chat-conversation', params: { conversationId } })
     }
     const turn = await store.sendMessage(conversationId, content)
@@ -149,6 +205,9 @@ async function send(content: string): Promise<void> {
 }
 
 async function stop(): Promise<void> {
+  if (streamingHere.value === null) {
+    return // 停止鈕只停這一頁的那條
+  }
   try {
     await store.stopStreaming()
   } catch (error) {
@@ -200,7 +259,7 @@ function onDeleted(conversationId: string): void {
 
           <!-- 空對話不能是一片虛空：視線得有地方落。題句居中，落在輸入框正上方。 -->
           <div
-            v-else-if="store.messages.length === 0 && store.streaming === null"
+            v-else-if="store.messages.length === 0 && streamingHere === null"
             class="empty-state"
           >
             <p class="empty-greeting">以文會友，答疑解惑</p>
@@ -213,26 +272,26 @@ function onDeleted(conversationId: string): void {
             :role="item.role"
             :content="item.content"
             :citations="(item.citations as CitationItem[]) ?? []"
-            @citation-click="activeCitation = $event"
+            @citation-click="activeCitation = { messageId: item.id, index: $event }"
           />
 
           <MessageBubble
-            v-if="store.streaming !== null"
+            v-if="streamingHere !== null"
             role="assistant"
-            :content="store.streaming.text"
-            :citations="store.streaming.citations"
-            :streaming="store.streaming.status !== 'error'"
-            @citation-click="activeCitation = $event"
+            :content="streamingHere.text"
+            :citations="streamingHere.citations"
+            :streaming="streamingHere.status !== 'error'"
+            @citation-click="activeCitation = { messageId: streamingHere.messageId, index: $event }"
           />
 
-          <div v-if="store.streaming?.status === 'error'" class="failure" role="alert">
-            <span class="failure-title">{{ store.streaming.error?.title ?? '生成失敗' }}</span>
-            <InkButton v-if="store.streaming.error?.retryable" size="small" @click="retry">重試</InkButton>
+          <div v-if="streamingHere?.status === 'error'" class="failure" role="alert">
+            <span class="failure-title">{{ streamingHere.error?.title ?? '生成失敗' }}</span>
+            <InkButton v-if="streamingHere.error?.retryable" size="small" @click="retry">重試</InkButton>
           </div>
         </div>
       </div>
 
-      <ChatComposer class="col" :generating="store.isGenerating" @send="send" @stop="stop" />
+      <ChatComposer class="col" :generating="isGeneratingHere" @send="send" @stop="stop" />
     </section>
 
     <!-- 有引用才攤開箋紙：氣泡自帶「未引用」提示，空面板只是一塊漂浮物。 -->
@@ -240,7 +299,7 @@ function onDeleted(conversationId: string): void {
       <CitationPanel
         v-if="citations.length > 0"
         :citations="citations"
-        :active-index="activeCitation"
+        :active-index="activeIndex"
       />
     </Transition>
   </div>

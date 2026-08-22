@@ -197,6 +197,10 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * 2. **串流沒有終局事件就結束 = 斷線**，要帶 `Last-Event-ID` 重連（不帶的話後端
  *    從頭送，畫面上整段回答重複一次）。
  * 3. **409 RESUME_EXPIRED 不重試**：緩衝區 TTL 5 分鐘已過，重連幾次都一樣。
+ *
+ * `maxRetries` 算的是**連續**失敗，不是整條串流的總量：收到事件即歸零（同
+ * `usePolling` 的「成功即復位」）。只增不減的話，一場三分鐘的生成被代理掐斷第 4 次
+ * 就直接放棄，即使每一段之間都正常收了幾百個事件——而使用者看到的是回答停在半路。
  */
 export async function openEventStream(
   path: string,
@@ -227,6 +231,8 @@ export async function openEventStream(
 
       if (response.body !== null) {
         for await (const event of parseSseStream(response.body, { signal })) {
+          // 收到東西＝這條連線是通的，之前的失敗已經翻篇。
+          attempt = 0
           if (event.id !== undefined) {
             lastEventId = event.id
           }

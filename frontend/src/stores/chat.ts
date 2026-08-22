@@ -11,6 +11,11 @@
  * 內容、`usage` 與後端實際存的可能有出入，那正是 1D-4a 的不變式要驗的東西。
  *
  * 事件的接線在 `composables/useChatStream.ts`——這裡只有狀態與 API，不知道 SSE 存在。
+ *
+ * **buffer 只有一個，而對話有很多個**：在 A 生成中切到 B，A 那條連線的事件仍會陸續
+ * 到達（後端不因為 client 離開而停止生成，06 §4 的 G-06）。因此寫進 buffer 的每一個
+ * 動作都要指名「這是哪一則回答的事件」——誰先到誰贏的話，A 的字會長在 B 的回答裡。
+ * 誰在畫面上則由 `currentConversationId` 說了算，元件再依它決定要不要渲染 buffer。
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
@@ -64,7 +69,13 @@ export const useChatStore = defineStore('chat', () => {
   /** 切對話是一秒內會做兩次的動作，慢的回應不得覆蓋後來的選擇（同 knowledge store）。 */
   let messagesRequestId = 0
 
-  const isGenerating = computed(() => streaming.value?.status === 'streaming')
+  /**
+   * `stopping` 也算生成中：停止是 202「已受理、還沒發生」，串流還沒收線。這裡放行的
+   * 話輸入框立刻解鎖，使用者送下一句 → 新的 buffer 蓋掉舊的，而舊連線還在寫。
+   */
+  const isGenerating = computed(
+    () => streaming.value?.status === 'streaming' || streaming.value?.status === 'stopping',
+  )
 
   // ── 對話 ────────────────────────────────────────────────────────────────
 
@@ -112,6 +123,9 @@ export const useChatStore = defineStore('chat', () => {
       // 留著訊息的話，畫面上還開著一個不存在的對話，而送出下一句會 404。
       currentConversationId.value = null
       messages.value = []
+    }
+    // buffer 另外判斷：被刪的不一定是正在生成的那個，一律清等於把別人的字擦掉。
+    if (streaming.value?.conversationId === conversationId) {
       streaming.value = null
     }
   }
@@ -168,7 +182,7 @@ export const useChatStore = defineStore('chat', () => {
         content,
         citations: [],
         model: '',
-        status: 'complete',
+        status: 'completed',
         usage: {},
         created_at: new Date().toISOString(),
       },
@@ -191,54 +205,76 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 事件可能在換頁之後才到；沒有 buffer 就是沒人在等它了。 */
-  function appendDelta(text: string): void {
-    if (streaming.value === null) {
-      return
+  /**
+   * 事件屬於哪一則由呼叫端指名——沒有 buffer（換頁之後才到）或 buffer 已經換成另一
+   * 則（切到別的對話、送出下一句）時一律丟掉。少了 `messageId` 這道門，上一條串流
+   * 的尾巴會接在新回答的開頭，而畫面上看起來只是「文字交錯」，沒有任何錯誤。
+   */
+  const bufferFor = (messageId: string): StreamingMessage | null =>
+    streaming.value?.messageId === messageId ? streaming.value : null
+
+  function appendDelta(messageId: string, text: string): void {
+    const buffer = bufferFor(messageId)
+    if (buffer !== null) {
+      buffer.text += text
     }
-    streaming.value.text += text
   }
 
-  function applyCitations(items: readonly CitationItem[]): void {
-    if (streaming.value === null) {
-      return
+  function applyCitations(messageId: string, items: readonly CitationItem[]): void {
+    const buffer = bufferFor(messageId)
+    if (buffer !== null) {
+      buffer.citations = [...items]
     }
-    streaming.value.citations = [...items]
   }
 
-  function applyUsage(usage: Record<string, unknown>): void {
-    if (streaming.value === null) {
-      return
+  function applyUsage(messageId: string, usage: Record<string, unknown>): void {
+    const buffer = bufferFor(messageId)
+    if (buffer !== null) {
+      buffer.usage = { ...usage }
     }
-    streaming.value.usage = { ...usage }
   }
 
-  /** `done` 之後：先抓後清（見檔頭）。 */
-  async function finishStreaming(): Promise<void> {
-    const conversationId = streaming.value?.conversationId ?? currentConversationId.value
-    if (conversationId !== null) {
+  /**
+   * `done` 之後：先抓後清（見檔頭）。
+   *
+   * **只重抓畫面上的那個對話**。`fetchMessages` 會連 `currentConversationId` 一起
+   * 換掉，所以在看 B 的時候讓 A 的完成觸發它，等於整包訊息被換成 A 的內容——而它是
+   * 最新的 requestId，`fetchMessages` 的守門機制反而站在它那邊。不重抓不會漏東西：
+   * 下次切回 A 時 watch 自己會抓。
+   */
+  async function finishStreaming(messageId: string): Promise<void> {
+    const buffer = bufferFor(messageId)
+    if (buffer === null) {
+      return
+    }
+    const conversationId = buffer.conversationId
+    if (conversationId === currentConversationId.value) {
       await fetchMessages(conversationId, { silent: true })
     }
-    streaming.value = null
+    // 再確認一次：重抓期間使用者可能已經送出下一句，那是新的 buffer，不是我的。
+    if (bufferFor(messageId) !== null) {
+      streaming.value = null
+    }
   }
 
   /**
    * `error` 事件或連不上。**保留已收到的字**：HTTP 早就 200 了，那些字是有效內容，
    * 清掉等於把使用者已經讀到的東西沒收。
    */
-  function failStreaming(error: StreamError): void {
-    if (streaming.value === null) {
+  function failStreaming(messageId: string, error: StreamError): void {
+    const buffer = bufferFor(messageId)
+    if (buffer === null) {
       return
     }
-    streaming.value.status = 'error'
-    streaming.value.error = error
+    buffer.status = 'error'
+    buffer.error = error
   }
 
   /** 請後端停止生成。202 = 已受理、還沒發生（真正停下來的是另一個行程裡的 task）。 */
   async function stopStreaming(): Promise<void> {
     const current = streaming.value
-    if (current === null) {
-      return
+    if (current === null || current.status !== 'streaming') {
+      return // 已經受理過（或已經結束）——再送一次只是重複打後端。
     }
     current.status = 'stopping'
     await request<null>(
