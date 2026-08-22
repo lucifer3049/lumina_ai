@@ -4,6 +4,11 @@
 由基底自動注入，子類別不得自行組 queryset 起點。TenantContext 缺失一律
 raise（Fail Fast），不提供「預設租戶」或「無租戶模式」的退路。
 
+游標分頁的兩個 helper（:func:`cursor_key`、:func:`split_page`）也住這裡：對話與稽核
+（2A-4）用的是同一套「多取一筆 + (時間, id) 複合鍵」，而它原本只在
+``repositories/conversation.py``。放這裡的理由同 :class:`SoftDeletableRepository`
+——它是跨 context 的共用基礎設施，不屬於任何一個 bounded context。
+
 **PgBouncer transaction mode 的限制**（05 §5.5）：本層禁用 session 級功能
 ——advisory lock、``SET``（``SET LOCAL`` 在交易內安全）、server-side prepared
 statement（已於 settings 以 ``prepare_threshold=None`` 關閉）、以及 **server-side
@@ -14,10 +19,14 @@ cursor**（``QuerySet.iterator()``；已於 settings 以
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
+from datetime import datetime
+from typing import Any
 
 from django.db.models import Model, QuerySet
 from django.utils import timezone
 
+from common.cursors import CursorError
 from core.tenant import get_current_tenant_id
 
 
@@ -66,3 +75,34 @@ class SoftDeletableRepository[M: Model](TenantScopedRepository[M]):
         worker 分批做的事，在請求路徑上做會鎖表。
         """
         return self.get_queryset().filter(id=entity_id).update(deleted_at=timezone.now())
+
+
+def cursor_key(cursor: dict[str, Any]) -> tuple[datetime, uuid.UUID]:
+    """游標 dict → (排序鍵, id)。內容壞掉一律 `CursorError`。
+
+    游標可能來自舊版前端存的 localStorage、被截斷的網址、或使用者手改——因此
+    **不能假設欄位存在或型別正確**，而錯誤要是呼叫端轉得成 422 的那一種。
+    """
+    try:
+        return datetime.fromisoformat(str(cursor["k"])), uuid.UUID(str(cursor["id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CursorError("游標內容不正確") from exc
+
+
+def split_page[T](
+    rows: list[T], *, limit: int, cursor_of: Callable[[T], dict[str, Any]]
+) -> tuple[list[T], dict[str, Any] | None]:
+    """把「多取一筆」的結果切成一頁 + 下一頁的游標。
+
+    **多取一筆是判斷「還有沒有下一頁」唯一可靠的方法**。用 `count()` 另外查一次的話，
+    兩次查詢之間新增的資料會讓「有沒有下一頁」與實際內容對不上；而只憑「這頁滿了」
+    來推斷，會在資料剛好是頁大小整數倍時多給一個永遠回空清單的游標。
+
+    `cursor_of` 由呼叫端提供而不是在這裡讀欄位：排序鍵每個查詢不同，而
+    `Conversation` 的鍵是 `COALESCE(last_message_at, created_at)`——在 Python 端算
+    （`a or b`）與 SQL 的 COALESCE 等價，且不必把 annotate 出來的欄位帶進型別系統。
+    """
+    if len(rows) <= limit:
+        return rows, None
+    page = rows[:limit]
+    return page, cursor_of(page[-1])

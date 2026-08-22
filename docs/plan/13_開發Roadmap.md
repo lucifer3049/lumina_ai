@@ -248,7 +248,7 @@ stream_chat／1D-3b PromptBuilder／1D-4a 端點與生成／1D-4b resume 與 sto
 |--------|------|------|
 | 2A 營運基座 | Quota（reserve/commit + Redis 計數 + 對帳）、usage_logs 分區 + Analytics 彙總與 Dashboard API、Audit middleware、Notification（in-app + email） | 5 pw |
 | 2B 檢索升級 | pgroonga FTS + RRF hybrid、rerank 接入（含降級鏈）、KB 級參數覆寫、re-ingest/reindex 流程 | 4 pw |
-| 2C 管理面（裁切版） | API Key、Settings + 憑證加密（envelope）。**平台管理面以 Django Admin 頂替**（租戶 CRUD/DLQ 重放先用 Admin + 腳本，`/admin` API 延後至 Phase 5）；**自訂角色 + 資源級 grant UI/邏輯延後至 Phase 5**（`resource_grants` 表先建，前期客戶用四個系統角色） | 1.5 pw |
+| 2C 管理面（裁切版） | API Key、Settings + 憑證加密（envelope）、**稽核與用量的檢視畫面**（`/audit-logs`、`/analytics/*` 的 API 已於 2A 就位，兩頁共用同一套管理面版型與導覽，分開做會做兩次）。**平台管理面以 Django Admin 頂替**（租戶 CRUD/DLQ 重放先用 Admin + 腳本，`/admin` API 延後至 Phase 5）；**自訂角色 + 資源級 grant UI/邏輯延後至 Phase 5**（`resource_grants` 表先建，前期客戶用四個系統角色） | 1.5 pw |
 | 2D Loader 擴充 | ~~xlsx~~（1B-4b 已做，見 §3.3）／csv/json + Website loader（含 SSRF 防護全量）、大檔分塊上傳 | 2.5 pw |
 | 基礎 HA | Redis Sentinel、DB 備份 pgBackRest + PITR、首次還原演練 | (併入日常) |
 

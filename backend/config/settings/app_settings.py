@@ -198,6 +198,16 @@ class AppSettings(BaseSettings):
     # 延遲太短會變成空轉輪詢、太長會拉長大批上傳的完成時間。
     etl_max_concurrent_per_tenant: int = 2
     etl_fairness_requeue_seconds: int = 15
+    # 分區保留期（05 §7，2A-4）。格式同上：`表名:月數;...`，**沒列的表不動**
+    # ——`conversation_message` 的保留期是「依租戶方案」，那個機制還不存在，
+    # 而「沒有政策」的正確行為是不動，不是拿某個猜的預設值刪別人的資料。
+    # audit 取 3–7 年的**上限**（84 個月）：稽核少留是法遵風險，多留只是空間。
+    partition_retention_months: str = "platform_usagelog:13;platform_auditlog:84"
+    # 到期分區預設**只從父表摘下（DETACH）**，不刪除：查詢不再掃到它、空間仍在、
+    # 錯了可以 ATTACH 回去。這是整套維運任務裡唯一不可逆的一步，因此真的刪除
+    # 要在這裡明示開啟（05 §5.2 寫的是 DETACH + DROP，只做前半是 2A-4 的決定）。
+    partition_drop_after_detach: bool = False
+
     # 停滯門檻（補償掃描）：uploaded/chunked 停超過這個秒數視為訊息遺失、補送。
     # 太短會把正常處理中的文件再送一次（冪等擋得住重算、擋不住浪費），太長則
     # 使用者看著「上傳完沒下文」乾等。

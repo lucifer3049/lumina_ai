@@ -17,8 +17,6 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
-from datetime import datetime
 from typing import Any, cast
 
 from django.db.models import F, Q
@@ -26,40 +24,13 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.conversation.models import Conversation, MemorySnapshot, Message
-from common.cursors import CursorError
 from core.tenant import get_current_tenant_id
-from repositories.base import SoftDeletableRepository, TenantScopedRepository
-
-
-def _cursor_key(cursor: dict[str, Any]) -> tuple[datetime, uuid.UUID]:
-    """游標 dict → (排序鍵, id)。內容壞掉一律 `CursorError`。
-
-    游標可能來自舊版前端存的 localStorage、被截斷的網址、或使用者手改——因此
-    **不能假設欄位存在或型別正確**，而錯誤要是呼叫端轉得成 422 的那一種。
-    """
-    try:
-        return datetime.fromisoformat(str(cursor["k"])), uuid.UUID(str(cursor["id"]))
-    except (KeyError, TypeError, ValueError) as exc:
-        raise CursorError("游標內容不正確") from exc
-
-
-def _split_page[T](
-    rows: list[T], *, limit: int, cursor_of: Callable[[T], dict[str, Any]]
-) -> tuple[list[T], dict[str, Any] | None]:
-    """把「多取一筆」的結果切成一頁 + 下一頁的游標。
-
-    **多取一筆是判斷「還有沒有下一頁」唯一可靠的方法**。用 `count()` 另外查一次的話，
-    兩次查詢之間新增的資料會讓「有沒有下一頁」與實際內容對不上；而只憑「這頁滿了」
-    來推斷，會在資料剛好是頁大小整數倍時多給一個永遠回空清單的游標。
-
-    `cursor_of` 由呼叫端提供而不是在這裡讀欄位：排序鍵每個查詢不同，而
-    `Conversation` 的鍵是 `COALESCE(last_message_at, created_at)`——在 Python 端算
-    （`a or b`）與 SQL 的 COALESCE 等價，且不必把 annotate 出來的欄位帶進型別系統。
-    """
-    if len(rows) <= limit:
-        return rows, None
-    page = rows[:limit]
-    return page, cursor_of(page[-1])
+from repositories.base import (
+    SoftDeletableRepository,
+    TenantScopedRepository,
+    cursor_key,
+    split_page,
+)
 
 
 class ConversationRepository(SoftDeletableRepository[Conversation]):
@@ -91,10 +62,10 @@ class ConversationRepository(SoftDeletableRepository[Conversation]):
         ordering = Coalesce("last_message_at", "created_at")
         queryset = self.get_queryset().filter(user_id=user_id).annotate(_sort_key=ordering)
         if cursor is not None:
-            key, last_id = _cursor_key(cursor)
+            key, last_id = cursor_key(cursor)
             queryset = queryset.filter(Q(_sort_key__lt=key) | Q(_sort_key=key, id__lt=last_id))
         rows = cast("list[Conversation]", list(queryset.order_by("-_sort_key", "-id")[: limit + 1]))
-        return _split_page(
+        return split_page(
             rows,
             limit=limit,
             # `a or b` 與 SQL 的 COALESCE 等價——在 Python 端算，游標值就不必經過
@@ -165,10 +136,10 @@ class MessageRepository(TenantScopedRepository[Message]):
         """
         queryset = self.get_queryset().filter(conversation_id=conversation_id)
         if cursor is not None:
-            key, last_id = _cursor_key(cursor)
+            key, last_id = cursor_key(cursor)
             queryset = queryset.filter(Q(created_at__gt=key) | Q(created_at=key, id__gt=last_id))
         rows = list(queryset.order_by("created_at", "id")[: limit + 1])
-        return _split_page(
+        return split_page(
             rows,
             limit=limit,
             cursor_of=lambda row: {"k": row.created_at.isoformat(), "id": str(row.id)},

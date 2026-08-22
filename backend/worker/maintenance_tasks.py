@@ -25,7 +25,7 @@ from core.tasks import (
 from services.knowledge.cleanup import ChunkCleanupService
 from services.knowledge.rescue import StuckDocumentRescueService
 from services.platform.analytics import UsageRollupService
-from services.platform.maintenance import ensure_future_partitions
+from services.platform.maintenance import ensure_future_partitions, prune_expired_partitions
 from services.platform.reconciliation import QuotaReconciliationService
 
 logger = get_logger(__name__)
@@ -33,10 +33,16 @@ logger = get_logger(__name__)
 
 @shared_task(name=MAINTAIN_PARTITIONS_TASK)
 def maintain_partitions() -> dict[str, Any]:
-    """把所有分區表的未來分區補到 3 個月（05 §5.2 的「月初預建下 3 個月」）。"""
+    """分區的生命週期兩端：補到未來 3 個月，並摘掉過期的（05 §5.2／§7）。
+
+    **同一個任務做兩件事**：它們是同一件維運工作（分區的生老病死），拆成兩個
+    排程只是多一條「排了卻沒有人做」的可能（2A-2b 的教訓）。摘除預設只 DETACH
+    不 DROP，理由見 `repositories/partitions.py`。
+    """
     created = ensure_future_partitions(months_ahead=3)
-    logger.info("partition_maintenance_done", created=created)
-    return {"created": created}
+    detached = prune_expired_partitions()
+    logger.info("partition_maintenance_done", created=created, detached=detached)
+    return {"created": created, "detached": detached}
 
 
 @shared_task(name=RECONCILE_QUOTA_TASK)

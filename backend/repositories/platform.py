@@ -10,10 +10,9 @@ from typing import cast
 from django.db import models
 
 from apps.platform.models import AuditLog, QuotaCounter, UsageDaily, UsageLog
-from common.cursors import CursorError
 from core.tenant import get_current_tenant_id
 from core.uow import unit_of_work
-from repositories.base import TenantScopedRepository
+from repositories.base import TenantScopedRepository, cursor_key, split_page
 
 
 class UsageLogRepository(TenantScopedRepository[UsageLog]):
@@ -251,26 +250,14 @@ class AuditLogRepository(TenantScopedRepository[AuditLog]):
         if end is not None:
             query = query.filter(created_at__lt=end)
         if cursor is not None:
-            key, last_id = _cursor_key(cursor)
+            key, last_id = cursor_key(cursor)
             query = query.filter(
                 models.Q(created_at__lt=key)
                 | models.Q(created_at=key, id__lt=last_id)  # 同一時間戳的第二頁
             )
 
-        # 多取一筆是判斷「還有沒有下一頁」唯一可靠的方法（同 repositories/conversation.py
-        # 的 `_split_page`；第三個需要它的地方出現時就搬進 repositories/base.py）。
-        rows = list(query.order_by("-created_at", "-id")[: limit + 1])
-        if len(rows) <= limit:
-            return rows, None
-        page = rows[:limit]
-        last = page[-1]
-        return page, {"k": last.created_at.isoformat(), "id": str(last.id)}
-
-
-def _cursor_key(cursor: dict[str, object]) -> tuple[datetime.datetime, uuid.UUID]:
-    """游標 dict → 排序鍵。內容不對時 `CursorError`，由 service 轉 422
-    （形狀同 `repositories/conversation.py`）。"""
-    try:
-        return datetime.datetime.fromisoformat(str(cursor["k"])), uuid.UUID(str(cursor["id"]))
-    except (KeyError, TypeError, ValueError) as exc:
-        raise CursorError("游標內容不正確") from exc
+        return split_page(
+            list(query.order_by("-created_at", "-id")[: limit + 1]),
+            limit=limit,
+            cursor_of=lambda row: {"k": row.created_at.isoformat(), "id": str(row.id)},
+        )
