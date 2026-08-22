@@ -48,6 +48,7 @@ from repositories.knowledge import (
     KnowledgeBaseRepository,
 )
 from services.knowledge.failures import error_payload
+from services.platform.notifications import NotificationService
 
 logger = get_logger(__name__)
 
@@ -105,11 +106,13 @@ class IngestionService:
         knowledge_bases: KnowledgeBaseRepository | None = None,
         chunks: ChunkRepository | None = None,
         jobs: EtlJobRepository | None = None,
+        notifications: NotificationService | None = None,
     ) -> None:
         self._documents = documents or DocumentRepository()
         self._knowledge_bases = knowledge_bases or KnowledgeBaseRepository()
         self._chunks = chunks or ChunkRepository()
         self._jobs = jobs or EtlJobRepository()
+        self._notifications = notifications or NotificationService()
 
     def ingest(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> IngestionResult:
         """跑完 Extract → Clean → Chunk。
@@ -136,7 +139,8 @@ class IngestionService:
         修環境後重跑；``retryable=False`` 是毒檔，重跑幾次都一樣。混成同一個狀態的話，
         維運面對一排 failed 文件時無從判斷該修什麼。
 
-        Notification（通知使用者）屬 2A：這裡先把事實寫進 DB，那是通知的資料來源。
+        通知（2A-5）在事實寫進 DB **之後**才送：通知的內容就是那一列的內容，
+        而 `notify_document_failed` 永遠不拋例外（旁路），寫不進去只失去通知。
         """
         error = {
             "stage": self._last_running_stage(tenant_id, document_id),
@@ -152,6 +156,7 @@ class IngestionService:
             attempts=attempts,
             cause=error["cause"],
         )
+        self._notifications.notify_document_failed(tenant_id, document_id, error=error)
 
     def _last_running_stage(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> str:
         """最後一個沒有成功的階段。
@@ -385,6 +390,7 @@ class IngestionService:
             stage=stage,
             cause=error.get("cause"),
         )
+        self._notifications.notify_document_failed(tenant_id, target.document_id, error=error)
         return IngestionResult(
             document_id=target.document_id,
             status=STATUS_FAILED,

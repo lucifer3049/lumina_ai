@@ -164,6 +164,8 @@ async def upload_document(
         kb_id,
         filename=file.filename or "untitled",
         content=content,
+        # 上傳者（2A-5）：ETL 失敗與 ready 的通知都寄給他。
+        uploaded_by=principal.user_id,
     )
     return _document_out(view)
 

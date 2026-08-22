@@ -31,6 +31,9 @@ CLEANUP_CHUNKS_TASK = "knowledge.cleanup_chunks"
 ANALYTICS_ROLLUP_TASK = "platform.rollup_usage"
 # 停滯文件的補償掃描（enqueue 是 best-effort，訊息會丟；1B/1C 遺留的缺口）。
 RESCUE_STUCK_DOCUMENTS_TASK = "knowledge.rescue_stuck_documents"
+# 2A-5：通知的 email 派送。**不是 Beat 任務**（沒有排程），而是事件觸發——
+# 寄信離開請求路徑靠的就是它。
+SEND_NOTIFICATION_EMAIL_TASK = "platform.send_notification_email"
 
 
 def warm_up() -> None:
@@ -126,6 +129,35 @@ def _send(
             "task_enqueue_failed",
             task=task_name,
             document_id=str(document_id),
+            exc_info=True,
+        )
+        return None
+    return str(result.id)
+
+
+def enqueue_notification_email(*, tenant_id: uuid.UUID, notification_id: uuid.UUID) -> str | None:
+    """把一則通知的 email 派送丟給 worker；送不出去回 None。
+
+    **參數只有 id，不是信件內容**：內容在 DB 裡，而佇列訊息是會被序列化、被
+    log、被人翻出來看的東西——通知的標題含檔名與失敗原因（10 §5 的最小揭露）。
+
+    與 `enqueue_ingestion` 同樣是 best-effort：broker 掛掉時記 log 走人。通知
+    寄不出去是小事，讓上傳或 quota 檢查因此失敗才是大事（旁路原則）。
+    """
+    from config.celery_app import celery_app
+    from config.logging import get_logger
+
+    try:
+        result = celery_app.send_task(
+            SEND_NOTIFICATION_EMAIL_TASK,
+            kwargs={"tenant_id": str(tenant_id), "notification_id": str(notification_id)},
+            retry=False,
+        )
+    except Exception:
+        get_logger(__name__).warning(
+            "task_enqueue_failed",
+            task=SEND_NOTIFICATION_EMAIL_TASK,
+            notification_id=str(notification_id),
             exc_info=True,
         )
         return None

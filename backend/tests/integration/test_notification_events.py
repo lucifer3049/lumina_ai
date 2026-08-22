@@ -29,11 +29,6 @@ import uuid
 from typing import Any
 
 import pytest
-from services.platform.notifications import (
-    TYPE_DOCUMENT_FAILED,
-    TYPE_DOCUMENT_READY,
-    TYPE_QUOTA_THRESHOLD,
-)
 
 from ai.gateway import AIGateway
 from ai.gateway.providers import ProviderEmbedding
@@ -42,13 +37,19 @@ from repositories.platform import NotificationRepository
 from services.knowledge.documents import DocumentService
 from services.knowledge.embedding import EmbeddingService
 from services.knowledge.ingestion import IngestionService
+from services.platform.notifications import (
+    TYPE_DOCUMENT_FAILED,
+    TYPE_DOCUMENT_READY,
+    TYPE_QUOTA_THRESHOLD,
+)
 from services.platform.quota import QuotaExceededError, QuotaService
 from tests.conftest import TENANT_A
 from tests.factories.identity import make_tenant, make_user, make_user_role, tenant_scope
 from tests.factories.knowledge import make_knowledge_base
 from tests.seed import ensure_identity_seed
 
-pytestmark = pytest.mark.django_db(transaction=True)
+# `admin` 連線：`ensure_identity_seed` 以 schema owner 身分補系統角色（見 tests/seed.py）。
+pytestmark = pytest.mark.django_db(transaction=True, databases=["default", "admin"])
 
 _MARKDOWN = """# 第一章 總則
 
@@ -222,8 +223,12 @@ class TestDocumentReady:
         同一個 KB、同一個時間桶內的 ready 合成一列，計數往上加。"""
         with tenant_scope(TENANT_A):
             kb_id = uuid.UUID(str(make_knowledge_base(tenant_id=TENANT_A).id))
-        for _ in range(3):
-            document_id = _upload(uploader, kb_id=kb_id)
+        for index in range(3):
+            # 內容必須不同：同一個 KB 內 `UNIQUE(tenant, kb, content_hash)` 會把
+            # 第二份一模一樣的檔案擋成 409（1B 的去重），而這裡要驗的是收合。
+            document_id = _upload(
+                uploader, kb_id=kb_id, content=_MARKDOWN + f"第 {index} 份。".encode()
+            )
             IngestionService().ingest(TENANT_A, document_id)
             self._embed(document_id)
 

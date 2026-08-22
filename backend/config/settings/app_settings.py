@@ -213,6 +213,28 @@ class AppSettings(BaseSettings):
     # 使用者看著「上傳完沒下文」乾等。
     etl_stuck_after_seconds: int = 600
 
+    # ── 通知（04 §8.5，2A-5）────────────────────────────────
+    # email 通道的總開關。關掉時**只失去 email**，站內收件匣照常——沒有設定 SMTP
+    # 的環境（CI）不該連通知本身一起失去。
+    notification_email_enabled: bool = True
+    # SMTP 連線。開發環境是 compose 裡的 Mailpit（收信不外送），正式環境換值即可
+    # ——鐵則 9：不 hardcode host／port／寄件人。
+    smtp_host: str = "localhost"
+    smtp_port: int = 1025
+    smtp_username: str = ""
+    smtp_password: SecretStr = SecretStr("")
+    smtp_use_tls: bool = False
+    # 所有對外呼叫都要有 timeout。收信端不回應時，沒有它的那條 worker 執行緒會
+    # 一直掛著，而症狀是「寄信的 worker 慢慢變成沒有人」。
+    smtp_timeout_seconds: float = 10.0
+    notification_email_from: str = "lumina@example.com"
+    # 「文件已完成」的收合視窗（分鐘）：同一個 KB、同一個視窗內的 ready 合成一則。
+    # 太大會把兩小時前的上傳算成同一批，太小等於沒有收合（一次上傳 50 份就是 50 則）。
+    notification_collapse_window_minutes: int = 10
+    # quota 告警的門檻（百分比，`;` 分隔）。80 是「該注意了」、100 是「已經被擋住」
+    # ——兩件不同的事，因此是兩則通知（04 §8.5）。
+    notification_quota_thresholds: str = "80;100"
+
     @property
     def redis_url(self) -> SecretStr:
         """`redis://:pw@host:port/db`；密碼經 percent-encoding，特殊字元不會拆壞 URL。"""

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 
+from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from django.utils import timezone
 
@@ -185,3 +186,63 @@ class AuditLog(models.Model):
 
     def __str__(self) -> str:
         return f"AuditLog({self.action} {self.outcome})"
+
+
+class Notification(models.Model):
+    """一則寄給某個人的通知（05 §3.3、04 §8.5；2A-5）。
+
+    **不分區**：05 §5.2 點名的三張高成長表不含它。通知的量級是「事件數」
+    （文件失敗、額度告警），與 `usage_logs` 的「請求數」差三個數量級。
+
+    `user_id` 是裸 UUID 不是 FK，理由同 `UsageLog`：使用者可被匿名化刪除，而
+    「這個人被通知過什麼」不該反過來擋住刪除。
+
+    05 §3.3 的欄位表外多兩欄（**待同步文件**）：
+
+    * ``dedupe_key``：同一件事只發一次。quota 的 80% 一個週期一則、一批 ready
+      合成一則——去重擋在 DB 的唯一約束上，不是靠 service 先查再插（兩個 worker
+      同時完成時各查各的，都會查到「還沒有」）。
+    * ``updated_at``：收合要有「最後一次有動靜」的時間可以排序。改 `created_at`
+      等於竄改建立時間，收件匣會出現一列「三小時前建立、剛剛才變動」的東西。
+
+    ``channels`` 是真的陣列（05 §3.3 的 `t[]`）而不是 JSON：「哪些通知寄了 email」
+    是寄信出問題時第一個要查的東西，而 jsonb 的陣列查得到卻索引不了。
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="notifications")
+    # 收件人。通知是寄給**某個人**的，不是租戶的公佈欄。
+    user_id = models.UUIDField()
+    # document.failed / document.ready / quota.threshold / evaluation.completed
+    # （訂閱規則在 services/platform/notifications.py 的 CHANNELS_BY_TYPE）
+    type = models.TextField()
+    title = models.TextField()
+    body = models.TextField(default="", blank=True)
+    # 實際派送的通道（["in_app"] / ["in_app", "email"]）。
+    channels = ArrayField(models.TextField(), default=list)
+    # 前端跳轉與去重判定要用的結構化欄位（document_id、resource、threshold…）。
+    meta = models.JSONField(default=dict, blank=True)
+    # None＝這一則不去重（每一次文件失敗都是一件要處理的事）。
+    dedupe_key = models.TextField(null=True, blank=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "platform_notification"
+        constraints = [
+            # 條件排除 NULL：不去重的那些必須能重複，否則第二次失敗會被 DB 擋掉，
+            # 而使用者永遠不會知道。
+            models.UniqueConstraint(
+                fields=["tenant", "user_id", "dedupe_key"],
+                condition=models.Q(dedupe_key__isnull=False),
+                name="uq_notification_dedupe",
+            )
+        ]
+        indexes = [
+            # 收件匣與未讀數的唯一查法：這個人的、最近有動靜的在前面。
+            models.Index(fields=["tenant", "user_id", "-updated_at"], name="ix_notification_inbox"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Notification({self.type})"

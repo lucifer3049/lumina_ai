@@ -95,7 +95,13 @@ class DocumentService:
             return [self._view(document) for document in self._documents.for_kb(kb_id)]
 
     def upload(
-        self, tenant_id: uuid.UUID, kb_id: uuid.UUID, *, filename: str, content: bytes
+        self,
+        tenant_id: uuid.UUID,
+        kb_id: uuid.UUID,
+        *,
+        filename: str,
+        content: bytes,
+        uploaded_by: uuid.UUID | None = None,
     ) -> DocumentView:
         """單請求上傳（09 §3.1 的小檔路徑）。
 
@@ -145,6 +151,10 @@ class DocumentService:
                     storage_key=storage_key,
                     content_hash=content_hash,
                     size_bytes=len(content),
+                    # 通知（2A-5）要知道寄給誰。預設 None 而不是必填：API 以外的
+                    # 來源（同步排程、維運腳本）本來就沒有「人」，而通知對 NULL
+                    # 的文件退回寄給 owner／admin。
+                    uploaded_by=uploaded_by,
                 )
         except Exception as exc:
             self._discard(storage_key)

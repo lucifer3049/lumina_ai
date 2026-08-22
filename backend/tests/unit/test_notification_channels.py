@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+
 from services.platform.notifications import (
     CHANNEL_EMAIL,
     CHANNEL_IN_APP,
@@ -69,9 +70,8 @@ class TestChannelSwitch:
     ) -> None:
         """關掉 email（沒有設定 SMTP 的環境、CI）不該連收件匣一起關掉——
         通知的最低保證是「站內看得到」。"""
-        from services.platform.notifications import channels_for
-
         from config.settings.app_settings import get_app_settings
+        from services.platform.notifications import channels_for
 
         monkeypatch.setattr(get_app_settings(), "notification_email_enabled", False)
 
@@ -80,9 +80,8 @@ class TestChannelSwitch:
     def test_with_email_on_the_declared_channels_are_used(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from services.platform.notifications import channels_for
-
         from config.settings.app_settings import get_app_settings
+        from services.platform.notifications import channels_for
 
         monkeypatch.setattr(get_app_settings(), "notification_email_enabled", True)
 
@@ -180,9 +179,8 @@ class TestMailer:
 
     def test_the_host_and_port_come_from_settings(self, smtp: type[_FakeSMTP]) -> None:
         """鐵則 9：不 hardcode URL。開發是 compose 裡的 Mailpit，正式是別的東西。"""
-        from core.mailer import send_email
-
         from config.settings.app_settings import get_app_settings
+        from core.mailer import send_email
 
         settings = get_app_settings()
         send_email(to=["someone@example.com"], subject="標題", body="內文")
@@ -199,7 +197,8 @@ class TestMailer:
 
         _, recipients, message = smtp.instances[0].sent[0]
         assert recipients == ["a@example.com", "b@example.com"]
-        assert "內文" in message
+        # 內文在線路上是 base64（UTF-8 的必然）——比對解碼後的內容，不是原始位元組。
+        assert "內文" in _decoded_body(message)
 
     def test_a_chinese_subject_survives_the_wire(self, smtp: type[_FakeSMTP]) -> None:
         """標題一定是中文（「法規手冊.pdf 解析失敗」）——沒有編碼處理的話，
@@ -210,6 +209,14 @@ class TestMailer:
 
         message = smtp.instances[0].sent[0][2]
         assert "法規手冊.pdf 解析失敗" in _decoded_subject(message)
+
+
+def _decoded_body(message: str) -> str:
+    from email import message_from_string
+
+    payload = message_from_string(message).get_payload(decode=True)
+    assert isinstance(payload, bytes)
+    return payload.decode("utf-8")
 
 
 def _decoded_subject(message: str) -> str:

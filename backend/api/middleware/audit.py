@@ -83,6 +83,9 @@ AUDIT_EXEMPT: frozenset[str] = frozenset(
         "conversations_send_message",
         "conversations_stop_message",
         "rag_query",
+        # 標已讀（2A-5）：本人對自己收件匣的狀態變更、高頻，且不涉及任何
+        # 他人看得見的資源。記下來只會把真正的敏感操作淹掉。
+        "notifications_mark_read",
     }
 )
 

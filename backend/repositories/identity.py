@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 from django.db.models import F, Q, QuerySet
 from django.utils import timezone
@@ -36,6 +37,22 @@ class UserRepository(TenantScopedRepository[User]):
 
     def get_by_id(self, user_id: uuid.UUID) -> User | None:
         return self.get_queryset().filter(id=user_id).first()
+
+    def active_with_roles(self, role_names: Sequence[str]) -> list[User]:
+        """租戶內具備任一角色、且仍在職的使用者（2A-5 的通知收件人）。
+
+        `status="active"` 是必要條件：停用的帳號還在表上（保留稽核關聯），但寄
+        通知給一個已經離職的人，等於那則通知沒有人看——而 quota 告警的重點正是
+        有人去處理。
+
+        `distinct()`：一個人可以同時是 owner 與 admin，join 會讓他出現兩次，
+        而收件人重複代表他收到兩則一模一樣的通知。
+        """
+        return list(
+            self.get_queryset()
+            .filter(status="active", user_roles__role__name__in=list(role_names))
+            .distinct()
+        )
 
     def bump_token_version(self, user_id: uuid.UUID) -> None:
         """把 ``token_version`` +1，讓該使用者手上所有 token 失效（10 §2.1）。

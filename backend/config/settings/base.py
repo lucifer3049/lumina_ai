@@ -58,6 +58,10 @@ ALLOWED_HOSTS: list[str] = ["*"]
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.auth",
+    # ArrayField（platform_notification.channels，05 §3.3 的 `t[]`）的所在。
+    # 這個 app 不建任何表、也沒有 migration——它註冊的是 PG 專屬的欄位型別與
+    # 查詢，Django 文件要求使用那些欄位時把它列進來。
+    "django.contrib.postgres",
     # extension 的 migration 落腳處（apps/platform/migrations/0001_extensions.py）；
     # 表定義隨 Phase 2 的 2A 工作包進來。
     "apps.platform",

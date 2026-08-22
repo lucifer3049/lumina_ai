@@ -39,6 +39,7 @@ from core.tasks import (  # noqa: E402
     MAINTAIN_PARTITIONS_TASK,
     RECONCILE_QUOTA_TASK,
     RESCUE_STUCK_DOCUMENTS_TASK,
+    SEND_NOTIFICATION_EMAIL_TASK,
 )
 
 # worker 的日誌走與 API 同一條 pipeline（12 §1.1）。少了這行，task 內的 structlog
@@ -66,6 +67,9 @@ celery_app.conf.update(
         CLEANUP_CHUNKS_TASK: {"queue": "maintenance"},
         RESCUE_STUCK_DOCUMENTS_TASK: {"queue": "maintenance"},
         ANALYTICS_ROLLUP_TASK: {"queue": "maintenance"},
+        # 寄信（2A-5）也走 maintenance：它與維運任務一樣是「慢、可以等、不該
+        # 擠在使用者的 ETL 前面」的那一類。
+        SEND_NOTIFICATION_EMAIL_TASK: {"queue": "maintenance"},
     },
     # 序列化只收 JSON：pickle 能執行任意程式碼，而 broker 是一個「只要進得去就會被
     # 執行」的介面。任務參數因此一律是字串/數字（見 worker/etl_tasks.py 的 uuid 轉換）。
@@ -142,3 +146,4 @@ celery_app.conf.update(
 celery_app.autodiscover_tasks(["worker"], related_name="etl_tasks")
 celery_app.autodiscover_tasks(["worker"], related_name="embedding_tasks")
 celery_app.autodiscover_tasks(["worker"], related_name="maintenance_tasks")
+celery_app.autodiscover_tasks(["worker"], related_name="notification_tasks")

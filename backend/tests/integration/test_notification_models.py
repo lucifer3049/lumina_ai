@@ -25,16 +25,15 @@
 from __future__ import annotations
 
 import uuid
-from typing import cast
 
 import pytest
 from django.db import IntegrityError, connection, transaction
-from services.platform.notifications import TYPE_DOCUMENT_READY, TYPE_QUOTA_THRESHOLD
 
 from apps.platform.models import Notification
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.platform import NotificationRepository
+from services.platform.notifications import TYPE_DOCUMENT_READY, TYPE_QUOTA_THRESHOLD
 from tests.conftest import TENANT_A, TENANT_B
 from tests.factories.identity import make_tenant, tenant_scope
 
@@ -80,7 +79,7 @@ def _row(tenant_id: uuid.UUID, **overrides: object) -> Notification:
     }
     fields.update(overrides)
     with tenant_scope(tenant_id):
-        return cast("Notification", Notification.objects.create(**fields))
+        return Notification.objects.create(**fields)
 
 
 class TestSchema:

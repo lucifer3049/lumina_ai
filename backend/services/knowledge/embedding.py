@@ -42,6 +42,7 @@ from repositories.knowledge import (
     KnowledgeBaseRepository,
 )
 from services.knowledge.failures import error_payload
+from services.platform.notifications import NotificationService
 from services.platform.usage import UsageEvent, UsageService
 
 logger = get_logger(__name__)
@@ -101,6 +102,7 @@ class EmbeddingService:
         embeddings: EmbeddingRepository | None = None,
         jobs: EtlJobRepository | None = None,
         usage: UsageService | None = None,
+        notifications: NotificationService | None = None,
     ) -> None:
         # Gateway 惰性建立：`build_gateway()` 會讀設定並解析 provider 名稱，而未實作的
         # provider 會直接 raise。建構 service 本身不該因此失敗——mark_retries_exhausted
@@ -112,6 +114,7 @@ class EmbeddingService:
         self._embeddings = embeddings or EmbeddingRepository()
         self._jobs = jobs or EtlJobRepository()
         self._usage = usage or UsageService()
+        self._notifications = notifications or NotificationService()
 
     @property
     def gateway(self) -> AIGateway:
@@ -183,6 +186,10 @@ class EmbeddingService:
         with tenant_context(tenant_id), unit_of_work():
             self._documents.set_status(target.document_id, status=STATUS_READY, error=None)
 
+        # 08 §2 的終點——「可以問了」的那一刻，也是唯一值得通知使用者的一刻
+        # （chunked 對他沒有意義）。同一批上傳會被收合成一則（2A-5）。
+        self._notifications.notify_document_ready(tenant_id, target.document_id)
+
         logger.info(
             "embedding_completed",
             document_id=str(target.document_id),
@@ -223,6 +230,7 @@ class EmbeddingService:
             attempts=attempts,
             cause=error["cause"],
         )
+        self._notifications.notify_document_failed(tenant_id, document_id, error=error)
 
     # ── 編排 ────────────────────────────────────────────────
 
@@ -336,6 +344,7 @@ class EmbeddingService:
             model=target.model,
             cause=error.get("cause"),
         )
+        self._notifications.notify_document_failed(tenant_id, target.document_id, error=error)
         return EmbeddingResult(
             document_id=target.document_id,
             status=STATUS_FAILED,

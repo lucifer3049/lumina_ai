@@ -1,4 +1,4 @@
-"""Platform context 的資料存取（05 §3.3，2A-1／2A-2b／2A-3／2A-4）。"""
+"""Platform context 的資料存取（05 §3.3，2A-1／2A-2b／2A-3／2A-4／2A-5）。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ from decimal import Decimal
 from typing import cast
 
 from django.db import models
+from django.utils import timezone
 
-from apps.platform.models import AuditLog, QuotaCounter, UsageDaily, UsageLog
+from apps.platform.models import AuditLog, Notification, QuotaCounter, UsageDaily, UsageLog
 from core.tenant import get_current_tenant_id
 from core.uow import unit_of_work
 from repositories.base import TenantScopedRepository, cursor_key, split_page
@@ -261,3 +262,104 @@ class AuditLogRepository(TenantScopedRepository[AuditLog]):
             limit=limit,
             cursor_of=lambda row: {"k": row.created_at.isoformat(), "id": str(row.id)},
         )
+
+
+class NotificationRepository(TenantScopedRepository[Notification]):
+    """收件匣的唯一入口（05 §3.3、04 §8.5，2A-5）。
+
+    **每一個方法都要帶 `user_id`**：租戶隔離由基底負責，而「同一個租戶裡誰看得到
+    誰的通知」是這一層自己的責任——漏掉 user filter 的症狀是畫面完全正常，只是
+    admin 看得到 owner 的收件匣。
+    """
+
+    model = Notification
+
+    def create(
+        self,
+        *,
+        user_id: uuid.UUID,
+        type: str,
+        title: str,
+        body: str,
+        meta: dict[str, object],
+        channels: list[str],
+        dedupe_key: str | None = None,
+    ) -> Notification:
+        return Notification.objects.create(
+            tenant_id=get_current_tenant_id(operation="NotificationRepository.create"),
+            user_id=user_id,
+            type=type,
+            title=title,
+            body=body,
+            meta=meta,
+            channels=channels,
+            dedupe_key=dedupe_key,
+        )
+
+    def get_by_id(self, notification_id: uuid.UUID) -> Notification | None:
+        """租戶內以 id 取一則（寄信的 worker 用）。不存在或屬於別的租戶都回 None。"""
+        return self.get_queryset().filter(id=notification_id).first()
+
+    def get_by_dedupe(self, *, user_id: uuid.UUID, dedupe_key: str) -> Notification | None:
+        return self.get_queryset().filter(user_id=user_id, dedupe_key=dedupe_key).first()
+
+    def collapse(
+        self, notification_id: uuid.UUID, *, title: str, body: str, meta: dict[str, object]
+    ) -> int:
+        """把新的一件事併進既有那一列，並讓它**重新變成未讀**。
+
+        讀過之後又有一份文件完成，那是新的一件事——維持已讀的話，使用者要主動
+        回去看才會發現，而通知的意義正是不必主動看。
+
+        `updated_at` 由 `auto_now` 前進（收件匣的排序鍵），`created_at` 不動。
+        """
+        return (
+            self.get_queryset()
+            .filter(id=notification_id)
+            .update(title=title, body=body, meta=meta, read_at=None, updated_at=timezone.now())
+        )
+
+    def inbox(
+        self,
+        *,
+        user_id: uuid.UUID,
+        limit: int,
+        cursor: dict[str, object] | None = None,
+        unread_only: bool = False,
+    ) -> tuple[list[Notification], dict[str, object] | None]:
+        """這個人的收件匣，最近有動靜的在前面。
+
+        排序鍵是 **(updated_at, id)** 而不只是 updated_at：一批 ready 收合時多列的
+        時間戳會落在同一毫秒，只用時間當游標會讓其中幾列在翻頁時消失或重複
+        （形狀同 `AuditLogRepository.page`）。
+        """
+        query = self.get_queryset().filter(user_id=user_id)
+        if unread_only:
+            query = query.filter(read_at__isnull=True)
+        if cursor is not None:
+            key, last_id = cursor_key(cursor)
+            query = query.filter(
+                models.Q(updated_at__lt=key) | models.Q(updated_at=key, id__lt=last_id)
+            )
+        return split_page(
+            list(query.order_by("-updated_at", "-id")[: limit + 1]),
+            limit=limit,
+            cursor_of=lambda row: {"k": row.updated_at.isoformat(), "id": str(row.id)},
+        )
+
+    def unread_count(self, user_id: uuid.UUID) -> int:
+        return self.get_queryset().filter(user_id=user_id, read_at__isnull=True).count()
+
+    def mark_read(self, *, user_id: uuid.UUID, notification_id: uuid.UUID) -> bool:
+        """標為已讀；回傳「有沒有這一列」。
+
+        **重複標記不改時間**（`read_at__isnull=True` 的條件）：重複點擊與多開分頁
+        很常見，而「什麼時候讀的」被最後一次點擊蓋掉就沒有意義了。因此存在判定
+        與更新筆數是兩件事——回 False 代表**不存在或不是你的**，端點轉 404
+        （403 等於承認這個 id 存在，而通知 id 猜得到）。
+        """
+        rows = self.get_queryset().filter(id=notification_id, user_id=user_id)
+        if not rows.exists():
+            return False
+        rows.filter(read_at__isnull=True).update(read_at=timezone.now())
+        return True

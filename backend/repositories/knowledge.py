@@ -123,6 +123,7 @@ class DocumentRepository(SoftDeletableRepository[Document]):
         size_bytes: int,
         source_type: str = "upload",
         document_id: uuid.UUID | None = None,
+        uploaded_by: uuid.UUID | None = None,
     ) -> Document:
         """建立文件列。
 
@@ -139,6 +140,7 @@ class DocumentRepository(SoftDeletableRepository[Document]):
             storage_key=storage_key,
             content_hash=content_hash,
             size_bytes=size_bytes,
+            uploaded_by=uploaded_by,
             source_type=source_type,
         )
 

@@ -65,6 +65,8 @@ EXPECTED_EXEMPT = {
     "conversations_stop_message",
     # POST 是為了帶 body，語意是讀（09 §2.5）。
     "rag_query",
+    # 通知標已讀（2A-5）：自己的收件匣、高頻，且沒有任何他人可見的效果。
+    "notifications_mark_read",
 }
 
 # 請求層記不了的：登入沒有 principal，也沒有租戶 contextvar（AuthService 自己

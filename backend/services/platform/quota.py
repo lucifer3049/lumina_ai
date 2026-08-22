@@ -36,6 +36,7 @@ from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.identity import TenantRepository
 from repositories.knowledge import DocumentRepository
+from services.platform.notifications import NotificationService, quota_thresholds
 
 logger = get_logger(__name__)
 
@@ -59,6 +60,9 @@ _GAUGES = frozenset({"streams"})
 # gauge 的安全 TTL：正常路徑靠 release 歸還；行程被砍時靠它自然消失。每次
 # reserve 都會刷新，所以活著的串流不會被它清掉（單輪生成遠短於一小時）。
 _GAUGE_TTL_SECONDS = 3600
+# 告警去重的 Redis 擋板壽命。比最長的期別（月）長一點即可——真正的去重在
+# DB 的唯一約束上，這只是省下熱路徑的查詢。
+_NOTIFY_GUARD_TTL_SECONDS = 40 * 24 * 3600
 # 週期 key 在期末之後多留一天：對帳（2A-2b）要讀「剛結束的那一期」。
 _PERIOD_GRACE = timedelta(days=1)
 
@@ -157,9 +161,11 @@ class QuotaService:
         *,
         tenants: TenantRepository | None = None,
         documents: DocumentRepository | None = None,
+        notifications: NotificationService | None = None,
     ) -> None:
         self._tenants = tenants or TenantRepository()
         self._documents = documents or DocumentRepository()
+        self._notifications = notifications or NotificationService()
 
     # ── 對外介面（04 §8.1）─────────────────────────────────
 
@@ -176,6 +182,9 @@ class QuotaService:
 
         if resource in _DB_BACKED:
             used = self._db_used(tenant_id, resource)
+            self._maybe_notify(
+                tenant_id, resource, used=used + amount, limit=limit, now=datetime.now(UTC)
+            )
             if used + amount > limit:
                 raise self._exceeded(resource, limit=limit, used=used)
             return None
@@ -186,6 +195,7 @@ class QuotaService:
         # redis-py 的同步 client 標成 Awaitable|Any 聯集，以 cast 收斂（同 auth.py）。
         used_after = cast("int", client.incrby(key, amount))
         client.expire(key, ttl)
+        self._maybe_notify(tenant_id, resource, used=used_after, limit=limit, now=now)
         if used_after > limit:
             # INCR-先-檢查是原子的擋線；被擋的那一次立刻回滾，不留下痕跡。
             client.decrby(key, amount)
@@ -271,6 +281,44 @@ class QuotaService:
             if resource == "documents":
                 return self._documents.active_count()
             return self._documents.active_size_bytes()
+
+    def _maybe_notify(
+        self, tenant_id: uuid.UUID, resource: str, *, used: int, limit: int, now: datetime
+    ) -> None:
+        """跨過門檻就通知 owner／admin（04 §8.5 的 80%／100%，2A-5）。
+
+        **在熱路徑上，因此這裡只做兩件便宜的事**：一次整數比較，以及（真的跨線時）
+        一次 DB 查詢 + 寫入。去重靠 `notifications.dedupe_key` 的唯一約束——80%
+        之後每一次 reserve 都仍在 80% 以上，不去重的話一天幾百則。
+
+        被擋下的那一次（`used > limit`）也會走到這裡，那是刻意的：使用者最需要
+        一則說明的時刻就是被擋住的時候，而 429 只有發出那個請求的人看得到。
+        """
+        thresholds = quota_thresholds()
+        if limit <= 0 or not thresholds or used * 100 < thresholds[0] * limit:
+            return
+
+        # **Redis 先擋，再碰 DB。** 80% 之後每一次 reserve 都仍在 80% 以上，而
+        # 這裡在使用者的請求路徑上——沒有這道擋板的話，額度快滿的租戶每送一則
+        # 訊息就多兩三個 SELECT（收件人 × 門檻）。`SET NX` 是原子的，第一個跨線
+        # 的請求負責通知，其餘直接走人。
+        #
+        # 這不是唯一的保證：真正擋住重複的是 `notifications.dedupe_key` 的唯一
+        # 約束（Redis 掉了就重新發一次，而那是可接受的失敗方向）。
+        period = _period_label(resource, now)
+        crossed = max(t for t in thresholds if used * 100 >= t * limit)
+        guard = tenant_key(tenant_id, "quota", "notified", resource, period, str(crossed))
+        client = get_redis()
+        if not client.set(guard, "1", nx=True, ex=_NOTIFY_GUARD_TTL_SECONDS):
+            return
+
+        self._notifications.notify_quota_threshold(
+            tenant_id,
+            resource,
+            used=min(used, limit),
+            limit=limit,
+            period_start=period,
+        )
 
     def _key_and_ttl(self, tenant_id: uuid.UUID, resource: str, now: datetime) -> tuple[str, int]:
         if resource in _GAUGES:

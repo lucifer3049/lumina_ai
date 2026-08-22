@@ -171,3 +171,29 @@ class TestTaskIsThin:
         result = embedding_tasks.embed_document.run(str(uuid.uuid4()), str(uuid.uuid4()))
 
         assert result["status"] == "missing"
+
+
+class TestTaskDiscovery:
+    """**每個 task 模組都要被 autodiscover 收到。**
+
+    漏掉一個的症狀最難查：worker 啟動成功、log 乾淨、佇列的訊息一直堆著沒有人
+    處理——因為它不認得那個任務名。2A-5 的寄信是第四個 task 模組，而
+    `config/celery_app.py` 的 `related_name` 一次只收一個字串。
+    """
+
+    def test_every_task_module_is_registered(self) -> None:
+        from config.celery_app import celery_app
+
+        celery_app.loader.import_default_modules()
+        modules = {
+            task.__class__.__module__
+            for name, task in celery_app.tasks.items()
+            if not name.startswith("celery.")
+        }
+
+        assert {module.rsplit(".", 1)[-1] for module in modules} == {
+            "etl_tasks",
+            "embedding_tasks",
+            "maintenance_tasks",
+            "notification_tasks",
+        }

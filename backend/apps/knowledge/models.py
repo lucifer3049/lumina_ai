@@ -95,6 +95,11 @@ class Document(TimestampedModel):
     size_bytes = models.BigIntegerField()
     source_type = models.TextField(default="upload")
     source_meta = models.JSONField(default=dict, blank=True)
+    # 上傳者（2A-5）。**可為 NULL**：三步走的第一步，且 `source_type` 不是 upload
+    # 的來源（database / web 同步）本來就沒有「人」。裸 UUID 不是 FK，理由同
+    # `platform.UsageLog.user_id`——刪掉一個使用者不該被他傳過的文件擋住。
+    # 通知（08 §6 的 DLQ、ready）以它決定收件人；NULL 時退回租戶的 owner/admin。
+    uploaded_by = models.UUIDField(null=True, blank=True)
     # 08 §2 狀態機：uploaded → parsing → chunked → embedding → ready / failed
     status = models.TextField(default="uploaded")
     # re-ingest 時遞增；冪等鍵 (doc_id, doc_version, stage) 的一部分（08 §6）。
