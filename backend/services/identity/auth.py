@@ -36,17 +36,64 @@ from core.exceptions import (
     InvalidCredentialsError,
     TokenRevokedError,
 )
-from core.redis import get_redis, tenant_key
+from core.redis import get_redis, get_script, tenant_key
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.identity import RoleRepository, TenantDirectoryRepository, UserRepository
-from services.identity.tokens import ACCESS_TTL, AccessClaims, TokenCodec, get_token_codec
+from services.identity.tokens import (
+    ACCESS_TTL,
+    AccessClaims,
+    IssuedToken,
+    TokenCodec,
+    get_token_codec,
+)
 from services.platform.audit import OUTCOME_FAILED, OUTCOME_SUCCEEDED, AuditEvent, AuditService
 
 # 密碼比對的假雜湊：帳號不存在時照樣跑一次驗證，讓兩種失敗的**耗時**也一致。
 # 只比對回應內容是不夠的——不存在的帳號若快 100 毫秒回來，時間差本身就是
 # 「這個 email 在不在」的答案（10 §2.1 要求 constant-time 行為）。
 _DUMMY_HASH = hash_password("timing-equalizer-not-a-real-password")
+
+_ROTATE_ROTATED = "rotated"
+_ROTATE_GRACE = "grace"
+_ROTATE_REPLAY = "replay"
+_ROTATE_REVOKED = "revoked"
+
+# refresh 輪換的原子步驟（見 `AuthService.refresh`）。**比對與改寫必須在同一步**，
+# 否則兩個同時到達的請求都會通過比對，然後其中一個發出去的 token 立刻變成「重放」。
+#
+# KEYS[1] 家族（值 = 目前有效的 jti）、KEYS[2] 這次出示的 jti 的寬限記錄。
+# ARGV: 1 出示的 jti、2 新的 jti、3 家族 TTL、4 新的 refresh token、5 寬限秒數。
+#
+# **寬限記錄存的是 token 本身**，因為輸掉競賽的那個請求必須拿到**贏家那一張**——
+# 各自發一張的話，家族只記得住一張，另一張下次使用就是重放（也就是原本的 bug 換個
+# 位置發生）。代價是那串 token 在 Redis 裡多活幾秒；把秒數壓到個位數是刻意的，而
+# 設成 0 就完全不存。這不是新開一類風險：能讀寫 Redis 的人本來就能改寫家族值，
+# 讓一張被竊的 refresh 永遠有效。
+_ROTATE_LUA = f"""
+local current = redis.call('GET', KEYS[1])
+if not current then
+    return {{'{_ROTATE_REVOKED}'}}
+end
+if current == ARGV[1] then
+    redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+    if tonumber(ARGV[5]) > 0 then
+        redis.call('SET', KEYS[2], ARGV[4], 'EX', ARGV[5])
+    end
+    return {{'{_ROTATE_ROTATED}'}}
+end
+local handed_out = redis.call('GET', KEYS[2])
+if handed_out then
+    return {{'{_ROTATE_GRACE}', handed_out}}
+end
+redis.call('DEL', KEYS[1])
+return {{'{_ROTATE_REPLAY}'}}
+"""
+
+
+def _seconds_until(moment: datetime) -> int:
+    """給 Redis 的 TTL。至少 1 秒：``EX 0`` 是語法錯誤，而負數會立刻刪掉那個 key。"""
+    return max(int((moment - datetime.now(UTC)).total_seconds()), 1)
 
 
 @dataclass(frozen=True)
@@ -89,15 +136,7 @@ class AuthService:
     # ── 登入 ────────────────────────────────────────────────────
 
     def login(self, *, tenant_id: uuid.UUID, email: str, password: str) -> TokenPair:
-        redis = get_redis()
-        attempts_key = tenant_key(tenant_id, "login-fail", email)
-
-        # redis-py 6 的同步 client 與 async client 共用型別，每個命令的回傳都是
-        # ``Awaitable | Any``。這裡的 client 一定是同步的（core.redis 的單例），
-        # 因此以 cast 收斂——擴散到呼叫端會讓每個運算都要先判型別。
-        locked_for = cast(int, redis.ttl(attempts_key))
-        if self._is_locked(attempts_key):
-            raise AccountLockedError(retry_after_seconds=max(int(locked_for), 0))
+        self.ensure_not_locked(tenant_id=tenant_id, email=email)
 
         # 稽核的 actor：帳號存在時填它的 id，不存在就留白。**在交易外持有**，
         # 因為失敗那一列必須在交易 rollback 之後才寫（見下方 except）。
@@ -115,7 +154,7 @@ class AuthService:
                 if user is None or not password_ok or user.status != "active":
                     # 停用的帳號與錯誤的密碼回同一件事：告訴對方「這個帳號被停用了」
                     # 等於確認帳號存在，那是帳號列舉的另一個入口。
-                    self._record_failure(attempts_key)
+                    self.record_password_failure(tenant_id=tenant_id, email=email)
                     raise InvalidCredentialsError
 
                 if needs_rehash(user.password_hash):
@@ -132,7 +171,7 @@ class AuthService:
             self._audit_login(tenant_id, actor_id=attempted_by, outcome=OUTCOME_FAILED)
             raise
 
-        redis.delete(attempts_key)
+        self.clear_password_failures(tenant_id=tenant_id, email=email)
         self._audit_login(tenant_id, actor_id=attempted_by, outcome=OUTCOME_SUCCEEDED)
         return self._issue_pair(
             tenant_id=tenant_id,
@@ -175,20 +214,33 @@ class AuthService:
     # ── 換發（rotation + 竊取偵測）──────────────────────────────
 
     def refresh(self, refresh_token: str) -> TokenPair:
+        """換發。**比對與改寫是一步原子操作**，而且剛換掉的那張有數秒寬限期。
+
+        原本是 `GET` 家族 → 比對 jti → （交易之後）`SET` 新 jti 三步，之間沒有任何
+        原子性。同一張 refresh 被兩個請求同時使用是**高頻的正常情境**（多分頁同時
+        喚醒、前端重試），而它的後果有兩個方向：
+
+        - 兩邊都通過比對、都拿到新 token，家族值被後寫的那個蓋掉——先寫那邊發出去的
+          refresh 下次使用時會被判成重放，**整個家族撤銷、正常使用者被隨機登出**。
+        - 反過來，真正的攻擊者若恰好與本人同時換發，兩邊都成功，偵測形同失效。
+
+        所以比對與改寫下沉成一段 Lua（`_ROTATE_SCRIPT`）。但原子性只解決一半：兩個
+        分頁仍然是兩個請求，而**只有一個能拿到「目前有效的那張 jti」**。因此輸的那個
+        走寬限期——拿回**贏家拿到的同一張** refresh token（見 `_ROTATE_SCRIPT` 的
+        docstring），於是兩個分頁最後握著同一張，不會有人被踢掉。
+
+        寬限期外仍然是嚴格的：`refresh_rotation_grace_seconds` 秒之後，同一個 jti
+        再出現就是重放，家族照樣一起撤銷。設成 0 等於完全關掉這個窗口。
+        """
         claims = self._codec.decode_refresh(refresh_token)
         redis = get_redis()
         family_key = tenant_key(claims.tenant_id, "refresh-family", str(claims.family_id))
 
-        current_jti = redis.get(family_key)
-        if current_jti is None:
+        # 便宜的先擋：家族不存在就不必查 DB、也不必簽兩張 token。**不做 jti 比對**
+        # ——那要與改寫同時發生才有意義，留給下面的 Lua。
+        if redis.get(family_key) is None:
             # 家族不存在 = 已被撤銷（或早已過期）。
             raise TokenRevokedError("這個 session 已失效，請重新登入")
-
-        if current_jti != str(claims.jti):
-            # **重放**：這張 refresh 已經被換過了，卻又出現一次 → 有兩個持有者。
-            # 分不出誰是本人，所以整條 session 鏈一起中止。
-            redis.delete(family_key)
-            raise TokenRevokedError("偵測到 refresh token 重複使用，已終止此 session")
 
         with tenant_context(claims.tenant_id), unit_of_work():
             user = self._users.get_by_id(claims.sub)
@@ -201,12 +253,25 @@ class AuthService:
             roles = self._roles.names_for_user(user.id)
             token_version = user.token_version
 
-        return self._issue_pair(
+        access, refresh = self._mint(
             tenant_id=claims.tenant_id,
             user_id=claims.sub,
             roles=roles,
             token_version=token_version,
             family_id=claims.family_id,
+        )
+        rotated = self._rotate_family(
+            tenant_id=claims.tenant_id,
+            family_id=claims.family_id,
+            presented_jti=claims.jti,
+            issued=refresh,
+        )
+        # 寬限期命中時 `rotated` 是贏家那張；上面剛簽的這張沒有登記進家族，
+        # 就這樣丟掉（它不在任何人手上，永遠不會被送回來）。
+        return TokenPair(
+            access_token=access.token,
+            refresh_token=rotated,
+            expires_at=access.expires_at,
         )
 
     # ── 撤銷 ────────────────────────────────────────────────────
@@ -295,24 +360,48 @@ class AuthService:
             raise TokenRevokedError("憑證已失效，請重新登入")
         return claims
 
-    # ── 內部 ────────────────────────────────────────────────────
+    # ── 密碼嘗試的節流（登入與改密碼共用）────────────────────────
+    #
+    # **共用同一個計數器是重點，不是省事。** 驗證舊密碼的地方不只登入：
+    # `UserService.change_password` 也拿明文密碼去比對，而它只需要一張 access
+    # token。分開計數的話，偷到 token 的人可以在那 15 分鐘裡全速猜舊密碼——猜中就
+    # 是接管帳號（改掉密碼會順便撤銷原主的所有 session）。同一把鎖之下，那條路徑
+    # 的第 5 次失敗就會把整個帳號鎖住，登入那側也一起。
 
-    def _is_locked(self, attempts_key: str) -> bool:
-        raw = cast(str | None, get_redis().get(attempts_key))
-        return raw is not None and int(raw) >= self._settings.login_max_attempts
+    def ensure_not_locked(self, *, tenant_id: uuid.UUID, email: str) -> None:
+        """已達失敗上限就 raise，附上還要等幾秒。"""
+        key = self._attempts_key(tenant_id, email)
+        redis = get_redis()
+        # redis-py 6 的同步 client 與 async client 共用型別，每個命令的回傳都是
+        # ``Awaitable | Any``。這裡的 client 一定是同步的（core.redis 的單例），
+        # 因此以 cast 收斂——擴散到呼叫端會讓每個運算都要先判型別。
+        raw = cast("str | None", redis.get(key))
+        if raw is not None and int(raw) >= self._settings.login_max_attempts:
+            locked_for = cast("int", redis.ttl(key))
+            raise AccountLockedError(retry_after_seconds=max(int(locked_for), 0))
 
-    def _record_failure(self, attempts_key: str) -> None:
+    def record_password_failure(self, *, tenant_id: uuid.UUID, email: str) -> None:
         """失敗計數 +1，並讓整個計數在鎖定時間之後自然消失。
 
         每次失敗都重設 TTL 是刻意的：持續攻擊會讓鎖定持續延長，而正常使用者
         打錯一兩次之後 15 分鐘就自動恢復，不需要人工解鎖。
         """
         pipeline = get_redis().pipeline()
-        pipeline.incr(attempts_key)
-        pipeline.expire(attempts_key, self._settings.login_lockout_seconds)
+        key = self._attempts_key(tenant_id, email)
+        pipeline.incr(key)
+        pipeline.expire(key, self._settings.login_lockout_seconds)
         pipeline.execute()
 
-    def _issue_pair(
+    def clear_password_failures(self, *, tenant_id: uuid.UUID, email: str) -> None:
+        """驗證成功——把計數歸零，免得偶爾打錯幾次的人累積到被鎖。"""
+        get_redis().delete(self._attempts_key(tenant_id, email))
+
+    def _attempts_key(self, tenant_id: uuid.UUID, email: str) -> str:
+        return tenant_key(tenant_id, "login-fail", email)
+
+    # ── 內部 ────────────────────────────────────────────────────
+
+    def _mint(
         self,
         *,
         tenant_id: uuid.UUID,
@@ -320,7 +409,9 @@ class AuthService:
         roles: tuple[str, ...],
         token_version: int,
         family_id: uuid.UUID,
-    ) -> TokenPair:
+    ) -> tuple[IssuedToken, IssuedToken]:
+        """簽出一組 token。**不碰 Redis**——登記家族是呼叫端的事，因為登入（開新家族）
+        與換發（原子輪換）是兩種完全不同的寫法。"""
         access = self._codec.issue_access(
             user_id=user_id,
             tenant_id=tenant_id,
@@ -333,12 +424,33 @@ class AuthService:
             family_id=family_id,
             token_version=token_version,
         )
+        return access, refresh
+
+    def _issue_pair(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        roles: tuple[str, ...],
+        token_version: int,
+        family_id: uuid.UUID,
+    ) -> TokenPair:
+        """登入用：簽一組 token 並**開一個新家族**。"""
+        access, refresh = self._mint(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            roles=roles,
+            token_version=token_version,
+            family_id=family_id,
+        )
 
         # 家族只記「目前有效的那一張 jti」。重放偵測就是拿這個值比對——
-        # 不需要保留歷史，因為任何不等於它的 jti 都該被當成重放。
-        ttl = int((refresh.expires_at - datetime.now(UTC)).total_seconds())
+        # 不需要保留歷史，因為任何不等於它的 jti 都該被當成重放（寬限期是唯一的
+        # 例外，而那一份存在另一個 key 上，見 `_rotate_family`）。
         get_redis().set(
-            tenant_key(tenant_id, "refresh-family", str(family_id)), str(refresh.jti), ex=ttl
+            tenant_key(tenant_id, "refresh-family", str(family_id)),
+            str(refresh.jti),
+            ex=_seconds_until(refresh.expires_at),
         )
 
         return TokenPair(
@@ -346,3 +458,46 @@ class AuthService:
             refresh_token=refresh.token,
             expires_at=access.expires_at,
         )
+
+    def _rotate_family(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        family_id: uuid.UUID,
+        presented_jti: uuid.UUID,
+        issued: IssuedToken,
+    ) -> str:
+        """原子輪換，回傳**呼叫端該交出去的那張 refresh token**。
+
+        三種結果：換成功（回剛簽的那張）、命中寬限期（回上一次換發時發出去的那張）、
+        重放（家族已在 script 裡刪掉，這裡 raise）。
+        """
+        grace = max(int(self._settings.refresh_rotation_grace_seconds), 0)
+        script = get_script(_ROTATE_LUA)
+        outcome = cast(
+            list[str],
+            script(
+                keys=[
+                    tenant_key(tenant_id, "refresh-family", str(family_id)),
+                    tenant_key(tenant_id, "refresh-rotated", str(presented_jti)),
+                ],
+                args=[
+                    str(presented_jti),
+                    str(issued.jti),
+                    str(_seconds_until(issued.expires_at)),
+                    issued.token,
+                    str(grace),
+                ],
+            ),
+        )
+
+        if outcome[0] == _ROTATE_ROTATED:
+            return issued.token
+        if outcome[0] == _ROTATE_GRACE:
+            return outcome[1]
+        if outcome[0] == _ROTATE_REVOKED:
+            # 先擋那一關過了、輪換這一刻卻不見了——同時發生的登出或撤銷。
+            raise TokenRevokedError("這個 session 已失效，請重新登入")
+        # **重放**：這張 refresh 已經被換過了（且超出寬限期），卻又出現一次 →
+        # 有兩個持有者。分不出誰是本人，所以整條 session 鏈一起中止。
+        raise TokenRevokedError("偵測到 refresh token 重複使用，已終止此 session")

@@ -293,7 +293,16 @@ class QuotaService:
 
         被擋下的那一次（`used > limit`）也會走到這裡，那是刻意的：使用者最需要
         一則說明的時刻就是被擋住的時候，而 429 只有發出那個請求的人看得到。
+
+        **瞬時值（`_GAUGES`）不通知。** `streams` 記的是「現在同時開著幾條串流」，
+        上限 2 的租戶開到第 2 條完全合法，而那一刻就會寄出「同時串流數已用盡」的
+        站內信加 email（去重鍵按日，所以每天一封）。訊息本身也是誤導——「超過的請求
+        會被擋下」對一秒後就會結束的東西不成立。額度告警要說的是「這一期的量快用完
+        了，去加量或省著用」，而瞬時值沒有「這一期」，也沒有什麼可以事先處理。
         """
+        if resource in _GAUGES:
+            return
+
         thresholds = quota_thresholds()
         if limit <= 0 or not thresholds or used * 100 < thresholds[0] * limit:
             return

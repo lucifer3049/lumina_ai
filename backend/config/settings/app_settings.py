@@ -73,6 +73,15 @@ class AppSettings(BaseSettings):
     # ── 登入防護（10 §2.1）──
     login_max_attempts: int = 5
     login_lockout_seconds: int = 900  # 15 分鐘
+    # 剛被換掉的 refresh token 還能再用幾秒（`AuthService.refresh`）。
+    #
+    # 不是為了寬鬆，是為了**分辨兩件長得一樣的事**：多分頁同時喚醒會讓同一張
+    # refresh 在同一瞬間出現兩次，那是本人；攻擊者的重放則來自別的時間點。沒有這個
+    # 窗口的話，前者會被當成後者處理——整個家族撤銷，使用者莫名其妙被登出。
+    #
+    # 值取秒級而不是分鐘級：窗口內的重放偵測是關掉的，而正常的併發換發只差幾十毫秒。
+    # 設 0 = 完全關掉窗口（嚴格輪換），代價是多分頁的誤殺會回來。
+    refresh_rotation_grace_seconds: int = 10
 
     # ── 物件儲存（MinIO，S3 相容）──
     s3_host: str = "127.0.0.1"

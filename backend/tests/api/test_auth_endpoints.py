@@ -344,3 +344,62 @@ class TestTenantSource:
         response = await client.get("/probe")
 
         assert response.status_code == 401
+
+
+class TestChangePasswordThrottling:
+    """改密碼的「驗證舊密碼」與登入共用同一把鎖（10 §2.1）。
+
+    **只擋登入是擋不住的**：`POST /auth/password/change` 也拿明文密碼去比對，而它
+    只需要一張 access token。偷到 token 的人（XSS、側錄）可以在它 15 分鐘的壽命裡
+    對這個端點全速猜舊密碼，一次都不會被計數——猜中就是接管帳號，因為改密碼會順便
+    撤銷原主的所有 session。
+
+    共用計數器之後，那條路徑的失敗與登入的失敗會累加，鎖住之後兩邊都進不來。
+    """
+
+    async def _change(
+        self, client: httpx.AsyncClient, token: str, *, current: str
+    ) -> httpx.Response:
+        return await client.post(
+            "/api/v1/auth/password/change",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"current_password": current, "new_password": "a brand new passphrase"},
+        )
+
+    async def test_guessing_the_old_password_is_not_unlimited(
+        self, client: httpx.AsyncClient, user_in_tenant_a: uuid.UUID
+    ) -> None:
+        token = (await _login(client)).json()["access_token"]
+
+        for _ in range(MAX_FAILED_ATTEMPTS):
+            assert (await self._change(client, token, current="wrong")).status_code == 401
+
+        response = await self._change(client, token, current="wrong")
+
+        assert response.status_code == 423
+        assert response.json()["code"] == "ACCOUNT_LOCKED"
+
+    async def test_those_failures_also_lock_the_login(
+        self, client: httpx.AsyncClient, user_in_tenant_a: uuid.UUID
+    ) -> None:
+        """兩條路徑共用一個計數器——分開算的話，攻擊者只要換一條路就沒有上限。"""
+        token = (await _login(client)).json()["access_token"]
+
+        for _ in range(MAX_FAILED_ATTEMPTS):
+            await self._change(client, token, current="wrong")
+
+        assert (await _login(client)).status_code == 423
+
+    async def test_a_successful_change_clears_the_counter(
+        self, client: httpx.AsyncClient, user_in_tenant_a: uuid.UUID
+    ) -> None:
+        """打錯幾次之後改成功了，計數要歸零——否則偶發的打錯字會日積月累把人鎖死。"""
+        token = (await _login(client)).json()["access_token"]
+
+        for _ in range(MAX_FAILED_ATTEMPTS - 1):
+            await self._change(client, token, current="wrong")
+
+        assert (await self._change(client, token, current=PASSWORD)).status_code == 204
+
+        # 新密碼登入照常（改密碼會撤銷所有 session，所以這裡本來就要重登）。
+        assert (await _login(client, password="a brand new passphrase")).status_code == 200

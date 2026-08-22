@@ -7,13 +7,17 @@ import uuid
 from decimal import Decimal
 from typing import cast
 
-from django.db import models
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from apps.platform.models import AuditLog, Notification, QuotaCounter, UsageDaily, UsageLog
 from core.tenant import get_current_tenant_id
 from core.uow import unit_of_work
 from repositories.base import TenantScopedRepository, cursor_key, split_page
+
+# `Notification` 的去重唯一約束名（apps/platform/models.py）。用名字比對而不是
+# 「撞到 IntegrityError 就當成去重」：那會把 FK、NOT NULL 之類的程式錯誤一起吞掉。
+_NOTIFICATION_DEDUPE_CONSTRAINT = "uq_notification_dedupe"
 
 
 class UsageLogRepository(TenantScopedRepository[UsageLog]):
@@ -296,12 +300,65 @@ class NotificationRepository(TenantScopedRepository[Notification]):
             dedupe_key=dedupe_key,
         )
 
+    def create_if_absent(
+        self,
+        *,
+        user_id: uuid.UUID,
+        type: str,
+        title: str,
+        body: str,
+        meta: dict[str, object],
+        channels: list[str],
+        dedupe_key: str,
+    ) -> Notification | None:
+        """同 :meth:`create`，但撞到去重約束時回 ``None`` 而不是讓交易死掉。
+
+        **`IntegrityError` 會讓整個交易進入 aborted 狀態**，之後同一個交易裡的任何
+        語句都會被 PostgreSQL 拒絕。通知是一次寫**一批**收件人，所以那不只是「這一
+        則沒寫成」——同一批裡已經寫好的其他人也一起回滾，而呼叫端的 `except
+        Exception` 會把它整個吞掉（旁路原則）。症狀是「兩個 worker 同時完成時，其中
+        一批通知整個消失」。
+
+        ``atomic()`` 在這裡是 **savepoint**（外層交易已經開著）：撞牆時只回滾到這一
+        則之前，交易本身還活著。這也是「先查再插只是省一次撞牆、真正的保證是唯一
+        約束」那句話的實作——先查再插在併發下兩邊都會查到「還沒有」。
+        """
+        try:
+            with transaction.atomic():
+                return self.create(
+                    user_id=user_id,
+                    type=type,
+                    title=title,
+                    body=body,
+                    meta=meta,
+                    channels=channels,
+                    dedupe_key=dedupe_key,
+                )
+        except IntegrityError as exc:
+            # 只吞去重那一條。其他約束（FK、NOT NULL）撞到代表程式寫錯了，
+            # 吞掉會變成「通知有時候就是不會出現」這種查不動的問題。
+            if _NOTIFICATION_DEDUPE_CONSTRAINT not in str(exc):
+                raise
+            return None
+
     def get_by_id(self, notification_id: uuid.UUID) -> Notification | None:
         """租戶內以 id 取一則（寄信的 worker 用）。不存在或屬於別的租戶都回 None。"""
         return self.get_queryset().filter(id=notification_id).first()
 
-    def get_by_dedupe(self, *, user_id: uuid.UUID, dedupe_key: str) -> Notification | None:
-        return self.get_queryset().filter(user_id=user_id, dedupe_key=dedupe_key).first()
+    def get_by_dedupe(
+        self, *, user_id: uuid.UUID, dedupe_key: str, for_update: bool = False
+    ) -> Notification | None:
+        """去重鍵取一則。``for_update`` 會鎖住那一列到交易結束。
+
+        **收合（`collapse`）是 read-modify-write**：讀出 meta、把 count 加一、整個寫
+        回去。兩個 worker 同時完成同一桶的兩份文件時，兩邊都讀到 count=1，結果是
+        「2 份已完成」變成「1 份」——而使用者看到的通知本身完全正常。鎖只在收合這條
+        路徑上要，一般查詢（收件匣）不需要付這個代價。
+        """
+        query = self.get_queryset().filter(user_id=user_id, dedupe_key=dedupe_key)
+        if for_update:
+            query = query.select_for_update()
+        return query.first()
 
     def collapse(
         self, notification_id: uuid.UUID, *, title: str, body: str, meta: dict[str, object]

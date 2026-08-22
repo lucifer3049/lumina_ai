@@ -28,6 +28,7 @@ from functools import lru_cache
 
 from redis import Redis
 from redis.asyncio import Redis as AsyncRedis
+from redis.commands.core import Script
 
 from config.settings.app_settings import get_app_settings
 
@@ -102,3 +103,18 @@ def tenant_key(tenant_id: uuid.UUID, *parts: str) -> str:
     ``*parts`` 允許 ``"*"`` 之類的樣式字元，測試會用它掃自己造出來的 key。
     """
     return ":".join(("t", str(tenant_id), *parts))
+
+
+@lru_cache(maxsize=8)
+def get_script(lua: str) -> Script:
+    """註冊一段 Lua，回傳可直接呼叫的 :class:`Script`（走 EVALSHA，sha 不在時自動
+    退回 EVAL 並重新載入）。
+
+    **需要原子性的多步驟操作一律走這裡。** Redis 的單一命令是原子的，但「讀出來、
+    依結果再寫回去」不是——中間擠進另一個請求時，兩邊會依同一份舊值各做一次決定，
+    而那類錯誤只在併發下出現、事後從資料看不出發生過什麼
+    （`services/identity/auth.py` 的 refresh 輪換就是這個形狀）。
+
+    以 Lua 原文為快取鍵：同一段 script 只註冊一次，改了原文自然是新的一筆。
+    """
+    return get_redis().register_script(lua)

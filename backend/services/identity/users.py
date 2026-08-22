@@ -145,11 +145,22 @@ class UserService:
 
         **必須驗證舊密碼**——否則任何一張被偷走的 access token 都能直接把帳號
         接管過去（改掉密碼，原主人就再也登不進來）。
+
+        **而「驗證舊密碼」本身要跟登入受同一把鎖。** 只擋登入的話，偷到一張 access
+        token 的人可以在它 15 分鐘的壽命裡對這個端點全速猜舊密碼，一次都不會被計數
+        ——猜中就是接管帳號。計數器與登入共用（`AuthService` 的 `login-fail`），於是
+        兩條路徑的失敗會累加，鎖住之後兩邊都進不來。
+
+        鎖定檢查與計數都在交易內：Redis 不隨交易 rollback，這正是要的——**失敗那次
+        的計數必須留下**，而同一個 rollback 會把不該留的東西（例如密碼）清乾淨。
         """
         with tenant_context(tenant_id), unit_of_work():
             user = self._require(user_id)
+            self._auth.ensure_not_locked(tenant_id=tenant_id, email=user.email)
             if not verify_password(current_password, user.password_hash):
+                self._auth.record_password_failure(tenant_id=tenant_id, email=user.email)
                 raise InvalidCredentialsError
+            self._auth.clear_password_failures(tenant_id=tenant_id, email=user.email)
             self._users.set_password_hash(user_id, hash_password(new_password))
 
         self._auth.revoke_all_sessions(tenant_id=tenant_id, user_id=user_id)

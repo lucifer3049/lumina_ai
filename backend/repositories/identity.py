@@ -19,6 +19,7 @@ from django.db.models import F, Q, QuerySet
 from django.utils import timezone
 
 from apps.identity.models import Role, Tenant, TenantDirectory, User, UserRole
+from core.exceptions import ValidationFailedError
 from core.tenant import get_current_tenant_id
 from repositories.base import TenantScopedRepository
 
@@ -174,8 +175,16 @@ class RoleRepository(TenantScopedRepository[Role]):
 
         不複製一份到租戶底下：系統角色的保證就是「所有租戶共用同一份、不可修改」，
         複本會讓權限判定時而拿到這份、時而拿到那份。
+
+        **角色名不存在是使用者輸入錯誤，不是系統故障**：`POST /users` 的 `role` 只是
+        一個字串（沒有 Literal 驗證），打錯字時 `Role.DoesNotExist` 會一路冒成 500
+        ——把 client 的錯誤記成我們的錯誤，而且 500 會進錯誤率告警。轉成 422 之後，
+        呼叫端（含不經 API 的 CLI 與 data migration）拿到的是一句看得懂的話。
         """
-        role = self.get_queryset().get(name=role_name, tenant__isnull=True)
+        try:
+            role = self.get_queryset().get(name=role_name, tenant__isnull=True)
+        except Role.DoesNotExist as exc:
+            raise ValidationFailedError(f"沒有這個角色：{role_name}") from exc
         UserRole.objects.get_or_create(user_id=user_id, role_id=role.id, tenant_id=tenant_id)
 
     def names_for_user(self, user_id: uuid.UUID) -> tuple[str, ...]:

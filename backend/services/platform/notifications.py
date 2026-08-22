@@ -412,7 +412,11 @@ class NotificationService:
         """寫 in-app 那幾列；回傳其中**還要寄信**的 id。
 
         去重的那些（`dedupe_key` 不為 None）**先查再插**只是省一次撞牆——真正的
-        保證是唯一約束，因此撞到了就當成「已經有人通知過」，不是錯誤。
+        保證是唯一約束，因此撞到了就當成「已經有人通知過」，不是錯誤。這句話由
+        `NotificationRepository.create_if_absent` 的 savepoint 實作：沒有它的話，
+        `IntegrityError` 會讓整個交易進 aborted 狀態，**同一批裡已經寫好的其他收件人
+        一起回滾**，而外層的 `except Exception` 把它整個吞掉——症狀是兩個 worker 同時
+        完成時，其中一批通知整個消失。
 
         **寄信不在這裡做**：呼叫端還在交易裡，而 worker 可能在 COMMIT 之前就拿到
         訊息、查不到那一列（症狀是「偶爾沒收到信」，重試也救不回來——那時它已經
@@ -421,19 +425,31 @@ class NotificationService:
         channels = list(channels_for(event_type))
         pending: list[uuid.UUID] = []
         for user_id in recipients:
-            if dedupe_key is not None and self._notifications.get_by_dedupe(
-                user_id=user_id, dedupe_key=dedupe_key
-            ):
-                continue
-            row = self._notifications.create(
-                user_id=user_id,
-                type=event_type,
-                title=title,
-                body=body,
-                meta=meta,
-                channels=channels,
-                dedupe_key=dedupe_key,
-            )
+            row: Any
+            if dedupe_key is None:
+                row = self._notifications.create(
+                    user_id=user_id,
+                    type=event_type,
+                    title=title,
+                    body=body,
+                    meta=meta,
+                    channels=channels,
+                )
+            else:
+                if self._notifications.get_by_dedupe(user_id=user_id, dedupe_key=dedupe_key):
+                    continue
+                row = self._notifications.create_if_absent(
+                    user_id=user_id,
+                    type=event_type,
+                    title=title,
+                    body=body,
+                    meta=meta,
+                    channels=channels,
+                    dedupe_key=dedupe_key,
+                )
+                if row is None:
+                    # 別人在這兩步之間插進去了——那正是「已經有人通知過」。
+                    continue
             if CHANNEL_EMAIL in channels:
                 pending.append(uuid.UUID(str(row.id)))
         return pending
@@ -450,10 +466,22 @@ class NotificationService:
     ) -> list[uuid.UUID]:
         """ready 的收合：桶裡已經有一列就把它加一，否則開新的一列。
 
-        回傳「還要寄信的 id」（理由同 `_deliver`：交易還沒 COMMIT）。"""
-        existing = self._notifications.get_by_dedupe(user_id=user_id, dedupe_key=dedupe_key)
+        回傳「還要寄信的 id」（理由同 `_deliver`：交易還沒 COMMIT）。
+
+        **兩個 worker 同時完成同一桶的兩份文件是常態**（一次上傳一批，embed 是平行
+        的），所以這裡的兩條路徑都要能承受併發：
+
+        - 都判定「桶是空的」→ 一邊插成功、一邊撞唯一約束。撞到的那邊改走收合，
+          而不是讓整個交易死掉。
+        - 都判定「桶裡有一列」→ 收合是 read-modify-write（讀 meta、count+1、寫回），
+          兩邊都讀到 1 的話結果是「1 份已完成」而不是 2。所以取既有那列時鎖住它，
+          後到的那個等前一個寫完再讀。
+        """
+        existing = self._notifications.get_by_dedupe(
+            user_id=user_id, dedupe_key=dedupe_key, for_update=True
+        )
         if existing is None:
-            row = self._notifications.create(
+            row = self._notifications.create_if_absent(
                 user_id=user_id,
                 type=TYPE_DOCUMENT_READY,
                 title=f"{filename} 已完成",
@@ -467,7 +495,16 @@ class NotificationService:
                 channels=list(channels_for(TYPE_DOCUMENT_READY)),
                 dedupe_key=dedupe_key,
             )
-            return [uuid.UUID(str(row.id))] if CHANNEL_EMAIL in row.channels else []
+            if row is not None:
+                return [uuid.UUID(str(row.id))] if CHANNEL_EMAIL in row.channels else []
+            # 這一瞬間有人先開了這個桶——回頭走收合那條路（鎖著讀，這次一定拿得到）。
+            existing = self._notifications.get_by_dedupe(
+                user_id=user_id, dedupe_key=dedupe_key, for_update=True
+            )
+            if existing is None:
+                # 插不進去又讀不到：只可能是同一瞬間被清理掉。少一則通知，不值得
+                # 讓「文件完成」這件事失敗。
+                return []
 
         meta = dict(existing.meta)
         count = int(meta.get("count", 1)) + 1

@@ -301,6 +301,26 @@ class TestQuotaThreshold:
 
         assert sorted(row.meta["threshold"] for row in _inbox(small_quota)) == [80, 100]
 
+    def test_a_gauge_never_raises_an_alert(self) -> None:
+        """`streams` 是**瞬時值**（現在同時開著幾條），不是這一期用掉多少。
+
+        上限 2 的租戶開到第 2 條完全合法，而那一刻就會寄出「同時串流數已用盡」的站內
+        信加 email——去重鍵按日，所以每天一封。訊息本身也是誤導：「超過的請求會被
+        擋下」對一秒後就結束的東西不成立，而且收件人根本無事可做。
+
+        額度告警要說的是「這一期快用完了，去加量或省著用」，瞬時值沒有「這一期」。
+        """
+        ensure_identity_seed()
+        with tenant_scope(TENANT_A):
+            make_tenant(id=TENANT_A, slug="tenant-a", settings={"quota": {"streams": 1}})
+            owner = make_user(tenant_id=TENANT_A, email="owner@example.com")
+            make_user_role(user=owner, role=Role.objects.get(tenant__isnull=True, name="owner"))
+            owner_id = uuid.UUID(str(owner.id))
+
+        QuotaService().check_and_reserve(TENANT_A, "streams", 1)
+
+        assert _inbox(owner_id) == [], "瞬時值不該產生額度告警"
+
     def test_being_blocked_also_leaves_a_notification(self, small_quota: uuid.UUID) -> None:
         """被 429 擋下的那一次不會留下計數（reserve 會回滾），但它正是使用者
         最需要一則說明的時刻——擋在 API 層的 429 只有那一個請求看得到。"""
@@ -379,3 +399,105 @@ class TestEmailDispatch:
         )
 
         assert sent == []
+
+
+class TestConcurrentDelivery:
+    """兩個 worker 同時完成同一件事——一次上傳一批時，embed 是平行的，所以這是常態。
+
+    去重的 docstring 說「撞到唯一約束就當成已通知過，不是錯誤」，但那句話原本沒有
+    實作：`IntegrityError` 會讓**整個交易**進 aborted 狀態，於是
+
+    - 同一批裡已經寫好的其他收件人一起回滾；
+    - 外層的 `except Exception`（旁路原則）把它整個吞掉，連 log 都只有一行。
+
+    症狀是「兩個 worker 同時完成時，其中一批通知整個消失」，而資料看起來完全正常。
+
+    **先查再插的那次查詢在併發下必然查不到**（另一邊還沒 COMMIT），所以這裡直接把
+    `get_by_dedupe` 打成回 None——那不是造假，那就是併發當下真正會發生的事。
+    """
+
+    @pytest.fixture
+    def admins(self) -> dict[str, uuid.UUID]:
+        ensure_identity_seed()
+        with tenant_scope(TENANT_A):
+            make_tenant(id=TENANT_A, slug="tenant-a")
+            people = {}
+            for role_name in ("owner", "admin"):
+                user = make_user(tenant_id=TENANT_A, email=f"{role_name}@example.com")
+                make_user_role(
+                    user=user, role=Role.objects.get(tenant__isnull=True, name=role_name)
+                )
+                people[role_name] = uuid.UUID(str(user.id))
+            return people
+
+    def test_a_duplicate_does_not_take_the_rest_of_the_batch_with_it(
+        self, admins: dict[str, uuid.UUID], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apps.platform.models import Notification
+        from services.platform.notifications import NotificationService
+
+        service = NotificationService()
+        payload = {"resource": "tokens_month", "used": 8, "limit": 10, "period_start": "2026-08"}
+        service.notify_quota_threshold(TENANT_A, **payload)  # type: ignore[arg-type]
+
+        # 只留 owner 那一則：模擬「另一個 worker 已經通知過 owner，但還沒輪到 admin」。
+        with tenant_scope(TENANT_A):
+            Notification.objects.filter(user_id=admins["admin"]).delete()
+
+        real = NotificationRepository.get_by_dedupe
+        monkeypatch.setattr(
+            NotificationRepository,
+            "get_by_dedupe",
+            lambda self, **kwargs: None,
+        )
+        service.notify_quota_threshold(TENANT_A, **payload)  # type: ignore[arg-type]
+        monkeypatch.setattr(NotificationRepository, "get_by_dedupe", real)
+
+        assert len(_inbox(admins["owner"])) == 1, "去重那一則不該變成第二則"
+        assert len(_inbox(admins["admin"])) == 1, (
+            "同一批裡的另一個收件人被連帶回滾了——他這則通知就這樣消失"
+        )
+
+
+class TestConcurrentCollapse:
+    def _embed(self, document_id: uuid.UUID) -> None:
+        EmbeddingService(gateway=AIGateway(embedding_provider=_Provider())).embed_document(
+            TENANT_A, document_id
+        )
+
+    def test_losing_the_race_collapses_instead_of_vanishing(
+        self, uploader: uuid.UUID, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """兩個 worker 都判定「這個桶還是空的」時，後插的那個要改走收合。
+
+        原本會撞唯一約束並讓整個 notify 交易死掉——那一份文件的完成就這樣沒人知道，
+        而收件匣裡那則「1 份已完成」看起來完全正常。
+
+        （另一半的競態——兩邊都讀到既有那列、各自把 count 從 1 加到 2——由
+        `get_by_dedupe(for_update=True)` 的列鎖擋住，那個效果在單執行緒的測試裡看不
+        出來，只能靠 repository 那層的斷言。）
+        """
+        with tenant_scope(TENANT_A):
+            kb_id = uuid.UUID(str(make_knowledge_base(tenant_id=TENANT_A).id))
+
+        first = _upload(uploader, kb_id=kb_id, content=_MARKDOWN + b"first")
+        IngestionService().ingest(TENANT_A, first)
+        self._embed(first)
+
+        real = NotificationRepository.get_by_dedupe
+        seen = {"calls": 0}
+
+        def flaky(self: NotificationRepository, **kwargs: Any) -> Any:
+            """第一次查詢回 None：另一個 worker 的那一列還沒 COMMIT。"""
+            seen["calls"] += 1
+            return None if seen["calls"] == 1 else real(self, **kwargs)
+
+        monkeypatch.setattr(NotificationRepository, "get_by_dedupe", flaky)
+
+        second = _upload(uploader, kb_id=kb_id, content=_MARKDOWN + b"second")
+        IngestionService().ingest(TENANT_A, second)
+        self._embed(second)
+
+        rows = _inbox(uploader)
+        assert len(rows) == 1
+        assert rows[0].meta["count"] == 2, "撞到約束的那一份被整個丟掉了，收合沒有發生"

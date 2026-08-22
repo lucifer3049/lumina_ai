@@ -158,6 +158,61 @@ class TestCreateUser:
         assert response.status_code == 409
         assert response.json()["code"] == "RESOURCE_CONFLICT"
 
+    async def test_an_unknown_role_is_a_client_error_not_a_500(
+        self, client: httpx.AsyncClient, tenant_with_owner_and_member: dict[str, uuid.UUID]
+    ) -> None:
+        """`role` 只是一個字串（schema 沒有 Literal），打錯字是遲早的事。
+
+        原本 `Role.DoesNotExist` 會一路冒成 500——把 client 的錯誤記成我們的故障，
+        而 500 會進錯誤率告警。轉成 422 之後對方看得懂發生什麼事，而我們的告警乾淨。
+        """
+        token = await _login(client, OWNER_EMAIL)
+
+        response = await client.post(
+            "/api/v1/users",
+            json={
+                "email": "wizard@example.com",
+                "display_name": "Wizard",
+                "password": PASSWORD,
+                "role": "wizard",
+            },
+            headers=_auth(token),
+        )
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "VALIDATION_FAILED"
+
+    async def test_a_rejected_role_does_not_leave_half_a_user(
+        self, client: httpx.AsyncClient, tenant_with_owner_and_member: dict[str, uuid.UUID]
+    ) -> None:
+        """角色指派與建立在同一個交易裡：失敗了就整個不留。
+
+        留下一個沒有角色的使用者的話，那個 email 從此佔著唯一約束——重試會拿到 409，
+        而畫面上看不到任何原因。
+        """
+        from asgiref.sync import sync_to_async
+
+        from apps.identity.models import User
+        from core.uow import unit_of_work
+
+        token = await _login(client, OWNER_EMAIL)
+        await client.post(
+            "/api/v1/users",
+            json={
+                "email": "wizard@example.com",
+                "display_name": "Wizard",
+                "password": PASSWORD,
+                "role": "wizard",
+            },
+            headers=_auth(token),
+        )
+
+        def exists() -> bool:
+            with tenant_scope(TENANT_A), unit_of_work():
+                return User.objects.filter(email="wizard@example.com").exists()
+
+        assert not await sync_to_async(exists, thread_sensitive=False)()
+
     async def test_created_user_can_log_in(
         self, client: httpx.AsyncClient, tenant_with_owner_and_member: dict[str, uuid.UUID]
     ) -> None:
