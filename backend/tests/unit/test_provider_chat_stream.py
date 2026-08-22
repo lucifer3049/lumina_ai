@@ -421,6 +421,17 @@ class TestErrorMapping:
 
         assert caught.value.retryable is False
 
+    async def test_the_error_names_the_model_not_the_url_path(self) -> None:
+        """同 embedding 那條：訊息模板是「模型未啟用：{model}」，填進 URL 路徑的話，
+        使用者在 SSE 的 error event 上看到的是「模型未啟用：/chat/completions」。"""
+        request = _request()
+
+        with pytest.raises(ModelNotEnabledError) as caught:
+            await _collect(_provider(status=404), request)
+
+        assert request.model in str(caught.value)
+        assert caught.value.details["model"] == request.model
+
     async def test_a_network_timeout_becomes_a_provider_timeout(self) -> None:
         with pytest.raises(ProviderTimeoutError):
             await _collect(_provider(exc=httpx.ReadTimeout("慢")))
@@ -480,3 +491,56 @@ class TestProtocolCompliance:
         # **關得掉**也是契約的一部分：Gateway 在呼叫端斷線時要能立刻收掉那條連線，
         # 而只有 async generator 有 `aclose`（因此 `ChatProvider` 要求的是它）。
         await stream.aclose()
+
+
+class TestConnectionReuse:
+    """chat 這條的每一輪對話都要重付一次握手，而那筆時間直接加在 TTFT 上。
+
+    async client 與 embedding 那條的差別是**它綁在 event loop 上**：httpx 的連線池與
+    asyncio 的 primitive 由建立它的 loop 持有，跨 loop 使用會在最不明顯的地方出錯。
+    因此快取是「每個 loop 一組」，形狀同 `core/redis.py` 的 async client。
+    """
+
+    async def test_the_client_survives_a_stream(self) -> None:
+        from ai.gateway.providers.openai_compatible import _shared_async_client
+
+        provider = _provider(lines=[_chunk(content="嗨"), _DONE])
+        await _collect(provider)
+
+        client = _shared_async_client(provider._base_url, provider._transport)
+        assert client.is_closed is False
+
+    async def test_two_streams_share_one_client(self) -> None:
+        from ai.gateway.providers.openai_compatible import _shared_async_client
+
+        provider = _provider(lines=[_chunk(content="嗨"), _DONE])
+        base_url, transport = provider._base_url, provider._transport
+
+        await _collect(provider)
+        first = _shared_async_client(base_url, transport)
+        await _collect(provider)
+
+        assert _shared_async_client(base_url, transport) is first
+
+    async def test_a_different_transport_gets_its_own_client(self) -> None:
+        """測試隔離：共用的話，上一條測試的假串流會餵給下一條。"""
+        from ai.gateway.providers.openai_compatible import _shared_async_client
+
+        one = _provider(lines=[_DONE])
+        two = _provider(lines=[_DONE])
+
+        assert _shared_async_client(one._base_url, one._transport) is not _shared_async_client(
+            two._base_url, two._transport
+        )
+
+    async def test_the_timeouts_still_come_from_the_caller(self) -> None:
+        """三層逾時逐次傳，不綁在共用的 client 上——綁上去的話，第一次串流的 TTFT
+        上限會變成之後所有串流的上限。"""
+        captured: list[httpx.Request] = []
+        provider = _provider(lines=[_DONE], capture=captured)
+
+        await _collect(provider)
+
+        timeout = captured[-1].extensions.get("timeout", {})
+        assert timeout["read"] == _TIMEOUTS.ttft_seconds
+        assert timeout["connect"] == _TIMEOUTS.connect_seconds

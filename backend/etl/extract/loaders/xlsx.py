@@ -44,6 +44,11 @@ def load(content: bytes) -> LoadResult:
 
     blocks: list[Block] = []
     headings = HeadingStack()
+    # **在 close() 之前取值**：read_only 模式下 `close()` 只關檔案柄，`worksheets`
+    # 目前仍讀得到——但那是 openpyxl 的內部細節，不是它承諾的東西。把「關掉之後還能
+    # 讀什麼」押在一個實作細節上，代價是升版之後這裡會丟一個與 xlsx 內容無關的例外，
+    # 而症狀是「某些試算表突然解析失敗」。
+    sheet_count = len(workbook.worksheets)
     try:
         for sheet in workbook.worksheets:
             rows = [row for row in _rows(sheet) if any(cell for cell in row)]
@@ -76,7 +81,7 @@ def load(content: bytes) -> LoadResult:
         workbook.close()
 
     doc_meta: dict[str, Any] = {
-        "sheet_count": len(workbook.worksheets),
+        "sheet_count": sheet_count,
         "table_count": sum(1 for block in blocks if block.type is BlockType.TABLE),
     }
     return blocks, doc_meta

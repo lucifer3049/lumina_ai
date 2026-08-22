@@ -298,8 +298,11 @@ class ModelNotEnabledError(ProviderError):
     code = ErrorCode.MODEL_NOT_ENABLED
     retryable = False
 
-    def __init__(self, *, model: str) -> None:
-        super().__init__(f"模型未啟用：{model}", details={"model": model})
+    def __init__(self, *, model: str, details: dict[str, Any] | None = None) -> None:
+        # `details` 疊在 model 之上而不是取代它：呼叫端補的是「哪一家、HTTP 幾號」
+        # 這類分類用的欄位，而 `model` 是這個例外的主詞——被蓋掉的話，訊息與 details
+        # 會各說各話。
+        super().__init__(f"模型未啟用：{model}", details={"model": model, **(details or {})})
 
 
 class ExtractionFailedError(DomainError):

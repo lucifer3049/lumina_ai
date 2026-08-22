@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import json
 import math
+import weakref
+from asyncio import AbstractEventLoop, get_running_loop
 from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -120,6 +123,56 @@ VENDORS: dict[str, VendorSpec] = {
 }
 
 
+# ── 連線重用 ────────────────────────────────────────────────────
+#
+# **每次呼叫新建一個 client = 每一批都重付一次 TCP + TLS 握手。** 一份 500 頁的 PDF
+# 是幾十個批次，對遠端端點（Gemini／OpenAI）每批多 100–300ms，全部落在使用者等待的
+# 處理時間上；chat 那條則是每一輪對話多付一次握手，直接加在 TTFT 上。
+#
+# **快取放模組層而不是 provider 實例上**：provider 隨 service 建立（每個請求／每個
+# task 一個），掛在實例上只在同一次執行內重用得到。模組層 = 一個行程一組連線池，
+# 形狀同 `core/redis.py` 的單例。
+#
+# **鍵含 transport**：測試注入 `httpx.MockTransport`，共用同一個 client 的話，上一條
+# 測試的假回應會服務下一條測試——而那種汙染看起來像「某些測試單獨跑會過」。
+#
+# 逾時不綁在 client 上，逐次呼叫傳（見 `_post` 與 `stream_chat`）：client 是共用的，
+# 而上限屬於那一次呼叫（11 §4.1 的字典由 Gateway 傳下來）。
+
+
+@lru_cache(maxsize=8)
+def _shared_client(base_url: str, transport: httpx.BaseTransport | None) -> httpx.Client:
+    """同步 client（embedding）。`httpx.Client` 是執行緒安全的，而這條路徑跑在
+    threadpool 上（ADR-001），多個 worker 執行緒共用同一組連線池正是我們要的。"""
+    return httpx.Client(base_url=base_url, transport=transport)
+
+
+# 一個 event loop 一組 async client。**弱參考鍵**：loop 結束後這一筆要能被回收，
+# 否則測試每跑一條就留下一個永遠不會再用的連線池（同 `core/redis.py` 的理由）。
+_async_clients: weakref.WeakKeyDictionary[
+    AbstractEventLoop, dict[tuple[str, int], httpx.AsyncClient]
+] = weakref.WeakKeyDictionary()
+
+
+def _shared_async_client(
+    base_url: str, transport: httpx.AsyncBaseTransport | None
+) -> httpx.AsyncClient:
+    """非同步 client（chat 串流）。
+
+    **不是模組層單例，而是「每個 event loop 一個」**：httpx 的連線池與 asyncio 的
+    primitive 綁在建立它的那個 loop 上，跨 loop 使用會在最不明顯的地方出錯。正式環境
+    只有一個 loop，所以這與單例等價；測試每一條跑在自己的 loop 上，單例會在第二條就
+    出問題——而那個錯誤訊息不會指向這裡。
+    """
+    per_loop = _async_clients.setdefault(get_running_loop(), {})
+    key = (base_url, id(transport))
+    client = per_loop.get(key)
+    if client is None:
+        client = httpx.AsyncClient(base_url=base_url, transport=transport)
+        per_loop[key] = client
+    return client
+
+
 class _VendorClient:
     """廠商解析與憑證處理 —— embedding 與 chat 兩個 adapter 共用。
 
@@ -177,23 +230,26 @@ class OpenAICompatibleProvider(_VendorClient):
             # 而錯誤指向 INSERT——看不出原因在幾層之外一個沒送出去的參數。
             payload["dimensions"] = self._dimensions
 
-        data = self._post(payload, timeout_seconds=timeout_seconds)
+        data = self._post(payload, timeout_seconds=timeout_seconds, model=model)
         return self._parse(data, texts=texts, requested_model=model)
 
     # ── HTTP ────────────────────────────────────────────────
 
-    def _post(self, payload: dict[str, Any], *, timeout_seconds: float) -> dict[str, Any]:
+    def _post(
+        self, payload: dict[str, Any], *, timeout_seconds: float, model: str
+    ) -> dict[str, Any]:
         headers = self._headers()
 
         try:
-            with httpx.Client(
-                base_url=self._base_url,
-                transport=self._transport,
+            response = _shared_client(self._base_url, self._transport).post(
+                "/embeddings",
+                json=payload,
+                headers=headers,
                 # 11 §4.1：timeout 由 Gateway 傳入（全域字典才有意義）。沒有它的話，
                 # provider 慢掉時 worker 會一個一個卡住，而症狀是「ETL 變慢」。
+                # **逐次傳而不是綁在 client 上**：client 是共用的，而上限屬於這一次呼叫。
                 timeout=httpx.Timeout(timeout_seconds),
-            ) as client:
-                response = client.post("/embeddings", json=payload, headers=headers)
+            )
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError(f"{self.name} 逾時（{timeout_seconds:g}s）") from exc
         except httpx.HTTPError as exc:
@@ -201,7 +257,7 @@ class OpenAICompatibleProvider(_VendorClient):
             raise ProviderUnavailableError(f"{self.name} 連線失敗：{type(exc).__name__}") from exc
 
         if response.status_code >= 400:
-            raise _error_for(response, vendor=self.name)
+            raise _error_for(response, vendor=self.name, model=model)
 
         try:
             body = response.json()
@@ -281,22 +337,23 @@ class OpenAICompatibleChatProvider(_VendorClient):
         self, request: ChatRequest, *, timeouts: ChatTimeouts
     ) -> AsyncGenerator[ProviderDelta, None]:
         payload = self._payload(request)
+        client = _shared_async_client(self._base_url, self._transport)
         try:
-            async with (
-                httpx.AsyncClient(
-                    base_url=self._base_url,
-                    transport=self._transport,
-                    timeout=self.timeout_for(timeouts),
-                ) as client,
-                client.stream(
-                    "POST", "/chat/completions", json=payload, headers=self._headers()
-                ) as response,
-            ):
+            # **不 `async with client`**：它是共用的（見 `_shared_async_client`），
+            # 離開這個區塊就關掉的話，下一次串流會拿到一個已經關閉的連線池。
+            async with client.stream(
+                "POST",
+                "/chat/completions",
+                json=payload,
+                headers=self._headers(),
+                # 逐次傳（同 embedding 那條）：上限屬於這一次呼叫，不屬於 client。
+                timeout=self.timeout_for(timeouts),
+            ) as response:
                 if response.status_code >= 400:
                     # 讀完才拿得到 `response.request`／狀態以外的東西；內容一律不落地
                     # （見 `_error_for`），讀它只是為了讓連線乾淨地結束。
                     await response.aread()
-                    raise _error_for(response, vendor=self.name)
+                    raise _error_for(response, vendor=self.name, model=request.model)
 
                 async for delta in _parse_stream(response.aiter_lines(), vendor=self.name):
                     yield delta
@@ -441,12 +498,19 @@ def _accumulate_tool_calls(sink: dict[int, dict[str, str]], fragments: Any) -> N
             call["arguments"] += function["arguments"]
 
 
-def _error_for(response: httpx.Response, *, vendor: str) -> ProviderError:
+def _error_for(response: httpx.Response, *, vendor: str, model: str) -> ProviderError:
     """HTTP 狀態 → 我們的例外型別。**可否重試由型別決定**（1C-1 定案）。
 
     **訊息一律由我們自己組**，絕不回貼 provider 的原文（鐵則 9）：那些訊息常把整個
     請求（含 Authorization 標頭或帶 key 的 URL）回貼回來，而它們會經 `document.error`
     或 SSE 的 error event 回到租戶手上。狀態碼留著——分類與統計要用它，而它不洩漏內容。
+
+    **``model`` 由呼叫端傳入，不從 `response.request` 反推**：那裡拿得到的是 URL 路徑
+    （``/embeddings``），而 `ModelNotEnabledError` 的訊息模板是「模型未啟用：{model}」
+    ——填進去就變成「模型未啟用：/embeddings」。那句話會被寫進 `document.error` 持久化，
+    也會經 SSE 送到使用者面前，而 404 正是 1C-5 之後**最可能**的設定錯誤（KB 的
+    `embedding_model` 與全域 provider 對不上）。最需要說清楚的時刻說一句誤導的話，
+    比不說更貴：看到路徑的人會去查端點，而問題在別的地方。
     """
     status = response.status_code
     detail = {"status": status, "vendor": vendor}
@@ -458,12 +522,12 @@ def _error_for(response: httpx.Response, *, vendor: str) -> ProviderError:
     if status == 404:
         # 模型不存在／那家沒有這個模型。1C-5 之後最可能的設定錯誤——KB 的
         # `embedding_model` 是 per-KB 的，而 provider 是全域的，兩者對不上就走到這。
-        return ModelNotEnabledError(model=str(response.request.url.path))
+        return ModelNotEnabledError(model=model, details=detail)
     if status == 400:
         # 參數被退（固定維度的模型送了 dimensions、context 超過模型上限）。
         # 重試不會有不同結果，而在 chat 這條路徑上，重試要重送整份 context——
         # 那是整條讀路徑上最貴的一種重試。
-        return ModelNotEnabledError(model=str(response.request.url.path))
+        return ModelNotEnabledError(model=model, details=detail)
     return ProviderUnavailableError(f"{vendor} 回應 {status}", details=detail)
 
 

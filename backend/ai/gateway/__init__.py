@@ -399,10 +399,16 @@ class AIGateway:
         """呼叫 adapter，並把非 `ProviderError` 的例外收斂進來。
 
         **真正中斷呼叫的是 adapter 的 socket timeout**（`timeout_seconds` 由這裡傳入，
-        理由見 providers 的 Protocol）。牆鐘只是**事後分類**：超過上限才回來的呼叫，
-        不論它自己說失敗的原因是什麼，對上層而言就是逾時——adapter 是第三方程式碼，
+        理由見 providers 的 Protocol）。牆鐘只是**事後分類**：超過上限才**失敗**回來的
+        呼叫，不論它自己說原因是什麼，對上層而言就是逾時——adapter 是第三方程式碼，
         它有沒有把 timeout 真的傳到底層不是我們能保證的，而分類錯的代價是把「provider
         很慢」記成「provider 壞了」，兩者的處置不同。
+
+        **但成功的結果一律收下**，即使它遲到了。這裡的牆鐘是**事後**才量得到的（要等
+        呼叫回來才知道花了多久），所以它對「掛住不回來」那種真正的危險完全沒有作用；
+        它唯一攔得到的是「慢，但成功了」——而那一份向量**已經付過錢**。丟掉它換來的是
+        重試再付一次，加上再等一輪的延遲，而慢的原因（provider 當下不順）通常還在。
+        遲到只記一筆 warning：它是容量規劃與 provider 選型的訊號，不是這一次呼叫的失敗。
         """
         provider = self._provider
         if provider is None:  # pragma: no cover —— `embed()` 已經擋過
@@ -418,7 +424,14 @@ class AIGateway:
 
         elapsed = time.monotonic() - started
         if elapsed > self._timeout:
-            raise ProviderTimeoutError(self._timeout_message(elapsed))
+            logger.warning(
+                "provider_call_slow",
+                provider=self.provider_name,
+                model=model,
+                elapsed_seconds=round(elapsed, 1),
+                timeout_seconds=self._timeout,
+                batch_size=len(texts),
+            )
         return embedding
 
     def _classify(self, exc: Exception, *, elapsed: float) -> ProviderError:

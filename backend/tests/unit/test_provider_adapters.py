@@ -29,7 +29,7 @@ OpenAI 相容的 `/v1/embeddings`，差別只有 base URL、金鑰與支不支�
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -402,6 +402,38 @@ class TestErrorMapping:
 
         assert caught.value.retryable is False
 
+    def test_the_error_names_the_model_not_the_url_path(self) -> None:
+        """**404 說的必須是模型名。**
+
+        `ModelNotEnabledError` 的訊息模板是「模型未啟用：{model}」，而原本填進去的是
+        `response.request.url.path`——於是使用者與維運看到的是「模型未啟用：/embeddings」。
+        那句話會被寫進 `document.error` 持久化，也是這條路徑上最需要說清楚的一刻：
+        看到端點路徑的人會去查端點，而問題在 KB 的設定裡。
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"error": {"message": "model not found"}})
+
+        with pytest.raises(ModelNotEnabledError) as caught:
+            _provider(handler).embed(["a"], model="typo-embedding", timeout_seconds=5.0)
+
+        assert "typo-embedding" in str(caught.value)
+        assert caught.value.details["model"] == "typo-embedding"
+        # vendor 與狀態碼一併留著：分類與統計要用，而它們不洩漏 provider 的原文。
+        assert caught.value.details["status"] == 404
+        assert caught.value.details["vendor"] == "gemini"  # _provider 的預設廠商
+
+    def test_a_rejected_parameter_also_names_the_model(self) -> None:
+        """400 走同一條（固定維度的模型送了 dimensions、context 超過上限）。"""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, json={"error": {"message": "bad request"}})
+
+        with pytest.raises(ModelNotEnabledError) as caught:
+            _provider(handler).embed(["a"], model="fixed-dim-model", timeout_seconds=5.0)
+
+        assert "fixed-dim-model" in str(caught.value)
+
     def test_a_network_timeout_becomes_a_provider_timeout(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ReadTimeout("too slow", request=request)
@@ -481,3 +513,70 @@ class TestProtocolCompliance:
 
         assert result.vectors == []
         assert captured == []
+
+
+class TestConnectionReuse:
+    """**每次呼叫新建一個 client = 每一批都重付一次 TCP + TLS 握手。**
+
+    一份 500 頁的 PDF 是幾十個批次，對遠端端點（Gemini／OpenAI）每批多 100–300ms，
+    全部落在使用者等待的處理時間上。純效能，不影響正確性——所以斷言的是「client 活著
+    而且被重用」，那是連線池能發揮作用的前提。
+    """
+
+    def test_the_client_survives_a_call(self) -> None:
+        """呼叫結束後 client 不關：關掉的話，連線池每批都要重建，重用等於沒有。"""
+        from ai.gateway.providers.openai_compatible import _shared_client
+
+        captured: list[httpx.Request] = []
+        transport = httpx.MockTransport(_ok(captured))
+        provider = OpenAICompatibleProvider(vendor="gemini", api_key=_KEY, transport=transport)
+
+        provider.embed(["a"], model=_MODEL, timeout_seconds=5.0)
+
+        client = _shared_client(provider._base_url, transport)
+        assert client.is_closed is False
+
+    def test_two_calls_share_one_client(self) -> None:
+        from ai.gateway.providers.openai_compatible import _shared_client
+
+        captured: list[httpx.Request] = []
+        transport = httpx.MockTransport(_ok(captured))
+        provider = OpenAICompatibleProvider(vendor="gemini", api_key=_KEY, transport=transport)
+        base_url = provider._base_url
+
+        provider.embed(["a"], model=_MODEL, timeout_seconds=5.0)
+        first = _shared_client(base_url, transport)
+        provider.embed(["b"], model=_MODEL, timeout_seconds=5.0)
+
+        assert _shared_client(base_url, transport) is first
+
+    def test_a_different_transport_gets_its_own_client(self) -> None:
+        """**測試隔離的保證**：快取的鍵含 transport，否則上一條測試的假回應會服務
+        下一條測試——而那種汙染看起來像「某些測試單獨跑才會過」。"""
+        from ai.gateway.providers.openai_compatible import _shared_client
+
+        captured: list[httpx.Request] = []
+        one = httpx.MockTransport(_ok(captured))
+        two = httpx.MockTransport(_ok(captured))
+        base_url = OpenAICompatibleProvider(vendor="gemini", api_key=_KEY)._base_url
+
+        assert _shared_client(base_url, one) is not _shared_client(base_url, two)
+
+    def test_the_timeout_still_comes_from_the_caller(self) -> None:
+        """逾時逐次傳而不是綁在共用的 client 上（11 §4.1 的字典由 Gateway 傳下來）。
+        綁在 client 上的話，第一次呼叫的上限會變成之後所有呼叫的上限。"""
+        seen: list[float | None] = []
+
+        captured: list[httpx.Request] = []
+        respond = _ok(captured)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.extensions.get("timeout", {}).get("read"))
+            # `_ok` 回傳的是未標型別的 handler（測試輔助），這裡收斂回 Response。
+            return cast("httpx.Response", respond(request))
+
+        provider = _provider(handler)
+        provider.embed(["a"], model=_MODEL, timeout_seconds=1.5)
+        provider.embed(["b"], model=_MODEL, timeout_seconds=9.0)
+
+        assert seen == [1.5, 9.0]

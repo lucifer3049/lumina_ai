@@ -76,6 +76,25 @@ class _SlowProvider:
         raise AssertionError("不該走到這裡——逾時應該先發生")
 
 
+class _SlowButSuccessfulProvider:
+    """超過上限**才成功回來**的 provider（adapter 沒把 timeout 傳到底層的情況）。"""
+
+    name = "slow-ok"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def embed(self, texts: list[str], *, model: str, timeout_seconds: float) -> Any:
+        from ai.gateway.providers import ProviderEmbedding
+        from config.settings.app_settings import get_app_settings
+
+        self.calls += 1
+        time.sleep(timeout_seconds + 0.05)
+        # 維度要對得上欄位，否則會先撞上 Gateway 的維度守門（那是另一條防線）。
+        vector = [1.0] * get_app_settings().ai_embedding_dimensions
+        return ProviderEmbedding(vectors=[vector] * len(texts), model=model, prompt_tokens=1)
+
+
 class TestProviderContract:
     def test_the_mock_provider_satisfies_the_protocol(self) -> None:
         """MockProvider 是測試與本機開發的預設，它必須符合與真 provider 相同的介面。
@@ -185,6 +204,26 @@ class TestTimeout:
 
         with pytest.raises(ProviderTimeoutError):
             gateway.embed(["a"], model=_MODEL)
+
+    def test_a_slow_but_successful_call_is_not_thrown_away(self) -> None:
+        """**遲到的成功要收下。**
+
+        牆鐘是事後才量得到的（要等呼叫回來才知道花了多久），所以它對「掛住不回來」
+        那種真正的危險完全沒有作用——它唯一攔得到的是「慢，但成功了」，而那一份向量
+        **已經付過錢**。丟掉它換來的是重試再付一次，加上再等一輪的延遲，而慢的原因
+        （provider 當下不順）通常還在。遲到只記一筆 warning。
+        """
+        provider = _SlowButSuccessfulProvider()
+        gateway = AIGateway(
+            embedding_provider=provider,
+            timeout_seconds=0.05,
+            retry_backoff_seconds=(0.0,),
+        )
+
+        result = gateway.embed(["a"], model=_MODEL)
+
+        assert len(result.vectors) == 1
+        assert provider.calls == 1, "重試了——那是再付一次同一筆錢"
 
 
 class TestConfiguration:
