@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 09 |
-| 版本 | v1.2 |
+| 版本 | v1.3 |
 | 日期 | 2026-07-30 |
 | 狀態 | Draft — 待審閱 |
 | 相依文件 | 01（ADR-004）、03（codegen）、04（模組對映）、10（認證與權限細節） |
-| 變更紀錄 | v1.1：新增附錄 A 錯誤 code 初始字典（15 審查報告 F-05）。v1.2：§3.2 的 `citations` 事件改為物件（`{"items":[...]}`）並增列 marker／doc_version／heading_path／snippet 四欄，同時載明事件順序與「檢索跑過就送、即使是空的」（2026-08-17，1D-5；理由見 13 §3.5） |
+| 變更紀錄 | v1.1：新增附錄 A 錯誤 code 初始字典（15 審查報告 F-05）。v1.2：§3.2 的 `citations` 事件改為物件（`{"items":[...]}`）並增列 marker／doc_version／heading_path／snippet 四欄，同時載明事件順序與「檢索跑過就送、即使是空的」（2026-08-17，1D-5；理由見 13 §3.5）。v1.3（2A 落地）：§2.6 的 `/notifications` 列表回應補 `unread_count`——前端側欄的未讀紅點若要另打一支端點，等於每次輪詢兩個請求 |
 
 ---
 
@@ -135,7 +135,7 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 | GET | /analytics/usage | 用量彙總（range、group_by） | analytics:read |
 | GET | /analytics/costs | 成本分解 | analytics:read |
 | GET | /audit-logs | 稽核查詢（分頁/過濾） | audit:read |
-| GET | /notifications · PATCH /notifications/{id}/read | 通知收件匣 | 登入者 |
+| GET | /notifications · PATCH /notifications/{id}/read | 通知收件匣（列表回應含 `unread_count`） | 登入者 |
 | GET/PATCH | /settings | 租戶級設定（含 provider 憑證寫入，唯寫不回讀明文） | tenant:admin |
 | GET | /settings/feature-flags | 本租戶 flag 狀態 | 登入者 |
 | — | **/admin/**（平台管理面）| tenants CRUD、全域 model catalog、系統 flag、跨租戶用量、DLQ 重放 | platform_admin（獨立角色）|
