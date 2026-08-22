@@ -22,6 +22,11 @@ function startOfDay(at: Date): number {
   return day.getTime()
 }
 
+/** 單筆對話的相對日期標籤（首頁「最近對話」也用它，與側欄分組共用同一套日界）。 */
+export function relativeDayLabel(lastMessageAt: string | null, now: Date = new Date()): string {
+  return labelFor(lastMessageAt, now)
+}
+
 function labelFor(lastMessageAt: string | null, now: Date): string {
   const at = lastMessageAt === null ? now.getTime() : new Date(lastMessageAt).getTime()
   const today = startOfDay(now)

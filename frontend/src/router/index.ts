@@ -20,9 +20,11 @@ const router = createRouter({
       : createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
+      // ownScene：首頁自帶整幅山水動景，外框的右下遠山一角要讓位（否則兩座山打架）。
       path: '/',
       name: 'home',
       component: () => import('@/views/HomeView.vue'),
+      meta: { bare: true, ownScene: true },
     },
     {
       path: '/knowledge',

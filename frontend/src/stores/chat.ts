@@ -51,6 +51,11 @@ export interface StreamingMessage {
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<ConversationOut[]>([])
   const currentConversationId = ref<string | null>(null)
+  /**
+   * 首頁輸入列的草稿：在首頁打一句話 → 存這裡 → 導到 /chat，由對話頁取走並送出。
+   * 走 store 而不是路由參數：問題內容可以很長，也不該出現在網址列與瀏覽紀錄。
+   */
+  const pendingDraft = ref<string | null>(null)
   const messages = ref<MessageOut[]>([])
   const streaming = ref<StreamingMessage | null>(null)
   const loadingConversations = ref(false)
@@ -245,6 +250,7 @@ export const useChatStore = defineStore('chat', () => {
   return {
     conversations,
     currentConversationId,
+    pendingDraft,
     messages,
     streaming,
     loadingConversations,

@@ -36,6 +36,8 @@ const activeKey = computed(() => {
 })
 
 const bare = computed(() => router.currentRoute.value.meta.bare === true)
+// 頁面自帶場景（首頁的整幅山水）時，外框的右下遠山一角讓位
+const ownScene = computed(() => router.currentRoute.value.meta.ownScene === true)
 
 function onMenuSelect(key: string): void {
   void router.push({ name: key })
@@ -51,7 +53,13 @@ async function onLogout(): Promise<void> {
 <template>
   <div class="default-layout">
     <!-- 右下青綠遠山一角（無描邊：山色向霧溶解） -->
-    <svg viewBox="0 0 760 240" class="corner-scene" preserveAspectRatio="none" aria-hidden="true">
+    <svg
+      v-if="!ownScene"
+      viewBox="0 0 760 240"
+      class="corner-scene"
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
       <defs>
         <filter id="dl-soft"><feGaussianBlur stdDeviation="4"></feGaussianBlur></filter>
         <linearGradient id="dl-peak-a" x1="0" y1="0" x2="0" y2="1">

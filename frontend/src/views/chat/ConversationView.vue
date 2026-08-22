@@ -80,6 +80,12 @@ watch(
       // 回到「新對話」：清空畫面，但不動 streaming——上一場的生成在背景收尾。
       store.currentConversationId = null
       store.messages = []
+      // 首頁輸入列帶來的草稿：取走即送。先取後清，send 失敗也不重複送。
+      const draft = store.pendingDraft
+      if (draft !== null) {
+        store.pendingDraft = null
+        void send(draft)
+      }
       return
     }
     try {
