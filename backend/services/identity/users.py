@@ -23,6 +23,7 @@ from typing import Any
 from django.db import IntegrityError
 
 from common.passwords import hash_password, verify_password
+from core import audit
 from core.exceptions import ConflictError, InvalidCredentialsError, NotFoundError
 from core.tenant import tenant_context
 from core.uow import unit_of_work
@@ -93,6 +94,9 @@ class UserService:
 
             if role is not None:
                 self._roles.assign(user_id=user.id, role_name=role, tenant_id=tenant_id)
+            # 建立類的 id 不在 URL 上，稽核 middleware 看不到——少了這行，
+            # 紀錄只說得出「有人建了一個使用者」，說不出建了誰（2A-4）。
+            audit.describe(resource_id=user.id)
             return self._view(user)
 
     def update_profile(
@@ -104,9 +108,13 @@ class UserService:
     ) -> UserView:
         with tenant_context(tenant_id), unit_of_work():
             user = self._require(user_id)
+            before = {"display_name": user.display_name}
             if display_name is not None:
                 self._users.set_display_name(user_id, display_name)
                 user.display_name = display_name
+            # 白名單欄位而不是整個物件：password_hash 與 email 一旦進了稽核，
+            # 它會跟著匯出、截圖與工單一起走（10 §5）。
+            audit.describe(before=before, after={"display_name": user.display_name})
             return self._view(user)
 
     def deactivate(self, tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
@@ -117,7 +125,10 @@ class UserService:
         現有 session 還能用。
         """
         with tenant_context(tenant_id), unit_of_work():
-            self._require(user_id)
+            user = self._require(user_id)
+            # 前值讀實際狀態而不是寫死 "active"：重複停用是真實會發生的操作
+            # （前端連點兩下），而稽核上那兩列必須看得出第二次什麼也沒改。
+            audit.describe(before={"status": user.status}, after={"status": "inactive"})
             self._users.set_status(user_id, "inactive")
 
         self._auth.revoke_all_sessions(tenant_id=tenant_id, user_id=user_id)

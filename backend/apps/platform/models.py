@@ -2,7 +2,7 @@
 
 **Model 保持薄**（鐵則 6）：只有欄位、Meta、`__str__`。
 
-`UsageLog` 是 2A-1 進來的第一張表；AuditLog（2A-4）、Notification（2A-5）依序跟上。
+`UsageLog` 是 2A-1 進來的第一張表；`AuditLog` 於 2A-4 跟上；Notification 排 2A-5。
 Phase 0 起這個 app 就存在，當時只承載 extension 的 migration（0001_extensions.py）。
 """
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 from django.db import models
+from django.utils import timezone
 
 from apps.identity.models import Tenant
 
@@ -128,3 +129,59 @@ class UsageDaily(models.Model):
 
     def __str__(self) -> str:
         return f"UsageDaily({self.day} {self.model})"
+
+
+class AuditLog(models.Model):
+    """一次敏感操作的紀錄（05 §3.3、04 §8.3；2A-4）。**按月分區、append-only**。
+
+    分區的理由同 `UsageLog`，保留政策不同：稽核依法規 3–7 年（05 §7），冷分區
+    DETACH 轉歸檔儲存。
+
+    **append-only 由資料庫擋**（migration 內的 trigger），不是靠「Repository 沒有
+    update 方法」的慣例：稽核的價值全部來自「事後不能改」，而一份可以被 UPDATE 的
+    稽核表與一份不能被 UPDATE 的稽核表，平常看起來一模一樣。到期清理不受影響
+    ——那是 DROP／DETACH 整個分區（DDL），不是 DELETE。
+
+    `created_at` 因此**不用 `auto_now_add`**：append-only 的表事後調不了時間，
+    值只能在 INSERT 當下給（回填舊資料與測試都需要）。預設仍是 now。
+
+    `actor_id`／`resource_id` 是裸 UUID 不是 FK，理由同 `UsageLog`：被刪掉的
+    使用者與被刪掉的資源，**正是稽核最需要活得比它們久的那兩種**。FK 會讓
+    「刪掉使用者」被他自己的稽核紀錄擋住。
+
+    05 §3.3 的欄位表外多三欄（`outcome`／`status`／`permission`），來源是
+    「成功與失敗都記、403 帶被拒的 permission code」（10 §3）：塞進 `before`／
+    `after` 會讓「資源狀態前後」這個語意說謊，而稽核查詢正是靠它。
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="audit_logs")
+    # None＝系統行為（維運 job）。塞一個假 uuid 比留白更糟：它看起來像真的有人做了。
+    actor_id = models.UUIDField(null=True, blank=True)
+    # user / api_key / system。
+    actor_type = models.TextField()
+    # `resource.verb`（05 §3.3）。註冊表在 api/middleware/audit.py。
+    action = models.TextField()
+    resource_type = models.TextField()
+    resource_id = models.UUIDField(null=True, blank=True)
+    # 白名單欄位的前後值（None＝這個操作沒有「前」或「後」，例如建立與刪除）。
+    before = models.JSONField(null=True, blank=True)
+    after = models.JSONField(null=True, blank=True)
+    # succeeded / denied / failed。
+    outcome = models.TextField()
+    # HTTP 狀態碼；None＝不是請求層記的（登入走 service）。
+    status = models.IntegerField(null=True, blank=True)
+    # 被拒的 permission code（10 §3）；只有 outcome=denied 有值。
+    permission = models.TextField(null=True, blank=True)
+    ip = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(default="")
+    # 與存取日誌、SSE 事件同一個 id（12 §1.1：一個 ID 查穿全鏈路）。
+    request_id = models.TextField()
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = "platform_auditlog"
+        # 索引同 UsageLog：分區表的索引建在父表的 DDL 上（見 migration）。
+
+    def __str__(self) -> str:
+        return f"AuditLog({self.action} {self.outcome})"

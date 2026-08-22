@@ -30,6 +30,7 @@ from typing import cast
 
 from common.passwords import hash_password, needs_rehash, verify_password
 from config.settings.app_settings import get_app_settings
+from core import audit
 from core.exceptions import (
     AccountLockedError,
     InvalidCredentialsError,
@@ -40,6 +41,7 @@ from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.identity import RoleRepository, TenantDirectoryRepository, UserRepository
 from services.identity.tokens import ACCESS_TTL, AccessClaims, TokenCodec, get_token_codec
+from services.platform.audit import OUTCOME_FAILED, OUTCOME_SUCCEEDED, AuditEvent, AuditService
 
 # 密碼比對的假雜湊：帳號不存在時照樣跑一次驗證，讓兩種失敗的**耗時**也一致。
 # 只比對回應內容是不夠的——不存在的帳號若快 100 毫秒回來，時間差本身就是
@@ -62,12 +64,14 @@ class AuthService:
         roles: RoleRepository | None = None,
         directory: TenantDirectoryRepository | None = None,
         codec: TokenCodec | None = None,
+        audit_log: AuditService | None = None,
     ) -> None:
         self._users = users or UserRepository()
         self._roles = roles or RoleRepository()
         self._directory = directory or TenantDirectoryRepository()
         self._codec = codec or get_token_codec()
         self._settings = get_app_settings()
+        self._audit = audit_log or AuditService()
 
     # ── 租戶定位（登入的第一步）────────────────────────────────
 
@@ -95,33 +99,77 @@ class AuthService:
         if self._is_locked(attempts_key):
             raise AccountLockedError(retry_after_seconds=max(int(locked_for), 0))
 
-        with tenant_context(tenant_id), unit_of_work():
-            user = self._users.get_by_email(email)
-            # 帳號不存在時仍然跑一次雜湊驗證（見 _DUMMY_HASH）。
-            stored_hash = user.password_hash if user is not None else _DUMMY_HASH
-            password_ok = verify_password(password, stored_hash)
+        # 稽核的 actor：帳號存在時填它的 id，不存在就留白。**在交易外持有**，
+        # 因為失敗那一列必須在交易 rollback 之後才寫（見下方 except）。
+        attempted_by: uuid.UUID | None = None
 
-            if user is None or not password_ok or user.status != "active":
-                # 停用的帳號與錯誤的密碼回同一件事：告訴對方「這個帳號被停用了」
-                # 等於確認帳號存在，那是帳號列舉的另一個入口。
-                self._record_failure(attempts_key)
-                raise InvalidCredentialsError
+        try:
+            with tenant_context(tenant_id), unit_of_work():
+                user = self._users.get_by_email(email)
+                # 帳號不存在時仍然跑一次雜湊驗證（見 _DUMMY_HASH）。
+                stored_hash = user.password_hash if user is not None else _DUMMY_HASH
+                password_ok = verify_password(password, stored_hash)
+                if user is not None:
+                    attempted_by = uuid.UUID(str(user.id))
 
-            if needs_rehash(user.password_hash):
-                # 參數調強之後的自動升級——只有此刻手上有明文密碼。
-                self._users.upgrade_password_hash(user.id, hash_password(password))
+                if user is None or not password_ok or user.status != "active":
+                    # 停用的帳號與錯誤的密碼回同一件事：告訴對方「這個帳號被停用了」
+                    # 等於確認帳號存在，那是帳號列舉的另一個入口。
+                    self._record_failure(attempts_key)
+                    raise InvalidCredentialsError
 
-            roles = self._roles.names_for_user(user.id)
-            self._users.touch_last_login(user.id)
-            token_version = user.token_version
+                if needs_rehash(user.password_hash):
+                    # 參數調強之後的自動升級——只有此刻手上有明文密碼。
+                    self._users.upgrade_password_hash(user.id, hash_password(password))
+
+                roles = self._roles.names_for_user(user.id)
+                self._users.touch_last_login(user.id)
+                token_version = user.token_version
+        except InvalidCredentialsError:
+            # **密碼噴發的偵測完全靠這一列**（04 §8.3 明列登入）。寫在交易外：
+            # 交易一 rollback，寫在裡面的稽核會跟著消失，而失敗正是最需要留痕的
+            # 那一種。刻意不存嘗試的 email／密碼——稽核會被匯出、截圖、進工單。
+            self._audit_login(tenant_id, actor_id=attempted_by, outcome=OUTCOME_FAILED)
+            raise
 
         redis.delete(attempts_key)
+        self._audit_login(tenant_id, actor_id=attempted_by, outcome=OUTCOME_SUCCEEDED)
         return self._issue_pair(
             tenant_id=tenant_id,
             user_id=user.id,
             roles=roles,
             token_version=token_version,
             family_id=uuid.uuid4(),
+        )
+
+    def _audit_login(
+        self, tenant_id: uuid.UUID, *, actor_id: uuid.UUID | None, outcome: str
+    ) -> None:
+        """登入的稽核由 service 自己記（2A-4）。
+
+        **請求層記不了**：這條路徑上沒有 principal（還沒有人通過認證），也沒有
+        租戶 contextvar（本方法自己進出 `tenant_context`），middleware 拿不到
+        tenant_id 就寫不出列。來源欄位（ip／UA／request_id）從稽核 scope 取；
+        沒有 scope 就是非請求路徑（CLI、測試），欄位留白。
+
+        帳號鎖定（`AccountLockedError`）不另外記：走到那裡之前，造成鎖定的每一次
+        失敗都已經各有一列。
+        """
+        origin = audit.current_scope()
+        self._audit.record(
+            tenant_id,
+            AuditEvent(
+                action="auth.login",
+                resource_type="session",
+                outcome=outcome,
+                request_id=origin.request_id if origin else "",
+                actor_id=actor_id,
+                # 失敗且查無此人時 actor_id 是空的，但發動者仍然是「某個使用者」
+                # ——標成 system 會讓它混進維運 job 的紀錄裡。
+                actor_type="user",
+                ip=origin.ip if origin else None,
+                user_agent=origin.user_agent if origin else "",
+            ),
         )
 
     # ── 換發（rotation + 竊取偵測）──────────────────────────────

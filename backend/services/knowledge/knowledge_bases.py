@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from core import audit
 from core.exceptions import NotFoundError
 from core.tenant import tenant_context
 from core.uow import unit_of_work
@@ -58,6 +59,8 @@ class KnowledgeBaseService:
     ) -> KnowledgeBaseView:
         with tenant_context(tenant_id), unit_of_work():
             kb = self._knowledge_bases.create(name=name, description=description)
+            # 建立類的 id 不在 URL 上，稽核 middleware 看不到（2A-4）。
+            audit.describe(resource_id=kb.id)
             return self._view(kb)
 
     def update(
@@ -92,7 +95,10 @@ class KnowledgeBaseService:
         05 §5.4 要避免的。真正的級聯清理是 worker 的職責（1B-6 之後）。
         """
         with tenant_context(tenant_id), unit_of_work():
-            self._require(kb_id)
+            kb = self._require(kb_id)
+            # 刪除是唯一「事後查不到現場」的操作——稽核列上的 before 是這個 KB
+            # 存在過的唯一證據（04 §8.3 明列 KB 刪除，2A-4）。
+            audit.describe(before={"name": kb.name})
             self._knowledge_bases.soft_delete(kb_id)
 
     def _require(self, kb_id: uuid.UUID) -> Any:

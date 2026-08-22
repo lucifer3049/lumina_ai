@@ -27,9 +27,9 @@ from typing import Any
 import httpx
 import pytest
 
-from apps.identity.models import User
 from apps.platform.models import AuditLog
 from common.passwords import hash_password
+from core.db import run_orm
 from repositories.platform import AuditLogRepository
 from tests.conftest import TENANT_A
 from tests.factories.identity import make_tenant, make_user, make_user_role, tenant_scope
@@ -45,8 +45,17 @@ VIEWER_EMAIL = "viewer@example.com"
 USER_AGENT = "pytest-audit/1.0"
 
 
-@pytest.fixture
-def seeded() -> dict[str, uuid.UUID]:
+@pytest.fixture(autouse=True)
+async def seeded() -> dict[str, uuid.UUID]:
+    """每個測試都要有租戶與兩個使用者（沒有的話連登入都做不到），因此 autouse；
+    需要 id 的測試照樣宣告它。
+
+    ORM 一律經 `run_orm`：async 測試裡直接呼叫同步 ORM 會被 Django 擋下
+    （SynchronousOnlyOperation），同 tests/api/test_analytics_endpoints.py。"""
+    return await run_orm(_seed)
+
+
+def _seed() -> dict[str, uuid.UUID]:
     from apps.identity.models import Role
 
     ensure_identity_seed()
@@ -106,8 +115,8 @@ def _rows(action: str | None = None) -> list[AuditLog]:
         return list(query)
 
 
-def _only(action: str) -> AuditLog:
-    rows = _rows(action)
+async def _only(action: str) -> AuditLog:
+    rows: list[AuditLog] = await run_orm(_rows, action)
     assert len(rows) == 1, f"預期 {action} 恰一列，實際 {len(rows)} 列"
     return rows[0]
 
@@ -125,7 +134,7 @@ class TestSuccessfulWrites:
         )
         assert response.status_code == 201, response.text
 
-        row = _only("user.create")
+        row = await _only("user.create")
         assert row.actor_id == seeded["owner"]
         assert row.actor_type == "user"
         assert row.resource_type == "user"
@@ -142,18 +151,18 @@ class TestSuccessfulWrites:
 
         assert (await client.get("/api/v1/users", headers=_auth(token))).status_code == 200
 
-        assert _rows("user.read") == []
-        assert [row.action for row in _rows()] == ["auth.login"]
+        assert await run_orm(_rows, "user.read") == []
+        assert [row.action for row in await run_orm(_rows)] == ["auth.login"]
 
     async def test_exempt_endpoints_leave_no_row(self, client: httpx.AsyncClient) -> None:
         """例行的 token 輪換每 15 分鐘一次——記進稽核等於用噪音把訊號蓋掉。"""
         await _login(client)
-        before = len(_rows())
+        before = len(await run_orm(_rows))
 
         response = await client.post("/api/v1/auth/refresh")
         assert response.status_code == 200, response.text
 
-        assert len(_rows()) == before
+        assert len(await run_orm(_rows)) == before
 
     async def test_the_row_carries_ip_user_agent_and_request_id(
         self, client: httpx.AsyncClient
@@ -165,7 +174,7 @@ class TestSuccessfulWrites:
         )
         assert response.status_code == 200, response.text
 
-        row = _only("tenant.update")
+        row = await _only("tenant.update")
         assert str(row.ip) == "127.0.0.1"
         assert row.user_agent == USER_AGENT
         assert row.request_id == response.headers["X-Request-Id"]
@@ -185,7 +194,7 @@ class TestFailedAndDeniedWrites:
         )
         assert response.status_code == 403, response.text
 
-        row = _only("user.create")
+        row = await _only("user.create")
         assert row.outcome == "denied"
         assert row.status == 403
         assert row.permission == "user:write"
@@ -203,7 +212,7 @@ class TestFailedAndDeniedWrites:
         )
         assert response.status_code == 404, response.text
 
-        row = _only("user.update")
+        row = await _only("user.update")
         assert row.outcome == "failed"
         assert row.status == 404
 
@@ -216,7 +225,7 @@ class TestFailedAndDeniedWrites:
         )
         assert response.status_code == 401
 
-        assert _rows() == []
+        assert await run_orm(_rows) == []
 
     async def test_a_failing_audit_write_does_not_break_the_request(
         self, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
@@ -257,7 +266,7 @@ class TestBeforeAndAfter:
         )
         assert response.status_code == 200, response.text
 
-        row = _only("tenant.update")
+        row = await _only("tenant.update")
         assert row.before == {"name": "甲公司"}
         assert row.after == {"name": "乙公司"}
 
@@ -273,7 +282,7 @@ class TestBeforeAndAfter:
         )
         assert response.status_code == 200, response.text
 
-        row = _only("user.update")
+        row = await _only("user.update")
         assert row.before == {"display_name": "Viewer"}
         assert row.after == {"display_name": "Renamed"}
         # 白名單而不是「整個物件減掉幾個欄位」：黑名單漏一個就是明文外洩，
@@ -292,9 +301,9 @@ class TestBeforeAndAfter:
         )
         assert response.status_code == 204, response.text
 
-        row = _only("user.deactivate")
-        assert row.before == {"is_active": True}
-        assert row.after == {"is_active": False}
+        row = await _only("user.deactivate")
+        assert row.before == {"status": "active"}
+        assert row.after == {"status": "inactive"}
 
     async def test_deleting_a_knowledge_base_records_what_was_deleted(
         self, client: httpx.AsyncClient
@@ -313,7 +322,7 @@ class TestBeforeAndAfter:
         response = await client.delete(f"/api/v1/knowledge-bases/{kb_id}", headers=_auth(token))
         assert response.status_code == 204, response.text
 
-        row = _only("knowledge_base.delete")
+        row = await _only("knowledge_base.delete")
         assert row.resource_id == uuid.UUID(kb_id)
         assert row.before == {"name": "法規"}
         assert row.after is None
@@ -328,7 +337,7 @@ class TestAuthEvents:
     ) -> None:
         await _login(client)
 
-        row = _only("auth.login")
+        row = await _only("auth.login")
         assert row.actor_id == seeded["owner"]
         assert row.outcome == "succeeded"
         assert str(row.ip) == "127.0.0.1"
@@ -345,7 +354,7 @@ class TestAuthEvents:
         )
         assert response.status_code == 401
 
-        row = _only("auth.login")
+        row = await _only("auth.login")
         assert row.outcome == "failed"
         assert row.actor_id == seeded["owner"]
         dumped = f"{row.before}{row.after}{row.action}{row.user_agent}"
@@ -358,7 +367,7 @@ class TestAuthEvents:
         response = await client.post("/api/v1/auth/logout", headers=_auth(token))
         assert response.status_code == 204, response.text
 
-        assert _only("auth.logout").outcome == "succeeded"
+        assert (await _only("auth.logout")).outcome == "succeeded"
 
 
 class TestTenantIsolationOfWrites:
@@ -369,6 +378,4 @@ class TestTenantIsolationOfWrites:
         token = await _login(client)
         await client.patch("/api/v1/tenants/current", headers=_auth(token), json={"name": "丙"})
 
-        with tenant_scope(TENANT_A):
-            assert User.objects.filter(id=seeded["owner"]).exists()
-        assert {row.tenant_id for row in _rows()} == {TENANT_A}
+        assert {row.tenant_id for row in await run_orm(_rows)} == {TENANT_A}

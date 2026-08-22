@@ -16,11 +16,12 @@
 from __future__ import annotations
 
 import re
-
-from api.middleware.audit import AUDIT_ACTIONS, AUDIT_EXEMPT, RECORDED_BY_SERVICE, AuditMiddleware
-from api.middleware.request_context import RequestContextMiddleware
+from collections.abc import Iterable, Iterator
+from typing import Any
 
 from api.main import create_app
+from api.middleware.audit import AUDIT_ACTIONS, AUDIT_EXEMPT, RECORDED_BY_SERVICE, AuditMiddleware
+from api.middleware.request_context import RequestContextMiddleware
 
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -56,11 +57,11 @@ EXPECTED_EXEMPT = {
     "auth_refresh",
     # 對話是使用者自己的日常資料（04 §8.3 的清單裡沒有它），且每一輪問答都是
     # 一次寫入——記進稽核會讓真正的管理操作被淹沒在聊天紀錄裡。
+    # （SSE 的 `conversations_stream_message` 不在此：它是 GET，本清單只管寫入型。）
     "conversations_create",
     "conversations_update",
     "conversations_delete",
     "conversations_send_message",
-    "conversations_stream_message",
     "conversations_stop_message",
     # POST 是為了帶 body，語意是讀（09 §2.5）。
     "rag_query",
@@ -73,16 +74,34 @@ EXPECTED_BY_SERVICE = {"auth_login"}
 _ACTION_PATTERN = re.compile(r"^[a-z][a-z_]*\.[a-z][a-z_]*$")
 
 
-def _write_operation_ids() -> set[str]:
+def _api_routes(routes: Iterable[Any]) -> Iterator[Any]:
+    """遞迴走訪路由樹。
+
+    FastAPI 0.141 的 `include_router` 會留下 `_IncludedRouter` 包裝物件而不是把
+    路由攤平進 `app.routes`（同 tests/api/test_spike_removal.py 的註記），而它的
+    路由掛在 `original_router` 底下——只看第一層會得到空集合，而空集合讓下面
+    每一條 assert 都自動通過（`_write_operation_ids` 因此自帶非空斷言）。
+    """
     from fastapi.routing import APIRoute
 
-    return {
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+            continue
+        nested = getattr(route, "routes", None) or getattr(
+            getattr(route, "original_router", None), "routes", ()
+        )
+        yield from _api_routes(nested or ())
+
+
+def _write_operation_ids() -> set[str]:
+    found = {
         route.operation_id
-        for route in create_app().routes
-        if isinstance(route, APIRoute)
-        and route.operation_id is not None
-        and bool((route.methods or set()) & WRITE_METHODS)
+        for route in _api_routes(create_app().routes)
+        if route.operation_id is not None and bool((route.methods or set()) & WRITE_METHODS)
     }
+    assert found, "一條寫入型路由都沒找到——走訪方式失效了，這份守門會變成空轉"
+    return found
 
 
 def test_the_registry_matches_the_hand_written_list() -> None:
@@ -132,9 +151,11 @@ def test_audit_middleware_runs_inside_the_request_context() -> None:
     反過來的話稽核 middleware 讀到的租戶已經被清空、request_id 也已經解綁，
     每一列都寫不出去——而使用者端完全正常，沒有任何症狀。
     """
-    classes = [entry.cls for entry in create_app().user_middleware]
+    # 比名字而不是比類別：Starlette 把 `Middleware.cls` 標成 `_MiddlewareFactory[P]`，
+    # 拿具體類別去比在 mypy strict 下不合型別。名字取自類別本身，改名仍然對得上。
+    names = [getattr(entry.cls, "__name__", "") for entry in create_app().user_middleware]
 
-    assert RequestContextMiddleware in classes, "請求 context middleware 不見了"
-    assert AuditMiddleware in classes, "稽核 middleware 沒有掛上"
+    assert RequestContextMiddleware.__name__ in names, "請求 context middleware 不見了"
+    assert AuditMiddleware.__name__ in names, "稽核 middleware 沒有掛上"
     # user_middleware 的第一個是最外層（Starlette 由後往前包）。
-    assert classes.index(RequestContextMiddleware) < classes.index(AuditMiddleware)
+    assert names.index(RequestContextMiddleware.__name__) < names.index(AuditMiddleware.__name__)

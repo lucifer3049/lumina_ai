@@ -17,6 +17,7 @@ from fastapi import Depends
 
 from api.dependencies.auth import Principal, require_authenticated
 from config.logging import get_logger
+from core import audit
 from core.exceptions import PermissionDeniedError
 from services.identity.permissions import PermissionService
 
@@ -41,6 +42,10 @@ def RequireScope(code: str) -> Callable[[Principal], Awaitable[Principal]]:  # n
                 roles=list(principal.roles),
                 user_id=str(principal.user_id),
             )
+            # 稽核也要拿到被拒的 code（10 §3）：log 是給維運看的，稽核是給
+            # 租戶的管理者看的，兩邊的讀者不同。middleware 只看得到 403，
+            # 「被哪一個權限擋下」只有這裡知道。
+            audit.describe(permission=code)
             raise PermissionDeniedError(required=code)
         return principal
 

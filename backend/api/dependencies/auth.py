@@ -69,10 +69,15 @@ async def require_authenticated(request: Request) -> Principal:
     claims = await run_orm(_service.describe_access_token, token)
 
     set_current_tenant_id(claims.tenant_id)
-    return Principal(
+    principal = Principal(
         user_id=claims.sub,
         tenant_id=claims.tenant_id,
         roles=claims.roles,
         jti=claims.jti,
         access_expires_at=claims.expires_at,
     )
+    # 稽核 middleware 讀得到它（Starlette 把 `request.state` 存在 `scope["state"]`）：
+    # middleware 拿不到 route 的回傳值，而 contextvar 只承載租戶，不承載使用者
+    # ——少了這一行，每一列稽核的 actor 都是空的（2A-4）。
+    request.state.principal = principal
+    return principal

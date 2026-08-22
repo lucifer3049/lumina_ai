@@ -28,6 +28,7 @@ import pytest
 
 from apps.platform.models import AuditLog
 from common.passwords import hash_password
+from core.db import run_orm
 from tests.conftest import TENANT_A, TENANT_B
 from tests.factories.identity import make_tenant, make_user, make_user_role, tenant_scope
 from tests.seed import ensure_identity_seed
@@ -44,7 +45,7 @@ _OTHER_ACTOR = uuid.uuid4()
 _KB_ID = uuid.uuid4()
 
 
-def _seed_roles() -> None:
+def _seed_roles_sync() -> None:
     from apps.identity.models import Role
 
     ensure_identity_seed()
@@ -62,7 +63,7 @@ def _seed_roles() -> None:
                 )
 
 
-def _row(tenant_id: uuid.UUID, *, seconds_ago: int = 0, **overrides: Any) -> AuditLog:
+def _row_sync(tenant_id: uuid.UUID, *, seconds_ago: int = 0, **overrides: Any) -> AuditLog:
     """直接寫一列（append-only 表不能事後 UPDATE 調時間，所以 created_at
     在 INSERT 當下就給）。"""
     fields: dict[str, Any] = {
@@ -85,6 +86,16 @@ def _row(tenant_id: uuid.UUID, *, seconds_ago: int = 0, **overrides: Any) -> Aud
     fields.update(overrides)
     with tenant_scope(tenant_id):
         return AuditLog.objects.create(**fields)
+
+
+async def _seed_roles() -> None:
+    """ORM 一律經 `run_orm`：async 測試裡直接呼叫同步 ORM 會被 Django 擋下
+    （SynchronousOnlyOperation），同 tests/api/test_analytics_endpoints.py。"""
+    await run_orm(_seed_roles_sync)
+
+
+async def _row(tenant_id: uuid.UUID, **kwargs: Any) -> AuditLog:
+    return await run_orm(_row_sync, tenant_id, **kwargs)
 
 
 @pytest.fixture
@@ -119,7 +130,7 @@ class TestPermissions:
     async def test_only_owner_and_admin_may_read(
         self, client: httpx.AsyncClient, role: str, expected: int
     ) -> None:
-        _seed_roles()
+        await _seed_roles()
         token = await _token(client, role)
 
         response = await _get(client, token)
@@ -127,17 +138,17 @@ class TestPermissions:
         assert response.status_code == expected, response.text
 
     async def test_it_requires_authentication(self, client: httpx.AsyncClient) -> None:
-        _seed_roles()
+        await _seed_roles()
 
         assert (await client.get(PATH)).status_code == 401
 
 
 class TestListing:
     async def test_items_are_newest_first(self, client: httpx.AsyncClient) -> None:
-        _seed_roles()
-        _row(TENANT_A, seconds_ago=30, action="user.create")
-        _row(TENANT_A, seconds_ago=10, action="user.update")
-        _row(TENANT_A, seconds_ago=0, action="user.deactivate")
+        await _seed_roles()
+        await _row(TENANT_A, seconds_ago=30, action="user.create")
+        await _row(TENANT_A, seconds_ago=10, action="user.update")
+        await _row(TENANT_A, seconds_ago=0, action="user.deactivate")
         token = await _token(client)
 
         items = (await _get(client, token)).json()["items"]
@@ -152,8 +163,8 @@ class TestListing:
     ) -> None:
         """稽核列要能單獨回答「誰、何時、從哪、對什麼、結果如何」——
         少一個欄位就得回頭翻 log，而稽核的使用者不一定拿得到 log。"""
-        _seed_roles()
-        _row(TENANT_A)
+        await _seed_roles()
+        await _row(TENANT_A)
         token = await _token(client)
 
         items = (await _get(client, token, action="knowledge_base.delete")).json()["items"]
@@ -173,9 +184,9 @@ class TestListing:
         assert item["created_at"]
 
     async def test_pagination_walks_every_row_exactly_once(self, client: httpx.AsyncClient) -> None:
-        _seed_roles()
+        await _seed_roles()
         for index in range(5):
-            _row(TENANT_A, seconds_ago=index, request_id=f"req-{index}")
+            await _row(TENANT_A, seconds_ago=index, request_id=f"req-{index}")
         token = await _token(client)
 
         seen: list[str] = []
@@ -198,7 +209,7 @@ class TestListing:
     async def test_limit_is_capped(self, client: httpx.AsyncClient) -> None:
         """`limit` 直接進 SQL，沒有上限時一個極大值不會失敗，只會讓一次查詢
         把整個月的分區拉進記憶體（同 09 §1.1 的上限 100）。"""
-        _seed_roles()
+        await _seed_roles()
         token = await _token(client)
 
         assert (await _get(client, token, limit=101)).status_code == 422
@@ -207,9 +218,9 @@ class TestListing:
 
 class TestFilters:
     async def test_filter_by_action(self, client: httpx.AsyncClient) -> None:
-        _seed_roles()
-        _row(TENANT_A, action="user.create")
-        _row(TENANT_A, action="knowledge_base.delete")
+        await _seed_roles()
+        await _row(TENANT_A, action="user.create")
+        await _row(TENANT_A, action="knowledge_base.delete")
         token = await _token(client)
 
         items = (await _get(client, token, action="user.create")).json()["items"]
@@ -218,9 +229,9 @@ class TestFilters:
 
     async def test_filter_by_resource(self, client: httpx.AsyncClient) -> None:
         """「這份知識庫被誰動過」——05 §4 的第二組索引就是為了這個查法。"""
-        _seed_roles()
-        _row(TENANT_A)
-        _row(TENANT_A, resource_id=uuid.uuid4())
+        await _seed_roles()
+        await _row(TENANT_A)
+        await _row(TENANT_A, resource_id=uuid.uuid4())
         token = await _token(client)
 
         items = (
@@ -230,9 +241,9 @@ class TestFilters:
         assert [item["resource_id"] for item in items] == [str(_KB_ID)]
 
     async def test_filter_by_actor(self, client: httpx.AsyncClient) -> None:
-        _seed_roles()
-        _row(TENANT_A)
-        _row(TENANT_A, actor_id=_OTHER_ACTOR)
+        await _seed_roles()
+        await _row(TENANT_A)
+        await _row(TENANT_A, actor_id=_OTHER_ACTOR)
         token = await _token(client)
 
         items = (await _get(client, token, actor_id=str(_ACTOR))).json()["items"]
@@ -240,8 +251,8 @@ class TestFilters:
         assert [item["actor_id"] for item in items] == [str(_ACTOR)]
 
     async def test_filter_by_date_range(self, client: httpx.AsyncClient) -> None:
-        _seed_roles()
-        _row(TENANT_A)
+        await _seed_roles()
+        await _row(TENANT_A)
         token = await _token(client)
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).date().isoformat()
 
@@ -258,9 +269,9 @@ class TestTenantIsolation:
     async def test_a_tenant_never_sees_another_tenants_audit_trail(
         self, client: httpx.AsyncClient
     ) -> None:
-        _seed_roles()
-        _row(TENANT_A, request_id="mine")
-        _row(TENANT_B, request_id="theirs")
+        await _seed_roles()
+        await _row(TENANT_A, request_id="mine")
+        await _row(TENANT_B, request_id="theirs")
         token = await _token(client)
 
         items = (await _get(client, token, action="knowledge_base.delete")).json()["items"]

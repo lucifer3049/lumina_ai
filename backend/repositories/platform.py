@@ -1,4 +1,4 @@
-"""Platform context 的資料存取（05 §3.3，2A-1／2A-2b）。"""
+"""Platform context 的資料存取（05 §3.3，2A-1／2A-2b／2A-3／2A-4）。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from typing import cast
 
 from django.db import models
 
-from apps.platform.models import QuotaCounter, UsageDaily, UsageLog
+from apps.platform.models import AuditLog, QuotaCounter, UsageDaily, UsageLog
+from common.cursors import CursorError
 from core.tenant import get_current_tenant_id
 from core.uow import unit_of_work
 from repositories.base import TenantScopedRepository
@@ -162,3 +163,114 @@ class UsageDailyRepository(TenantScopedRepository[UsageDaily]):
             )
             .order_by(field)
         )
+
+
+class AuditLogRepository(TenantScopedRepository[AuditLog]):
+    """稽核紀錄（2A-4）。**只有 add 與查詢**——沒有改、沒有刪。
+
+    這不是「還沒實作」：`platform_auditlog` 上有 BEFORE UPDATE OR DELETE 的
+    trigger（migration 0005），寫了也會被資料庫擋回來。到期清理走分區 DROP。
+    """
+
+    model = AuditLog
+
+    def add(
+        self,
+        *,
+        action: str,
+        resource_type: str,
+        outcome: str,
+        request_id: str,
+        actor_id: uuid.UUID | None = None,
+        actor_type: str = "user",
+        resource_id: uuid.UUID | None = None,
+        before: dict[str, object] | None = None,
+        after: dict[str, object] | None = None,
+        status: int | None = None,
+        permission: str | None = None,
+        ip: str | None = None,
+        user_agent: str = "",
+    ) -> AuditLog:
+        # 自帶交易，理由同 `UsageLogRepository.add`：稽核是旁路，AuditService 會把
+        # 這裡的失敗吞掉——共用呼叫端的交易時，這裡一炸會讓整個交易進 aborted，
+        # 於是「稽核記不成」變成「使用者的操作也失敗」，方向完全相反。
+        #
+        # 另一個理由是**時序**：middleware 是在回應送出之後才寫這一列，那時業務
+        # 交易早就 commit 了，本來就不可能共用。
+        with unit_of_work():
+            return AuditLog.objects.create(
+                tenant_id=get_current_tenant_id(operation="AuditLogRepository.add"),
+                action=action,
+                resource_type=resource_type,
+                outcome=outcome,
+                request_id=request_id,
+                actor_id=actor_id,
+                actor_type=actor_type,
+                resource_id=resource_id,
+                before=before,
+                after=after,
+                status=status,
+                permission=permission,
+                ip=ip,
+                user_agent=user_agent,
+            )
+
+    def page(
+        self,
+        *,
+        limit: int,
+        cursor: dict[str, object] | None = None,
+        action: str | None = None,
+        resource_type: str | None = None,
+        resource_id: uuid.UUID | None = None,
+        actor_id: uuid.UUID | None = None,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+    ) -> tuple[list[AuditLog], dict[str, object] | None]:
+        """新到舊的一頁 + 下一頁的游標。
+
+        排序鍵是 **(created_at, id)** 而不只是 created_at：稽核列的時間戳會撞
+        （同一次請求寫的批次、同一秒的大量嘗試），只用時間當游標會讓那些列在翻頁
+        時消失或重複——而查稽核的人正是在數「他到底試了幾次」。
+
+        游標比較用 `Q(created_at__lt) | Q(created_at=, id__lt)`，不用 tuple 比較：
+        Django ORM 沒有 row-value 語法，而手寫 SQL 會繞過 `get_queryset()` 的
+        租戶 filter（鐵則 4 的第一道防線）。
+        """
+        query = self.get_queryset()
+        if action is not None:
+            query = query.filter(action=action)
+        if resource_type is not None:
+            query = query.filter(resource_type=resource_type)
+        if resource_id is not None:
+            query = query.filter(resource_id=resource_id)
+        if actor_id is not None:
+            query = query.filter(actor_id=actor_id)
+        if start is not None:
+            query = query.filter(created_at__gte=start)
+        if end is not None:
+            query = query.filter(created_at__lt=end)
+        if cursor is not None:
+            key, last_id = _cursor_key(cursor)
+            query = query.filter(
+                models.Q(created_at__lt=key)
+                | models.Q(created_at=key, id__lt=last_id)  # 同一時間戳的第二頁
+            )
+
+        # 多取一筆是判斷「還有沒有下一頁」唯一可靠的方法（同 repositories/conversation.py
+        # 的 `_split_page`；第三個需要它的地方出現時就搬進 repositories/base.py）。
+        rows = list(query.order_by("-created_at", "-id")[: limit + 1])
+        if len(rows) <= limit:
+            return rows, None
+        page = rows[:limit]
+        last = page[-1]
+        return page, {"k": last.created_at.isoformat(), "id": str(last.id)}
+
+
+def _cursor_key(cursor: dict[str, object]) -> tuple[datetime.datetime, uuid.UUID]:
+    """游標 dict → 排序鍵。內容不對時 `CursorError`，由 service 轉 422
+    （形狀同 `repositories/conversation.py`）。"""
+    try:
+        return datetime.datetime.fromisoformat(str(cursor["k"])), uuid.UUID(str(cursor["id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CursorError("游標內容不正確") from exc

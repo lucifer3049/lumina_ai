@@ -22,6 +22,7 @@ from typing import Any
 from django.db import IntegrityError
 
 from common.passwords import hash_password
+from core import audit
 from core.exceptions import ConflictError, NotFoundError
 from core.tenant import tenant_context
 from core.uow import unit_of_work
@@ -104,11 +105,21 @@ class TenantService:
 
     def update_current(self, tenant_id: uuid.UUID, *, name: str | None = None) -> TenantView:
         with tenant_context(tenant_id), unit_of_work():
+            before = self._tenants.current()
+            if before is None:
+                raise NotFoundError("租戶不存在")
             if name is not None:
                 self._tenants.rename(name)
             tenant = self._tenants.current()
             if tenant is None:
                 raise NotFoundError("租戶不存在")
+            # 設定變更是 04 §8.3 點名的敏感操作，而「誰把公司名字改掉了」這種
+            # 問題只有前後值答得出來（middleware 看不到欄位，2A-4）。
+            audit.describe(
+                resource_id=tenant_id,
+                before={"name": before.name},
+                after={"name": tenant.name},
+            )
             return self._view(tenant)
 
     def _view(self, tenant: Any) -> TenantView:

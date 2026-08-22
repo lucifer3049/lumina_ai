@@ -19,6 +19,7 @@ from django.db import IntegrityError
 from django.utils import timezone
 
 from config.logging import get_logger
+from core import audit
 from core.exceptions import ConflictError, NotFoundError
 from core.object_storage import build_document_key, delete_object, put_object
 from core.tasks import enqueue_embedding, enqueue_ingestion
@@ -159,6 +160,8 @@ class DocumentService:
         # COMMIT 之前就開始處理而查不到這份文件——症狀是隨機的「文件不存在」，重跑又好。
         enqueue_ingestion(tenant_id=tenant_id, document_id=document.id)
 
+        # 建立類的 id 不在 URL 上（URL 上的是 kb_id），稽核 middleware 看不到（2A-4）。
+        audit.describe(resource_id=document.id, after={"filename": filename})
         return self._view(document)
 
     def _discard(self, storage_key: str) -> None:
@@ -251,7 +254,8 @@ class DocumentService:
     def delete(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> None:
         """軟刪除（05 §5.4）。chunk 與 embedding 的硬刪由清理 worker 負責。"""
         with tenant_context(tenant_id), unit_of_work():
-            self._require(document_id)
+            document = self._require(document_id)
+            audit.describe(before={"filename": document.filename, "kb_id": str(document.kb_id)})
             self._documents.soft_delete(document_id)
 
     def _require(self, document_id: uuid.UUID) -> Any:

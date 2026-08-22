@@ -11,7 +11,8 @@ RLS 的 SQL 要與各 app migration 用**同一個產生器**——services 層�
 2. **新分區必帶 RLS**：新分區不會自動繼承 policy，這裡漏了會出現「查父表安全、
    查子分區不安全」的缺口，而它完全無症狀——防線必須建在建分區的這隻手上。
 
-`audit_logs`（2A-4）落地時加進 `PARTITIONED_TABLES`。
+三張表到齊（`conversation_message` 1D-1、`platform_usagelog` 2A-1、
+`platform_auditlog` 2A-4）；新的分區表一律加進 `PARTITIONED_TABLES`。
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ __all__ = ["PARTITIONED_TABLES", "ensure_future_partitions"]
 PARTITIONED_TABLES = {
     "conversation_message": _conversation_rls.enable,
     "platform_usagelog": _platform_rls.enable,
+    "platform_auditlog": _platform_rls.enable,
 }
 
 
