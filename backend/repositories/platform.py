@@ -5,10 +5,11 @@ from __future__ import annotations
 import datetime
 import uuid
 from decimal import Decimal
+from typing import cast
 
 from django.db import models
 
-from apps.platform.models import QuotaCounter, UsageLog
+from apps.platform.models import QuotaCounter, UsageDaily, UsageLog
 from core.tenant import get_current_tenant_id
 from core.uow import unit_of_work
 from repositories.base import TenantScopedRepository
@@ -60,6 +61,31 @@ class UsageLogRepository(TenantScopedRepository[UsageLog]):
         )
         return int(row["total"] or 0)
 
+    def daily_buckets(self, *, day: datetime.date) -> list[dict[str, object]]:
+        """某一天的消費，按 (user, category, model) 分組——rollup 的輸入（2A-3）。
+
+        日界以 UTC 切（created_at 是 timestamptz，聚合鍵取其 UTC 日期）；cost 的
+        Sum 天然跳過 NULL（缺價目的呼叫計入 requests/tokens、不計入 cost）。
+        """
+        start = datetime.datetime.combine(day, datetime.time.min, tzinfo=datetime.UTC)
+        end = start + datetime.timedelta(days=1)
+        # cast：django-stubs 對 values().annotate() 推導出 TypedDict，與宣告的
+        # dict[str, object] 不相容——實際執行期就是普通 dict。
+        return cast(
+            "list[dict[str, object]]",
+            list(
+                self.get_queryset()
+                .filter(created_at__gte=start, created_at__lt=end)
+                .values("user_id", "category", "model")
+                .annotate(
+                    requests=models.Count("id"),
+                    prompt_tokens=models.Sum("prompt_tokens"),
+                    completion_tokens=models.Sum("completion_tokens"),
+                    cost=models.Sum("cost"),
+                )
+            ),
+        )
+
 
 class QuotaCounterRepository(TenantScopedRepository[QuotaCounter]):
     """對帳快照的 upsert——同一期永遠一列（uq_quotacounter_period）。"""
@@ -83,3 +109,56 @@ class QuotaCounterRepository(TenantScopedRepository[QuotaCounter]):
             defaults={"used": used, "limit": limit},
         )
         return row
+
+
+class UsageDailyRepository(TenantScopedRepository[UsageDaily]):
+    """日彙總的 upsert 與報表查詢（2A-3）。"""
+
+    model = UsageDaily
+
+    def upsert_bucket(
+        self,
+        *,
+        day: datetime.date,
+        user_id: uuid.UUID | None,
+        category: str,
+        model: str,
+        requests: int,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost: Decimal | None,
+    ) -> None:
+        UsageDaily.objects.update_or_create(
+            tenant_id=get_current_tenant_id(operation="UsageDailyRepository.upsert_bucket"),
+            day=day,
+            user_id=user_id,
+            category=category,
+            model=model,
+            defaults={
+                "requests": requests,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cost": cost,
+            },
+        )
+
+    def summarize(
+        self, *, start: datetime.date, end: datetime.date, group_by: str
+    ) -> list[dict[str, object]]:
+        """報表分組加總。`group_by` 由 API 層以 Literal 驗過——這裡的對照表是
+        第二道防線（任意字串進 values() 等於任意欄位探測）。"""
+        field = {"day": "day", "user": "user_id", "model": "model", "category": "category"}[
+            group_by
+        ]
+        return list(
+            self.get_queryset()
+            .filter(day__gte=start, day__lte=end)
+            .values(field)
+            .annotate(
+                requests=models.Sum("requests"),
+                prompt_tokens=models.Sum("prompt_tokens"),
+                completion_tokens=models.Sum("completion_tokens"),
+                cost=models.Sum("cost"),
+            )
+            .order_by(field)
+        )

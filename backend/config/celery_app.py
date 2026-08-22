@@ -32,6 +32,7 @@ django.setup()
 from config.logging import configure_logging  # noqa: E402
 from config.settings.app_settings import get_app_settings  # noqa: E402
 from core.tasks import (  # noqa: E402
+    ANALYTICS_ROLLUP_TASK,
     CLEANUP_CHUNKS_TASK,
     EMBED_DOCUMENT_TASK,
     INGEST_DOCUMENT_TASK,
@@ -64,6 +65,7 @@ celery_app.conf.update(
         RECONCILE_QUOTA_TASK: {"queue": "maintenance"},
         CLEANUP_CHUNKS_TASK: {"queue": "maintenance"},
         RESCUE_STUCK_DOCUMENTS_TASK: {"queue": "maintenance"},
+        ANALYTICS_ROLLUP_TASK: {"queue": "maintenance"},
     },
     # 序列化只收 JSON：pickle 能執行任意程式碼，而 broker 是一個「只要進得去就會被
     # 執行」的介面。任務參數因此一律是字串/數字（見 worker/etl_tasks.py 的 uuid 轉換）。
@@ -117,6 +119,12 @@ celery_app.conf.update(
         "rescue-stuck-documents": {
             "task": RESCUE_STUCK_DOCUMENTS_TASK,
             "schedule": crontab(minute="*/15"),
+        },
+        # usage 彙總每小時（2A-3）：Dashboard 的「今天」最多晚一小時。錯開整點
+        # （xx:20）避開 rescue 的 */15 與其他整點工作疊在同一秒。
+        "rollup-usage-hourly": {
+            "task": ANALYTICS_ROLLUP_TASK,
+            "schedule": crontab(minute=20),
         },
     },
 )

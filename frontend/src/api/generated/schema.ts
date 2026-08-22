@@ -4,6 +4,40 @@
  */
 
 export interface paths {
+    "/api/v1/analytics/costs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Costs */
+        get: operations["analytics_costs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Usage */
+        get: operations["analytics_usage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -504,6 +538,18 @@ export interface components {
             /** Title */
             title?: string | null;
         };
+        /** CostBucketOut */
+        CostBucketOut: {
+            /** Cost */
+            cost: string | null;
+            /** Key */
+            key: string;
+        };
+        /** CostsOut */
+        CostsOut: {
+            /** Items */
+            items: components["schemas"]["CostBucketOut"][];
+        };
         /** DocumentListOut */
         DocumentListOut: {
             /** Items */
@@ -855,6 +901,25 @@ export interface components {
              */
             user_message_id: string;
         };
+        /**
+         * UsageBucketOut
+         * @description 一個分組（key 依 group_by 而異：日期、user id、model 名或 category）。
+         */
+        UsageBucketOut: {
+            /** Completion Tokens */
+            completion_tokens: number;
+            /** Key */
+            key: string;
+            /** Prompt Tokens */
+            prompt_tokens: number;
+            /** Requests */
+            requests: number;
+        };
+        /** UsageOut */
+        UsageOut: {
+            /** Items */
+            items: components["schemas"]["UsageBucketOut"][];
+        };
         /** UserCreateIn */
         UserCreateIn: {
             /** Display Name */
@@ -907,6 +972,126 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    analytics_costs: {
+        parameters: {
+            query?: {
+                group_by?: "day" | "model" | "category";
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostsOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    analytics_usage: {
+        parameters: {
+            query?: {
+                group_by?: "day" | "user" | "model" | "category";
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
     auth_login: {
         parameters: {
             query?: never;

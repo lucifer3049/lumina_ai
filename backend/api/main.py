@@ -432,6 +432,7 @@ def create_app() -> FastAPI:
             request_id=request_id,
         )
 
+    from api.v1.analytics import router as analytics_router
     from api.v1.auth import router as auth_router
     from api.v1.conversations import router as conversations_router
     from api.v1.knowledge import router as knowledge_router
@@ -445,6 +446,7 @@ def create_app() -> FastAPI:
     app.include_router(knowledge_router, prefix="/api/v1")
     app.include_router(rag_router, prefix="/api/v1")
     app.include_router(conversations_router, prefix="/api/v1")
+    app.include_router(analytics_router, prefix="/api/v1")
     _install_problem_schema(app)
 
     return app

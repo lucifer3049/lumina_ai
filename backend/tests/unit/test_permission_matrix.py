@@ -27,8 +27,8 @@ from services.identity.permissions import (
     SystemRole,
 )
 
-# 目前有端點的資源：users / tenant（1A-4）、knowledge（1B-2）、rag（1C-4）、chat（1D-2）。
-# chat:* / tool:* 等隨各自的工作包進來（09 §2.3 起）。
+# 目前有端點的資源：users / tenant（1A-4）、knowledge（1B-2）、rag（1C-4）、chat（1D-2）、
+# analytics（2A-3）。tool:* 等隨各自的工作包進來（09 §2.3 起）。
 #
 # 這份清單刻意手寫而不是從各 context 的宣告推導：推導的話它就變成「重述程式碼」，
 # 對「多種了一個沒有端點的碼」永遠是綠的——而那正是本檔要擋的事。
@@ -42,6 +42,7 @@ EXPECTED_CODES_IN_SCOPE = {
     "knowledge:admin",
     "rag:query",
     "chat:use",
+    "analytics:read",  # 2A-3：/analytics/usage、/analytics/costs
 }
 
 # 由寬到窄。單調包含的順序也就是這個。

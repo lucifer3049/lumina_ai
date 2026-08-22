@@ -16,6 +16,7 @@ from celery import shared_task
 
 from config.logging import get_logger
 from core.tasks import (
+    ANALYTICS_ROLLUP_TASK,
     CLEANUP_CHUNKS_TASK,
     MAINTAIN_PARTITIONS_TASK,
     RECONCILE_QUOTA_TASK,
@@ -23,6 +24,7 @@ from core.tasks import (
 )
 from services.knowledge.cleanup import ChunkCleanupService
 from services.knowledge.rescue import StuckDocumentRescueService
+from services.platform.analytics import UsageRollupService
 from services.platform.maintenance import ensure_future_partitions
 from services.platform.reconciliation import QuotaReconciliationService
 
@@ -64,3 +66,11 @@ def rescue_stuck_documents() -> dict[str, Any]:
     if rescued:
         logger.info("stuck_rescue_done", rescued=rescued)
     return {"rescued": rescued}
+
+
+@shared_task(name=ANALYTICS_ROLLUP_TASK)
+def rollup_usage() -> dict[str, Any]:
+    """usage 的每小時彙總（usage_logs → usage_daily，2A-3）。"""
+    processed = UsageRollupService().rollup_all()
+    logger.info("usage_rollup_done", tenants=processed)
+    return {"tenants": processed}

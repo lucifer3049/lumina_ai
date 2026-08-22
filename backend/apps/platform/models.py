@@ -85,3 +85,46 @@ class QuotaCounter(models.Model):
 
     def __str__(self) -> str:
         return f"QuotaCounter({self.resource} {self.period_start})"
+
+
+class UsageDaily(models.Model):
+    """usage 的日彙總（04 §8.2，2A-3）——`/analytics/*` 的資料源。
+
+    每小時由 rollup 從 usage_logs 重算 upsert（同一格永遠一列）。普通表：
+    一天每租戶最多「使用者 × 類別 × 模型」列，比 usage_logs 小三個數量級。
+
+    **維度缺 kb**（04 §8.2 寫 per-kb）：usage_logs 沒有 kb_id（chat 是跨 KB 的
+    對話），記為缺口、3B 評測需要時補欄位（2A-3 開工前人類核可的偏離）。
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="usage_daily")
+    day = models.DateField()
+    # NULL＝系統行為（embedding）。唯一約束以 NULLS NOT DISTINCT 建（見 migration）
+    # ——否則同一格的 NULL 列可以無限重複，upsert 形同虛設。
+    user_id = models.UUIDField(null=True, blank=True)
+    category = models.TextField()
+    model = models.TextField()
+    requests = models.IntegerField(default=0)
+    prompt_tokens = models.BigIntegerField(default=0)
+    completion_tokens = models.BigIntegerField(default=0)
+    # 已知成本的總和；缺價目的呼叫計入 requests/tokens、不計入這裡（詮釋可後補，
+    # 事實不可丟）。位數比 usage_logs 寬兩位——這是總和。
+    cost = models.DecimalField(max_digits=14, decimal_places=6, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "platform_usagedaily"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "day", "user_id", "category", "model"],
+                name="uq_usagedaily_bucket",
+                nulls_distinct=False,
+            )
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "day"], name="ix_usagedaily_tenant_day"),
+        ]
+
+    def __str__(self) -> str:
+        return f"UsageDaily({self.day} {self.model})"

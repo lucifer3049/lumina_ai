@@ -27,11 +27,11 @@ from typing import Any
 
 import httpx
 import pytest
-from services.platform.analytics import UsageRollupService
 
 from apps.platform.models import UsageLog
 from common.passwords import hash_password
 from core.db import run_orm
+from services.platform.analytics import UsageRollupService
 from tests.conftest import TENANT_A
 from tests.factories.identity import make_tenant, make_user, make_user_role, tenant_scope
 from tests.seed import ensure_identity_seed

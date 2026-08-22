@@ -25,9 +25,9 @@ from decimal import Decimal
 
 import pytest
 from django.db import connection
-from services.platform.analytics import UsageRollupService
 
 from apps.platform.models import UsageDaily, UsageLog
+from services.platform.analytics import UsageRollupService
 from tests.conftest import TENANT_A, TENANT_B
 from tests.factories.identity import make_tenant, tenant_scope
 
