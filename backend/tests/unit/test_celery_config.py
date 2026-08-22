@@ -12,6 +12,10 @@
 
 from __future__ import annotations
 
+import uuid
+
+import pytest
+
 from config.celery_app import celery_app
 from core.tasks import EMBED_DOCUMENT_TASK, INGEST_DOCUMENT_TASK
 
@@ -78,6 +82,35 @@ class TestReliability:
 
 
 class TestTaskIsThin:
+    @pytest.fixture(autouse=True)
+    def _slot_always_granted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """公平閘換成永遠放行的假貨——**unit 層不連 Redis**。
+
+        真的閘是 Redis 計數（`services/platform/fairness.py`），它的行為（額滿讓位、
+        每條出口都歸還）由 `tests/integration/test_etl_fairness.py` 驗；這裡驗的是
+        「task 只是薄包裝」，閘只是它的協作者。
+
+        2A-2b 把閘加進 task 之後，這四條測試在本機照樣全綠（開發環境的 Redis 開著），
+        只有 CI 的 quality job 會紅——那個 job 刻意不起任何服務，因為 `make test-unit`
+        的定義就是「無外部依賴」。測試偷偷依賴外部服務時，紅燈會出現在離改動最遠的
+        地方，而本機重跑一百次都是綠的。
+        """
+
+        class _AlwaysGranted:
+            def __init__(self, kind: str) -> None:
+                self.kind = kind
+
+            def acquire(self, tenant_id: uuid.UUID) -> bool:
+                return True
+
+            def release(self, tenant_id: uuid.UUID) -> None:
+                return None
+
+        from worker import embedding_tasks, etl_tasks
+
+        monkeypatch.setattr(etl_tasks, "TenantSlotLimiter", _AlwaysGranted)
+        monkeypatch.setattr(embedding_tasks, "TenantSlotLimiter", _AlwaysGranted)
+
     def test_the_task_delegates_to_the_service(self, monkeypatch: object) -> None:
         """task 本身不做業務邏輯——它只把參數轉成 service 呼叫。"""
         import uuid

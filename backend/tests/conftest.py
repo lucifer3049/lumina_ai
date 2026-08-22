@@ -211,6 +211,46 @@ def _isolated_redis(request: pytest.FixtureRequest) -> Iterator[None]:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _unit_layer_has_no_redis(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """unit 層真的連上 Redis 時，當場失敗並說出原因。
+
+    `make test-unit` 的定義是「無外部依賴，不需 make up」（Makefile 與上面
+    `_isolated_redis` 的說明），而 CI 的 quality job 據此**不起任何服務**。問題在於
+    這個約定沒有東西守著：開發機的 Redis 一直開著，於是新加的相依在本機是全綠的，
+    紅燈只出現在 CI——而且訊息是 `ConnectionError: Connection refused`，指向 Redis
+    而不是指向「這條測試不該碰 Redis」。2A-2b 的公平閘就是這樣進來的（4 條測試
+    連紅，本機重跑全綠）。
+
+    **攔在 `Redis.execute_command` 而不是 `core.redis.get_redis`**：呼叫端多半寫
+    `from core.redis import get_redis`，那個名字在 import 期就綁好了，補 module
+    屬性攔不到。所有 Redis 指令最後都經過 `execute_command`，補在那裡才是每條路徑
+    都涵蓋得到的那一層。
+
+    要 Redis 的測試不是不能寫——是不屬於 unit 層。把它移到 integration/api（那裡
+    有 `make up` 的服務），或把該相依 stub 掉。
+    """
+    if "unit" not in request.node.path.parts:
+        return
+
+    from typing import NoReturn
+
+    from redis import Redis
+    from redis.asyncio import Redis as AsyncRedis
+
+    def _forbidden(*args: object, **kwargs: object) -> NoReturn:
+        raise AssertionError(
+            "unit 層不得連 Redis（make test-unit 無外部依賴，CI 的 quality job "
+            "不起任何服務）。把這條測試移到 tests/integration，或把碰 Redis 的"
+            "相依 stub 掉。"
+        )
+
+    monkeypatch.setattr(Redis, "execute_command", _forbidden)
+    monkeypatch.setattr(AsyncRedis, "execute_command", _forbidden)
+
+
 @pytest.fixture
 def two_empty_tenants(transactional_db: object) -> Iterator[tuple[uuid.UUID, uuid.UUID]]:
     """只建兩個租戶列，不建任何使用者。
