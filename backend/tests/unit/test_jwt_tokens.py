@@ -34,7 +34,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from core.exceptions import TokenInvalidError
-from services.identity.tokens import TokenCodec
+from services.identity.tokens import CLOCK_SKEW_LEEWAY, TokenCodec
 
 TENANT_ID = uuid.UUID("11111111-1111-5111-8111-111111111111")
 USER_ID = uuid.UUID("33333333-3333-5333-8333-333333333333")
@@ -122,12 +122,14 @@ def test_token_header_declares_es256_and_a_kid(codec: TokenCodec) -> None:
 def test_expired_token_is_rejected(codec: TokenCodec) -> None:
     from core.exceptions import TokenExpiredError
 
+    # 要**超過** CLOCK_SKEW_LEEWAY：剛過期一秒的 token 仍在時鐘寬限內，
+    # 那是刻意的（見該常數），不是漏擋。
     expired = codec.issue_access(
         user_id=USER_ID,
         tenant_id=TENANT_ID,
         roles=("owner",),
         token_version=1,
-        ttl=timedelta(seconds=-1),
+        ttl=-(CLOCK_SKEW_LEEWAY + timedelta(seconds=1)),
     ).token
 
     with pytest.raises(TokenExpiredError):
@@ -213,3 +215,54 @@ def test_access_token_is_not_accepted_as_a_refresh_token(codec: TokenCodec) -> N
     """反向也要擋：拿 access token 去換新的一組，等於繞過 rotation 的竊取偵測。"""
     with pytest.raises(TokenInvalidError):
         codec.decode_refresh(_issue_access(codec))
+
+
+# ── 時鐘誤差 ────────────────────────────────────────────────────
+
+
+def _signed_with_iat(private_pem: str, *, iat: datetime) -> str:
+    """手工簽一張指定 `iat` 的 access token（`issue_access` 一律用「現在」）。"""
+    return jwt.encode(
+        {
+            "typ": "access",
+            "sub": str(USER_ID),
+            "tenant_id": str(TENANT_ID),
+            "roles": ["owner"],
+            "jti": str(uuid.uuid4()),
+            "token_version": 1,
+            "iat": iat,
+            "exp": iat + timedelta(minutes=15),
+        },
+        private_pem,
+        algorithm="ES256",
+        headers={"kid": KID},
+    )
+
+
+def test_a_token_from_a_slightly_fast_clock_is_still_accepted() -> None:
+    """簽發端的時鐘比驗證端快一點點時，token 仍然有效。
+
+    PyJWT 自 2.6 起連 `iat` 都驗：落在未來的 `iat` 會以 `ImmatureSignatureError`
+    被拒。而簽發與驗證的時鐘本來就不會一致——多實例部署天生有毫秒級差距，
+    開發用的 WSL2 在高載下會整段往回跳（2A-4 收尾時實測到：全套測試隨機出現
+    「登入成功、下一個請求 401」，token 本身完全合法）。
+
+    零寬限的症狀是「隨機 401、重試就好」，最難查的那一種。
+    """
+    private_pem, public_pem = _keypair()
+    codec = TokenCodec(private_key_pem=private_pem, public_keys={KID: public_pem}, active_kid=KID)
+    token = _signed_with_iat(private_pem, iat=datetime.now(UTC) + timedelta(seconds=5))
+
+    assert codec.decode(token).sub == USER_ID
+
+
+def test_a_token_from_the_far_future_is_still_rejected() -> None:
+    """寬限是給時鐘誤差的，不是給偽造的：超出寬限一律擋。"""
+    private_pem, public_pem = _keypair()
+    codec = TokenCodec(private_key_pem=private_pem, public_keys={KID: public_pem}, active_kid=KID)
+    token = _signed_with_iat(
+        private_pem, iat=datetime.now(UTC) + CLOCK_SKEW_LEEWAY + timedelta(seconds=30)
+    )
+
+    with pytest.raises(TokenInvalidError):
+        codec.decode(token)

@@ -39,6 +39,15 @@ TYP_REFRESH = "refresh"
 # 10 §2.1 的壽命。access 短是因為它沒有即時撤銷以外的煞車；refresh 長是為了讓
 # 使用者兩週內不必重新輸密碼，代價由 rotation + 竊取偵測補上。
 ACCESS_TTL = timedelta(minutes=15)
+
+# 驗證時容許的時鐘誤差。**必須大於 0**：`iat` 落在未來一點點的 token，PyJWT 會以
+# `ImmatureSignatureError` 拒絕（2.6 起連 `iat` 都驗），而簽發與驗證的機器時鐘本來
+# 就不會完全一致——多實例部署天生有毫秒級差距，開發用的 WSL2 在高載下更會整段往回
+# 跳。零寬限的症狀是「隨機 401、重試就好」，最難查的那一種：token 本身完全合法。
+#
+# 代價是 `exp` 也跟著寬 10 秒（token 多活 10 秒）。相對 15 分鐘的 access TTL 可忽略，
+# 而它換來的是「時鐘差一點就登不進去」不會發生。RFC 7519 §4.1.4 明文允許這個寬限。
+CLOCK_SKEW_LEEWAY = timedelta(seconds=10)
 REFRESH_TTL = timedelta(days=14)
 
 
@@ -188,6 +197,8 @@ class TokenCodec:
                 public_key,
                 # 寫死演算法——這一行擋掉 alg 混淆攻擊，見模組 docstring。
                 algorithms=[ALGORITHM],
+                # 時鐘誤差的寬限（見 CLOCK_SKEW_LEEWAY）。
+                leeway=CLOCK_SKEW_LEEWAY,
                 options={"require": ["exp", "sub", "jti", "typ"]},
             )
         except jwt.ExpiredSignatureError as exc:
