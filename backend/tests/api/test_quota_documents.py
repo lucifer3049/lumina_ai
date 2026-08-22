@@ -149,6 +149,29 @@ class TestDocumentCount:
         again = await _upload(client, token, kb_id, content="# 另一份\n\n新內容。\n".encode())
         assert again.status_code == 201, again.text
 
+    async def test_deleting_the_knowledge_base_frees_the_slots_too(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """刪掉整個 KB 也要釋放額度——**而且這是使用者唯一的自救手段**。
+
+        KB 軟刪除刻意不連帶標記底下的文件（逐列標記會讓刪除變成長交易），級聯的硬刪
+        是清理 worker 的職責，而那個 worker 還不存在。少了「額度不算已刪 KB 底下的
+        文件」這條，使用者撞到上限之後刪掉整個知識庫、再上傳依然 429——而他已經看不到
+        那些文件，畫面上一份都沒有，沒有任何辦法把空間要回來。
+        """
+        await run_orm(_owner_with_quota, {"documents": 1})
+        kb_id = await run_orm(_kb)
+        token = await _token(client)
+        assert (await _upload(client, token, kb_id)).status_code == 201
+
+        deleted = await client.delete(f"/api/v1/knowledge-bases/{kb_id}", headers=_auth(token))
+        assert deleted.status_code in (200, 204), deleted.text
+
+        fresh_kb = await run_orm(_kb)
+        again = await _upload(client, token, fresh_kb)
+
+        assert again.status_code == 201, again.text
+
 
 class TestStorageBytes:
     async def test_the_limit_blocks_before_anything_is_written(

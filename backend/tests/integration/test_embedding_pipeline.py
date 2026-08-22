@@ -234,6 +234,26 @@ class TestHappyPath:
         assert len(provider.embedded_texts) == count
 
 
+class _AliasResolvingProvider(_CountingProvider):
+    """回報的模型名與請求的不同——**真 provider 的常態**。
+
+    OpenAI 把 `text-embedding-3-small` 解析成帶日期的實際版本，Gemini 回的是
+    `models/...` 前綴。Mock provider 原樣回報，所以整個測試套件從來沒走過這條路。
+    """
+
+    name = "alias"
+    #: 請求 `mock-embedding` → 實際用到 `mock-embedding-2026-08`。
+    SUFFIX = "-2026-08"
+
+    def embed(self, texts: list[str], *, model: str, timeout_seconds: float) -> ProviderEmbedding:
+        result = super().embed(texts, model=model, timeout_seconds=timeout_seconds)
+        return ProviderEmbedding(
+            vectors=result.vectors,
+            model=f"{model}{self.SUFFIX}",
+            prompt_tokens=result.prompt_tokens,
+        )
+
+
 class TestIdempotency:
     def test_a_second_run_does_not_call_the_provider(self, tenants: None) -> None:
         """**重跑不得重算**——每個 chunk 是一次真的 API 呼叫。
@@ -297,6 +317,76 @@ class TestIdempotency:
 
         with tenant_scope(TENANT_A):
             assert EtlJob.objects.filter(document_id=document_id, stage="embed").count() == 1
+
+
+class TestAliasResolvingProvider:
+    """**寫入記回報名、查詢用請求名**，是這一層最貴的一個不對稱。
+
+    向量的唯一鍵記的是 provider 回報的模型名（別名解析後真的被用到的那個版本，
+    06 §4），檢索端查的也是回報名。只有「哪些 chunk 還沒有向量」這個查詢跑在第一次
+    呼叫 provider **之前**，手上只有請求名。
+
+    拿請求名去問的結果不是差一點，而是**永遠回「全部都沒算過」**：向量存在回報名
+    底下，請求名底下一列都沒有。於是 task 重試、rescue 補送、每一次重跑都把整份文件
+    重新算一遍——真金白銀，而且帳單上看不出哪一筆是重複的。
+
+    Mock provider 回報同名，所以這件事在整個套件裡看不到；本組測試就是那個缺口。
+    """
+
+    def test_the_vectors_land_under_the_reported_name(self, tenants: None) -> None:
+        document_id = _chunked_document(TENANT_A, chunk_count=3)
+
+        _service(_AliasResolvingProvider()).embed_document(TENANT_A, document_id)
+
+        with tenant_scope(TENANT_A):
+            stored = set(
+                Embedding.objects.filter(chunk__document_id=document_id).values_list(
+                    "model", flat=True
+                )
+            )
+        # 名字本身取自 KB 的設定（factory 的預設值），這裡要的是「存的是回報值」。
+        assert len(stored) == 1
+        assert stored.pop().endswith(_AliasResolvingProvider.SUFFIX)
+
+    def test_a_second_run_does_not_pay_again(self, tenants: None) -> None:
+        """**這條是原本的災情。** 重跑一次 = 整份文件重付一次。"""
+        provider = _AliasResolvingProvider()
+        document_id = _chunked_document(TENANT_A, chunk_count=3)
+        service = _service(provider)
+
+        service.embed_document(TENANT_A, document_id)
+        provider.calls.clear()
+        service.embed_document(TENANT_A, document_id)
+
+        assert provider.embedded_texts == [], "重跑又把整份文件送去算了一次"
+
+    def test_the_rest_of_the_run_stops_paying_once_the_name_is_known(self, tenants: None) -> None:
+        """同一次執行裡也要止血：第一批的回報值一到手就重問一次「還缺哪些」。
+
+        沒有這一步的話，一份 200 個 chunk 的文件在重跑時會把四批全部重送——第一批的
+        回報值明明已經說出了正確的名字。
+        """
+        document_id = _chunked_document(TENANT_A, chunk_count=EMBED_BATCH_SIZE + 5)
+        first = _AliasResolvingProvider()
+        _service(first).embed_document(TENANT_A, document_id)
+
+        # 第二個 provider 實例：別名的記憶若只活在物件裡，這裡就會失效。
+        second = _AliasResolvingProvider()
+        _service(second).embed_document(TENANT_A, document_id)
+
+        assert second.embedded_texts == []
+
+    def test_one_vector_per_chunk_after_reruns(self, tenants: None) -> None:
+        """重複計算的另一半症狀：同一個 chunk 在兩個模型名底下各有一列向量，
+        而檢索只查得到其中一個——付了兩次錢，用得到的還是一份。"""
+        document_id = _chunked_document(TENANT_A, chunk_count=3)
+        service = _service(_AliasResolvingProvider())
+
+        service.embed_document(TENANT_A, document_id)
+        service.embed_document(TENANT_A, document_id)
+
+        with tenant_scope(TENANT_A):
+            assert Embedding.objects.filter(chunk__document_id=document_id).count() == 3
 
 
 class TestBatching:

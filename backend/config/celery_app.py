@@ -39,6 +39,7 @@ from core.tasks import (  # noqa: E402
     MAINTAIN_PARTITIONS_TASK,
     RECONCILE_QUOTA_TASK,
     RESCUE_STUCK_DOCUMENTS_TASK,
+    RESCUE_STUCK_STREAMS_TASK,
     SEND_NOTIFICATION_EMAIL_TASK,
 )
 
@@ -66,6 +67,7 @@ celery_app.conf.update(
         RECONCILE_QUOTA_TASK: {"queue": "maintenance"},
         CLEANUP_CHUNKS_TASK: {"queue": "maintenance"},
         RESCUE_STUCK_DOCUMENTS_TASK: {"queue": "maintenance"},
+        RESCUE_STUCK_STREAMS_TASK: {"queue": "maintenance"},
         ANALYTICS_ROLLUP_TASK: {"queue": "maintenance"},
         # 寄信（2A-5）也走 maintenance：它與維運任務一樣是「慢、可以等、不該
         # 擠在使用者的 ETL 前面」的那一類。
@@ -122,6 +124,12 @@ celery_app.conf.update(
         # 掃描本身是兩個帶索引的查詢，空手而回的成本近乎零。
         "rescue-stuck-documents": {
             "task": RESCUE_STUCK_DOCUMENTS_TASK,
+            "schedule": crontab(minute="*/15"),
+        },
+        # 訊息的補償掃描同樣每 15 分鐘：症狀是「一則訊息永遠停在正在輸入」，
+        # 而門檻本身已經是 10 分鐘（見 `stream_stuck_after_seconds`）。
+        "rescue-stuck-streams": {
+            "task": RESCUE_STUCK_STREAMS_TASK,
             "schedule": crontab(minute="*/15"),
         },
         # usage 彙總每小時（2A-3）：Dashboard 的「今天」最多晚一小時。錯開整點

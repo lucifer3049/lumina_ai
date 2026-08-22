@@ -116,6 +116,21 @@ class MessageRepository(TenantScopedRepository[Message]):
         newest = list(queryset.order_by("-created_at", "-id")[:limit])
         return sorted(newest, key=lambda message: (message.created_at, str(message.id)))
 
+    def stuck_streaming(self, *, started_before: Any) -> list[Message]:
+        """還停在 ``streaming``、而且已經開始很久的訊息（補償掃描用，見
+        `services/conversation/rescue.py`）。
+
+        **以 ``created_at`` 為時鐘而不是 ``updated_at``**，兩個理由都要成立才夠：
+        訊息列在生成開始的那一刻就建好，所以 created_at 就是「這輪生成開始多久了」；
+        而它同時是分區鍵（05 §5.2），帶上它讓這個查詢只掃當月那一個分區——每 N 分鐘
+        跑一次的掃描，不能是一次全表掃。
+        """
+        return list(
+            self.get_queryset()
+            .filter(status="streaming", created_at__lt=started_before)
+            .order_by("created_at")
+        )
+
     def assistant_count_since(self, since: Any) -> int:
         """當期 assistant 訊息數——messages_day 對帳的事實來源（2A-2b）。
 

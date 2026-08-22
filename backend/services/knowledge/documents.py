@@ -19,6 +19,7 @@ from django.db import IntegrityError
 from django.utils import timezone
 
 from config.logging import get_logger
+from config.settings.app_settings import get_app_settings
 from core import audit
 from core.exceptions import ConflictError, NotFoundError
 from core.object_storage import build_document_key, delete_object, put_object
@@ -207,11 +208,28 @@ class DocumentService:
 
         處理中的文件不得重跑：那會讓兩個 job 寫同一份文件的 chunk，而先寫完的那個
         會被另一個的「先刪同版本殘留」清掉——結果是隨機少一半內容。
+
+        **但「處理中」要有時效**，否則那三個狀態是死路一條：re-ingest 回 409、補償
+        掃描只救 ``uploaded``／``chunked``（那兩個的訊息確定不在飛），而 parsing／
+        cleaned／embedding 靠的是「``acks_late`` 會把訊息還回佇列」。訊息真的不見時
+        （broker 資料遺失、failover），文件會**永遠**停在處理中，而唯一的解法是手動
+        改 SQL。停超過 `etl_in_progress_stale_seconds` 沒有任何動靜就放行重跑：那個
+        門檻遠大於任何一段正常處理的時間，走到那裡代表沒有人在處理它。
         """
+        stale_before = timezone.now() - timedelta(
+            seconds=get_app_settings().etl_in_progress_stale_seconds
+        )
         with tenant_context(tenant_id), unit_of_work():
             document = self._require(document_id)
-            if document.status in _IN_PROGRESS_STATUSES:
+            if document.status in _IN_PROGRESS_STATUSES and document.updated_at > stale_before:
                 raise ConflictError("文件正在處理中，請等它結束再重跑")
+            if document.status in _IN_PROGRESS_STATUSES:
+                logger.warning(
+                    "reingest_forced_on_stale_document",
+                    document_id=str(document_id),
+                    document_status=document.status,
+                    updated_at=document.updated_at.isoformat(),
+                )
             next_version = int(document.doc_version) + 1
             self._chunks.supersede_for_document(document_id)
             self._documents.start_new_version(document_id, doc_version=next_version)

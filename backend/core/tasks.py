@@ -31,6 +31,9 @@ CLEANUP_CHUNKS_TASK = "knowledge.cleanup_chunks"
 ANALYTICS_ROLLUP_TASK = "platform.rollup_usage"
 # 停滯文件的補償掃描（enqueue 是 best-effort，訊息會丟；1B/1C 遺留的缺口）。
 RESCUE_STUCK_DOCUMENTS_TASK = "knowledge.rescue_stuck_documents"
+# 卡在 streaming 的訊息的補償掃描。與上面那支分開：文件的處置是「補送回佇列」，
+# 訊息的處置是「就地標成中斷」——生成不是 task，沒有佇列可以補送。
+RESCUE_STUCK_STREAMS_TASK = "conversation.rescue_stuck_streams"
 # 2A-5：通知的 email 派送。**不是 Beat 任務**（沒有排程），而是事件觸發——
 # 寄信離開請求路徑靠的就是它。
 SEND_NOTIFICATION_EMAIL_TASK = "platform.send_notification_email"

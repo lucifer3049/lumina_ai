@@ -21,7 +21,9 @@ from core.tasks import (
     MAINTAIN_PARTITIONS_TASK,
     RECONCILE_QUOTA_TASK,
     RESCUE_STUCK_DOCUMENTS_TASK,
+    RESCUE_STUCK_STREAMS_TASK,
 )
+from services.conversation.rescue import StuckStreamRescueService
 from services.knowledge.cleanup import ChunkCleanupService
 from services.knowledge.rescue import StuckDocumentRescueService
 from services.platform.analytics import UsageRollupService
@@ -71,6 +73,19 @@ def rescue_stuck_documents() -> dict[str, Any]:
     rescued = StuckDocumentRescueService().rescue_all()
     if rescued:
         logger.info("stuck_rescue_done", rescued=rescued)
+    return {"rescued": rescued}
+
+
+@shared_task(name=RESCUE_STUCK_STREAMS_TASK)
+def rescue_stuck_streams() -> dict[str, Any]:
+    """把硬崩潰留下的 `streaming` 訊息收尾成 `interrupted`。
+
+    優雅關機有自己的路徑（`ChatService` 的 shield）；這支管的是 OOM 與 kill -9
+    ——那時行程直接消失，而那一列沒有任何人會再去動它。
+    """
+    rescued = StuckStreamRescueService().rescue_all()
+    if rescued:
+        logger.info("stuck_stream_rescue_done", rescued=rescued)
     return {"rescued": rescued}
 
 

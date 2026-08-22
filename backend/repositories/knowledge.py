@@ -95,12 +95,21 @@ class DocumentRepository(SoftDeletableRepository[Document]):
     # 文件數與儲存量的額度依據就是這兩個查詢——**不是 Redis 計數器**：存量必須活得
     # 比 Redis 久，且刪除要立即釋放。`get_queryset()` 已排除軟刪除（額度放的是使用
     # 者能控制的邏輯容量；物件儲存的實體位元組等清理 job）。
+    #
+    # **KB 被軟刪時，它底下的文件不會跟著標記**（`KnowledgeBaseService.delete` 刻意
+    # 不做逐列標記，那會讓刪除變成長交易），級聯清理是 worker 的職責而那個 worker
+    # 還不存在。少了下面這個 join 條件，「刪掉整個 KB」就完全不釋放額度——使用者撞到
+    # documents:100 之後刪掉 KB、再上傳依然 429，而他已經看不到那些文件，沒有任何
+    # 辦法自救。額度看的是「使用者還能不能控制的容量」，已刪 KB 底下的不算。
+
+    def _billable(self) -> models.QuerySet[Document]:
+        return self.get_queryset().filter(kb__deleted_at__isnull=True)
 
     def active_count(self) -> int:
-        return self.get_queryset().count()
+        return self._billable().count()
 
     def active_size_bytes(self) -> int:
-        total = self.get_queryset().aggregate(total=models.Sum("size_bytes"))["total"]
+        total = self._billable().aggregate(total=models.Sum("size_bytes"))["total"]
         return int(total or 0)
 
     def find_by_content_hash(self, *, kb_id: uuid.UUID, content_hash: str) -> Document | None:
@@ -151,6 +160,9 @@ class DocumentRepository(SoftDeletableRepository[Document]):
         的過渡狀態**，剛上傳的文件本來就會在裡面待幾秒。少了時間下限，恢復指令會把
         正在被處理的文件再排一次——冪等保證那不會弄壞資料，但 embedding 那一段是真的
         錢，而重複的訊息會讓佇列在最需要吞吐的時候變成兩倍長。
+
+        「動靜」指的是 ``updated_at``，而它由本類別的每一個 ``update()`` 顯式寫入
+        （見 `set_status`）——`auto_now` 只在 `save()` 上生效。
         """
         return list(
             self.get_queryset()
@@ -167,7 +179,12 @@ class DocumentRepository(SoftDeletableRepository[Document]):
         return (
             self.get_queryset()
             .filter(id=document_id)
-            .update(doc_version=doc_version, status="uploaded", error=None)
+            .update(
+                doc_version=doc_version,
+                status="uploaded",
+                error=None,
+                updated_at=timezone.now(),
+            )
         )
 
     def set_status(
@@ -177,8 +194,18 @@ class DocumentRepository(SoftDeletableRepository[Document]):
 
         走 ``update`` 而不是讀出來改再存：ETL 與使用者的請求可能同時碰同一列，
         read-modify-write 會把對方的改動蓋掉（例如把已軟刪的文件寫回未刪）。
+
+        **``updated_at`` 要自己寫**：``auto_now`` 是 `save()` 的行為，``update()``
+        不會觸發它。少了這一行，一份文件從上傳到 ready 的整段處理過程中
+        ``updated_at`` 都停在建立那一刻，於是所有「多久沒有動靜」的判斷（`stuck_in`
+        的補償掃描、re-ingest 的卡死豁免）量到的其實是「這份文件多久以前被建立」
+        ——一份剛切完塊的大文件會被誤判成停滯，而真正卡在 parsing 的反而看起來很新。
         """
-        return self.get_queryset().filter(id=document_id).update(status=status, error=error)
+        return (
+            self.get_queryset()
+            .filter(id=document_id)
+            .update(status=status, error=error, updated_at=timezone.now())
+        )
 
 
 class ChunkRepository(TenantScopedRepository[Chunk]):

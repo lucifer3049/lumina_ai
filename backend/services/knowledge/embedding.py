@@ -31,6 +31,7 @@ from typing import Any
 from ai.gateway import AIGateway, build_gateway
 from config.logging import get_logger
 from core.exceptions import NotFoundError, ProviderError
+from core.redis import get_redis, tenant_key
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.knowledge import (
@@ -65,6 +66,12 @@ _EMBEDDABLE_STATUSES = frozenset({STATUS_CHUNKED, STATUS_EMBEDDING, STATUS_READY
 
 _JOB_SUCCEEDED = "succeeded"
 _JOB_FAILED = "failed"
+
+# provider 把請求的模型名解析成什麼（見 `EmbeddingService._resolved_model`）。**這是
+# 快取，不是設定**：不知道就退回請求名，最多多問一輪；記錯了下一次呼叫會自己蓋掉。
+# TTL 一天——別名的指向會隨 provider 改版而變，而過期的代價只有一批的重算。
+_MODEL_ALIAS_KEY = "embed-model"
+_MODEL_ALIAS_TTL_SECONDS = 86_400
 
 # 06 §2.1：batch=64。**不是隨手取的整數**——它同時受兩個上限夾住：provider 的單次
 # 請求 token 上限，以及「一批失敗要重算多少」。調大省的是往返次數（次要），賠的是
@@ -240,7 +247,11 @@ class EmbeddingService:
         每一批各自寫入（見模組 docstring 的第 2 條）：中途失敗時前面幾批留在 DB，
         重跑只補剩下的。
         """
-        pending = self._pending_chunks(tenant_id, target)
+        # **問「哪些算過了」要用寫入時記的那個名字**，而寫入記的是 provider 回報值
+        # （見下面 upsert 的註解）。兩者在會做別名解析的 provider 上不同，見
+        # `_resolved_model` 的 docstring。
+        lookup_model = self._resolved_model(tenant_id, target.model)
+        pending = self._pending_chunks(tenant_id, target, model=lookup_model)
         if not pending:
             # 空批次不打 provider（Gateway 也會擋，這裡先擋是為了連 job 都不必轉一圈）。
             # 零 chunk 的文件（空檔、只有圖的 PDF）是**成功**，不是失敗——標成 failed
@@ -251,7 +262,8 @@ class EmbeddingService:
         tokens = 0
         batches = 0
         reported_model = target.model
-        for start in range(0, len(pending), EMBED_BATCH_SIZE):
+        start = 0
+        while start < len(pending):
             batch = pending[start : start + EMBED_BATCH_SIZE]
             result = self.gateway.embed([content for _, content in batch], model=target.model)
             rows: list[EmbeddingRow] = [
@@ -270,16 +282,33 @@ class EmbeddingService:
             embedded += len(rows)
             tokens += result.usage.total_tokens
             batches += 1
+            start += len(batch)
             # 計價按實際被用到的那一個（同 upsert 記 result.model 的理由）。
             reported_model = result.model or reported_model
 
+            if result.model and result.model != lookup_model:
+                # **剛才那一輪 pending 是拿錯名字問出來的**：已經有向量的 chunk 全部
+                # 落在回報名底下，而我們用請求名去找，於是它們每一個都被當成「還沒
+                # 算」。記住這次的解析結果，然後重問一次——剛寫進去的那批自然不在新
+                # 清單裡，早先幾輪算過的也不在。**這個分支每次執行最多走一次**，之後
+                # 兩個名字就一致了。
+                self._remember_resolution(tenant_id, target.model, result.model)
+                lookup_model = result.model
+                pending = self._pending_chunks(tenant_id, target, model=lookup_model)
+                start = 0
+
         return embedded, tokens, batches, reported_model
 
-    def _pending_chunks(self, tenant_id: uuid.UUID, target: _Target) -> list[tuple[uuid.UUID, str]]:
+    def _pending_chunks(
+        self, tenant_id: uuid.UUID, target: _Target, *, model: str
+    ) -> list[tuple[uuid.UUID, str]]:
         """還沒有向量的 chunk（id 與內容），**只含目前版本且未 superseded 的**。
 
         舊版 chunk 即將被清理 job 硬刪（2A），在那之前算一次是純粹的浪費：一份重跑
         三次的大文件會付四份錢，其中三份的資料幾分鐘後就被刪掉。
+
+        ``model`` 由呼叫端決定而不是取 ``target.model``：這個查詢要對得上**寫入時
+        用的名字**，而那是 provider 回報值（見 `_resolved_model`）。
         """
         with tenant_context(tenant_id), unit_of_work():
             active = self._chunks.active_for_version(
@@ -288,11 +317,40 @@ class EmbeddingService:
             missing = set(
                 self._embeddings.chunks_without_embedding(
                     [chunk.id for chunk in active],
-                    model=target.model,
+                    model=model,
                     embedding_version=target.embedding_version,
                 )
             )
         return [(chunk.id, chunk.content) for chunk in active if chunk.id in missing]
+
+    # ── 別名解析的記憶（見 `_embed_pending`）──────────────────
+
+    def _resolved_model(self, tenant_id: uuid.UUID, requested: str) -> str:
+        """請求的模型名 → 上次 provider 回報的那個名字（不知道就用請求名）。
+
+        **為什麼需要這一層。** 寫入端記的是回報名（別名解析之後真的被用到的版本，
+        06 §4），檢索端查的也是回報名（`RetrievalService._search`——它每次都先嵌入
+        查詢，所以手上一定有回報名）。只有「哪些 chunk 還沒有向量」這個查詢手上沒有
+        ——它跑在第一次呼叫 provider **之前**。
+
+        拿請求名去問的後果不是查錯一點點，而是**永遠回「全部都沒算過」**：向量存在
+        回報名底下，請求名底下一列都沒有。於是 task 重試、rescue 補送、每一次重跑都
+        把整份文件重新算一遍——而這一層 docstring 自稱「哪些算過了是核心邏輯」。
+        Mock provider 回報同名，所以測試看不到這件事。
+
+        存 Redis 而不是欄位：這是「provider 目前把這個別名解析成什麼」的快取，不是
+        使用者的設定（KB 的 `embedding_model` 是後者，蓋掉它等於偷改使用者的設定）。
+        解析結果會隨 provider 改版而變，所以給 TTL——過期的代價只是一輪重問。
+        """
+        cached = get_redis().get(tenant_key(tenant_id, _MODEL_ALIAS_KEY, requested))
+        return str(cached) if cached else requested
+
+    def _remember_resolution(self, tenant_id: uuid.UUID, requested: str, reported: str) -> None:
+        get_redis().set(
+            tenant_key(tenant_id, _MODEL_ALIAS_KEY, requested),
+            reported,
+            ex=_MODEL_ALIAS_TTL_SECONDS,
+        )
 
     # ── 輔助 ────────────────────────────────────────────────
 

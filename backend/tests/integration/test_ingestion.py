@@ -309,6 +309,43 @@ class TestReingest:
         with pytest.raises(ConflictError):
             DocumentService().reingest(TENANT_A, document_id)
 
+    def test_a_document_stuck_in_progress_for_hours_can_be_reingested(self, tenants: None) -> None:
+        """**卡死要有逃生口**，否則那三個狀態是死路一條。
+
+        parsing／cleaned／embedding 全靠「``acks_late`` 會把訊息還回佇列」。訊息真的
+        不見時（broker 資料遺失、failover），re-ingest 回 409、補償掃描不管這三個狀態
+        ——文件永遠停在處理中，而唯一的解法是手動改 SQL。
+
+        門檻遠大於任何一段正常處理的時間（預設一小時），所以走到這裡代表沒有人在處理
+        它；把它擋下來保護的已經不是資料，只是一個不會發生的競態。
+        """
+        document_id = _upload(TENANT_A)
+        with tenant_scope(TENANT_A):
+            Document.objects.filter(id=document_id).update(
+                status="parsing", updated_at=timezone.now() - timedelta(hours=2)
+            )
+
+        view = DocumentService().reingest(TENANT_A, document_id)
+
+        assert view.doc_version == 2
+        assert view.status == "uploaded"
+
+    def test_the_escape_hatch_does_not_open_for_a_document_that_just_moved(
+        self, tenants: None
+    ) -> None:
+        """狀態剛推進過的文件仍然是 409——`set_status` 每次都會把 `updated_at` 往前帶，
+        所以「還在跑」與「卡死了」分得出來。少了那個時間戳，一份剛開始解析的大文件
+        會因為「建立於一小時前」被誤判成卡死。"""
+        document_id = _upload(TENANT_A)
+        with tenant_scope(TENANT_A):
+            Document.objects.filter(id=document_id).update(
+                status="uploaded", updated_at=timezone.now() - timedelta(hours=2)
+            )
+            DocumentRepository().set_status(document_id, status="parsing")
+
+        with pytest.raises(ConflictError):
+            DocumentService().reingest(TENANT_A, document_id)
+
 
 class TestRequeueStuck:
     """broker 送不出去時的恢復入口（`manage.py requeue_stuck_documents`）。

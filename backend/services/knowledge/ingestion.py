@@ -53,6 +53,12 @@ from services.platform.notifications import NotificationService
 
 logger = get_logger(__name__)
 
+# 切塊參數的硬上下限——**保護的是我們自己，不是使用者可調的東西**（同 params.py 的
+# `MAX_TOP_K`）。target 太小會讓一份文件炸出上萬個 chunk（每一個都要嵌入，是真的
+# 錢）；太大則超過 embedding 模型的輸入上限，症狀是整份文件永遠失敗。
+_MIN_TARGET_TOKENS = 64
+_MAX_TARGET_TOKENS = 4_000
+
 STAGE_EXTRACT = "extract"
 STAGE_CLEAN = "clean"
 STAGE_CHUNK = "chunk"
@@ -429,6 +435,12 @@ def _chunk_config_from(config: dict[str, Any]) -> ChunkConfig:
 
     只認得自己支援的鍵，其餘忽略：KB config 是使用者可寫的 JSON，把未知的鍵直接
     展開成建構參數會讓一個打錯的欄位變成 TypeError，而那發生在 worker 裡。
+
+    **壞值退回預設，不是 raise**（同 `services/rag/params.py` 的「寫入時驗證、讀取
+    時容忍」）：``{"chunk": {"target_tokens": "五百"}}`` 原本會讓 ``int()`` 在 worker
+    裡丟 ValueError → 重試三次 → 文件標 failed 且 ``retryable=True``，看起來像基礎
+    設施故障，而真正的原因是一個打錯的設定值。同一個原則在檢索參數做了、切塊參數
+    漏了，這裡補上。
     """
     raw = config.get("chunk")
     section: dict[str, Any] = raw if isinstance(raw, dict) else {}
@@ -437,7 +449,33 @@ def _chunk_config_from(config: dict[str, Any]) -> ChunkConfig:
     # 有些參數改得動、有些改不動。`ChunkConfig` 自己的預設值因此只是型別上的方便，
     # 正式路徑一律由這裡帶入。
     settings = get_app_settings()
-    return ChunkConfig(
-        target_tokens=int(section.get("target_tokens", settings.chunk_target_tokens)),
-        overlap_tokens=int(section.get("overlap_tokens", settings.chunk_overlap_tokens)),
+    target = _int(
+        section,
+        "target_tokens",
+        settings.chunk_target_tokens,
+        low=_MIN_TARGET_TOKENS,
+        high=_MAX_TARGET_TOKENS,
     )
+    # 上限跟著 target 走：overlap ≥ target 代表「每一塊的開頭就是上一塊的全部」，
+    # 切塊會退化成幾乎不前進——而那不會報錯，只會讓一份文件產出異常多的 chunk
+    # （真的錢，每一塊都要嵌入）。夾在 target-1 是把它變成不可能，而不是靠人記得。
+    overlap = _int(
+        section, "overlap_tokens", settings.chunk_overlap_tokens, low=0, high=max(target - 1, 0)
+    )
+    return ChunkConfig(target_tokens=target, overlap_tokens=overlap)
+
+
+def _int(section: dict[str, Any], key: str, default: int, *, low: int, high: int) -> int:
+    """壞值退回預設並夾在上下限內。
+
+    **與 `services/rag/params.py` 的 `_int` 是同一份邏輯的第二份。** 沒有共用是因為
+    它的家應該是一個「KB config 解析」的共用模組，而那要動到 rag 與 knowledge 兩個
+    context 的邊界；第三個呼叫端出現時再一起搬。兩份漂掉的風險由這行註解與各自的
+    測試承擔。
+    """
+    value = section.get(key, default)
+    # `bool` 是 `int` 的子類別，而 `{"target_tokens": true}` 的意思顯然不是 1。
+    if isinstance(value, bool) or not isinstance(value, int):
+        logger.warning("chunk_param_rejected", param=key, value=repr(value))
+        return default
+    return max(low, min(high, value))
