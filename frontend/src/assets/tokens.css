@@ -45,10 +45,10 @@
   --font-kai: 'LXGW WenKai TC', 'Kaiti TC', 'DFKai-SB', serif;
   --font-body: 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
 
-  /* 侘寂圓角：小而不等值 */
-  --radius-a: 2px 3px 2px 3px;
-  --radius-b: 2px 4px 2px 4px;
-  --radius-c: 3px 4px 3px 5px;
+  /* 圓角（2026-08-22 拍板改圓潤：GPT 式大圓角；不等值只留 1–2px 的手感） */
+  --radius-a: 8px 9px 8px 9px; /* 小件：輸入框、清單列、選單項、tag */
+  --radius-b: 10px 11px 10px 11px; /* 按鈕 */
+  --radius-c: 16px 17px 16px 18px; /* 卡片、面板、對話框、聊天輸入框 */
 
   /* 陰影如霧氣 */
   --shadow-mist: 0 1px 4px rgba(46, 53, 50, 0.06);

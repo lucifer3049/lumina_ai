@@ -84,7 +84,7 @@ function onClick(event: MouseEvent): void {
 .ink-button--primary {
   color: var(--accent-deep-ink);
   background: var(--accent-deep);
-  border-radius: 2px;
+  border-radius: var(--radius-b);
   letter-spacing: 0.24em;
   text-indent: 0.24em;
 }

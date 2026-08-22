@@ -60,7 +60,7 @@ function locationOf(citation: CitationItem): string {
   flex: none;
   background: color-mix(in srgb, var(--paper-2) 70%, transparent);
   border: 1px solid var(--paper-5);
-  border-radius: 3px 2px 4px 2px;
+  border-radius: var(--radius-c);
   padding: 22px 20px;
   display: flex;
   flex-direction: column;
@@ -136,7 +136,7 @@ function locationOf(citation: CitationItem): string {
   min-width: 18px;
   height: 18px;
   border: 1px solid color-mix(in srgb, var(--cinnabar) 50%, transparent);
-  border-radius: 2px;
+  border-radius: 6px;
   background: color-mix(in srgb, var(--cinnabar) 8%, transparent);
   color: var(--cinnabar);
   font-size: 0.6875rem;

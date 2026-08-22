@@ -84,6 +84,13 @@ function send(): void {
   min-width: 0;
 }
 
+/* 聊天輸入框比一般輸入框更圓（GPT 式膠囊感），padding 跟著放大才不擠。
+   雙類名選擇器：要壓過 InkInput 自己的 .ink-input 規則。 */
+.composer .input {
+  border-radius: var(--radius-c);
+  padding: 13px 18px;
+}
+
 /* 墨圓：不規則圓角＋微旋，像一滴按下去的墨 */
 .round-button {
   flex-shrink: 0;

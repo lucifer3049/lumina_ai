@@ -64,11 +64,12 @@ const segments = computed(() => renderAnswer(props.content, props.citations ?? [
   font-size: 0.875rem;
 }
 
+/* 圓潤氣泡（GPT 式）：說話那一側的下角收小，當作朝向說話者的筆勢 */
 .bubble--user {
   align-self: flex-end;
   background: var(--accent-deep);
   color: var(--accent-deep-ink);
-  border-radius: 5px 5px 2px 5px;
+  border-radius: 18px 18px 6px 18px;
   box-shadow: var(--shadow-ink);
 }
 
@@ -76,7 +77,7 @@ const segments = computed(() => renderAnswer(props.content, props.citations ?? [
   align-self: flex-start;
   background: color-mix(in srgb, var(--paper-2) 80%, transparent);
   border: 1px solid var(--paper-5);
-  border-radius: 3px 4px 4px 2px;
+  border-radius: 18px 18px 18px 6px;
 }
 
 .body {
@@ -95,7 +96,7 @@ const segments = computed(() => renderAnswer(props.content, props.citations ?? [
   padding: 0 3px;
   vertical-align: 2px;
   border: 1px solid color-mix(in srgb, var(--cinnabar) 50%, transparent);
-  border-radius: 2px;
+  border-radius: 6px;
   background: color-mix(in srgb, var(--cinnabar) 8%, transparent);
   color: var(--cinnabar);
   font-size: 0.6875rem;
