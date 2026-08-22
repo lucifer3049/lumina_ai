@@ -231,6 +231,80 @@ class TestImmutability:
 
         assert reloaded is not None and reloaded.status == "published"
 
+    def test_a_published_version_cannot_be_reverted_to_draft(
+        self, tenants: tuple[uuid.UUID, uuid.UUID]
+    ) -> None:
+        """**兩步繞過**：先把 status 改回 draft（內容沒動，0003 的 trigger 放行），再改
+        template（此時 ``OLD.status`` 已是 draft，照樣放行）。
+
+        這個 trigger 存在的理由正是擋 Django Admin、``manage.py shell`` 與手動維運 SQL
+        ——而那三條路徑做兩次 UPDATE 毫無障礙。所以「不可變」必須連狀態的方向一起擋
+        （0006_published_status_guard）。
+        """
+        with tenant_scope(TENANT_A):
+            prompt = make_prompt(tenant_id=TENANT_A, key="no-revert")
+            version = make_prompt_version(
+                prompt=prompt, version=1, status="published", template="原文"
+            )
+
+        with (
+            tenant_context(TENANT_A),
+            unit_of_work(),
+            pytest.raises(IntegrityError),
+            connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "UPDATE ai_promptversion SET status = 'draft' WHERE id = %s", [str(version.id)]
+            )
+
+        with tenant_context(TENANT_A), unit_of_work():
+            reloaded = PromptRepository().version_by_id(version.id)
+
+        assert reloaded is not None
+        assert reloaded.status == "published"
+        assert reloaded.template == "原文"
+
+    def test_archiving_a_published_version_is_allowed(
+        self, tenants: tuple[uuid.UUID, uuid.UUID]
+    ) -> None:
+        """``archived`` 是 Phase 5 發佈流程淘汰舊版本的路徑，擋掉它等於沒有版本汰換。"""
+        with tenant_scope(TENANT_A):
+            prompt = make_prompt(tenant_id=TENANT_A, key="archivable")
+            version = make_prompt_version(
+                prompt=prompt, version=1, status="published", template="內容"
+            )
+            version.status = "archived"
+            with unit_of_work():
+                version.save(update_fields=["status"])
+
+        with tenant_context(TENANT_A), unit_of_work():
+            reloaded = PromptRepository().version_by_id(version.id)
+
+        assert reloaded is not None and reloaded.status == "archived"
+
+    def test_an_archived_version_is_frozen_too(self, tenants: tuple[uuid.UUID, uuid.UUID]) -> None:
+        """只擋「退回 draft」的話，``published → archived → 改內容`` 是同一個繞過換了個
+        中繼站——而 archived 正是歷史回答指過去最多的那一批版本。"""
+        with tenant_scope(TENANT_A):
+            prompt = make_prompt(tenant_id=TENANT_A, key="frozen-archive")
+            version = make_prompt_version(
+                prompt=prompt, version=1, status="published", template="原文"
+            )
+            version.status = "archived"
+            with unit_of_work():
+                version.save(update_fields=["status"])
+
+        with (
+            tenant_context(TENANT_A),
+            unit_of_work(),
+            pytest.raises(IntegrityError),
+            connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "UPDATE ai_promptversion SET template = %s WHERE id = %s",
+                ["偷改的內容", str(version.id)],
+            )
+
 
 class TestUniqueness:
     def test_one_key_per_tenant(self, tenants: tuple[uuid.UUID, uuid.UUID]) -> None:

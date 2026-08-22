@@ -24,7 +24,7 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
-from django.db import connection
+from django.db import connection, connections
 from django.db.utils import ProgrammingError
 
 from core.tenant import tenant_context
@@ -38,8 +38,11 @@ from tests.factories.identity import (
     make_user,
     tenant_scope,
 )
+from tests.seed import ensure_identity_seed
 
-pytestmark = pytest.mark.django_db(transaction=True)
+# `admin` 也要列進來：全域權限字典的寫入走 owner 連線（`PermissionFactory`——應用角色
+# 對 `identity_permission` 只剩 SELECT，見 0012_platform_table_grants）。
+pytestmark = pytest.mark.django_db(transaction=True, databases=["default", "admin"])
 
 # 需要租戶隔離的 identity 表。`permissions` 不在其中——它是全域字典表，
 # 理由見 test_permissions_is_intentionally_global。
@@ -347,3 +350,140 @@ def test_permission_dictionary_is_readable_by_every_tenant() -> None:
         row = cursor.fetchone()
 
     assert row is not None and row[0] == "test:dictionary-visibility"
+
+
+# ── 共用列（tenant_id IS NULL）的寫入方向（0011_rls_write_scope）──
+
+
+def _shared_role_ids() -> set[uuid.UUID]:
+    """繞過 RLS 查共用列——用 owner 連線，因為要看的正是「租戶看不到的那一側」。"""
+    with connections["admin"].cursor() as cursor:
+        cursor.execute("SELECT id FROM identity_role WHERE tenant_id IS NULL")
+        return {row[0] for row in cursor.fetchall()}
+
+
+def test_a_tenant_cannot_delete_the_shared_system_roles() -> None:
+    """``DELETE FROM identity_role WHERE tenant_id IS NULL`` 一列都不能刪得動。
+
+    0002 的 policy 是 ``FOR ALL``，而 DELETE **只檢查 ``USING``**——那個條件為了讓系統
+    角色對所有租戶可見放行了 NULL，於是「讀得到」順帶變成「刪得掉」。一條 SQL 就讓
+    全平台的權限判定退化成「什麼都不能做」，而執行它只需要應用角色的連線加任一租戶
+    context（也就是任何一個未來的程式 bug 或 injection 的落點）。
+    """
+    ensure_identity_seed()
+    before = _shared_role_ids()
+    assert before, "種子沒進去，這條測試會假綠"
+
+    with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
+        cursor.execute("DELETE FROM identity_role WHERE tenant_id IS NULL")
+        deleted = cursor.rowcount
+
+    assert deleted == 0
+    assert _shared_role_ids() == before
+
+
+def test_a_tenant_cannot_delete_the_shared_permission_grants() -> None:
+    """授權列比角色本身更貴：它沒有任何 FK 保護，刪掉就是全平台同時失去權限。"""
+    ensure_identity_seed()
+
+    with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
+        cursor.execute("DELETE FROM identity_role_permission WHERE tenant_id IS NULL")
+        deleted = cursor.rowcount
+
+    with connections["admin"].cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM identity_role_permission WHERE tenant_id IS NULL")
+        remaining = cursor.fetchone()[0]
+
+    assert deleted == 0
+    assert remaining > 0
+
+
+def test_a_tenant_cannot_hijack_a_shared_role() -> None:
+    """把共用列的 ``tenant_id`` 改成自己 = 讓它從所有其他租戶手上消失。
+
+    ``FOR ALL`` 的 UPDATE 檢查 ``USING``（舊列，NULL 放行）+ ``WITH CHECK``（新列，是
+    自己的租戶），兩邊都過——**而資料庫裡沒有任何一列被刪**，事後也看不出發生過什麼。
+    """
+    ensure_identity_seed()
+    before = _shared_role_ids()
+
+    with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
+        cursor.execute(
+            "UPDATE identity_role SET tenant_id = %s WHERE tenant_id IS NULL", [str(TENANT_A)]
+        )
+        updated = cursor.rowcount
+
+    assert updated == 0
+    assert _shared_role_ids() == before
+
+
+def test_a_tenant_can_still_change_and_delete_its_own_roles() -> None:
+    """收窄寫入方向的另一半：自己的列必須照常改得動、刪得掉。
+
+    只驗「擋住了」的話，把 policy 寫成 ``USING (false)`` 也會全綠——而那會讓租戶自訂
+    角色永遠改不動，症狀是「按下儲存沒反應也沒錯誤」（RLS 讓那一列不存在，影響 0 列）。
+    """
+    with tenant_scope(TENANT_A):
+        make_tenant(id=TENANT_A, slug="tenant-a")
+        role = make_tenant_role(tenant_id=TENANT_A, name="own-role")
+
+    with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
+        cursor.execute("UPDATE identity_role SET name = 'renamed' WHERE id = %s", [str(role.id)])
+        assert cursor.rowcount == 1
+        cursor.execute("DELETE FROM identity_role WHERE id = %s", [str(role.id)])
+        assert cursor.rowcount == 1
+
+
+# ── 平台級表：應用角色只讀（0012_platform_table_grants）─────────
+
+
+@pytest.mark.parametrize("statement", ["INSERT", "UPDATE", "DELETE"])
+def test_the_permission_dictionary_is_read_only_for_the_application_role(statement: str) -> None:
+    """全域權限字典沒有 RLS（見 `test_permissions_is_intentionally_global`），所以第二道
+    防線只剩 GRANT。應用連線寫得動它 = 任何一個 injection 落點都能自己發權限碼。
+
+    正當的寫入者只有 migration（owner），因此擋在 DB 的權限層而不是程式裡。
+    """
+    statements = {
+        "INSERT": (
+            "INSERT INTO identity_permission (id, code, description, created_at, updated_at)"
+            " VALUES (gen_random_uuid(), 'test:forged', '', now(), now())"
+        ),
+        "UPDATE": "UPDATE identity_permission SET description = 'x'",
+        "DELETE": "DELETE FROM identity_permission",
+    }
+
+    with (
+        tenant_context(TENANT_A),
+        unit_of_work(),
+        pytest.raises(ProgrammingError, match="permission denied"),
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(statements[statement])
+
+
+@pytest.mark.parametrize("statement", ["INSERT", "UPDATE", "DELETE"])
+def test_the_tenant_directory_is_read_only_for_the_application_role(statement: str) -> None:
+    """登入路由表（slug → tenant_id）同樣沒有 RLS——它必須在「還不知道是哪個租戶」時
+    就查得到。寫得動它等於能把別人的 slug 指到自己的租戶，或讓某個租戶登不進來。
+
+    它的正當寫入者是 `identity_tenant` 上的 ``SECURITY DEFINER`` trigger，那條路徑以
+    函式擁有者（owner）的身分寫入，不受這裡的 REVOKE 影響——由
+    `test_tenant_bootstrap.py` 驗它仍然會同步。
+    """
+    statements = {
+        "INSERT": (
+            "INSERT INTO identity_tenant_directory (tenant_id, slug, status)"
+            " VALUES (gen_random_uuid(), 'forged', 'active')"
+        ),
+        "UPDATE": "UPDATE identity_tenant_directory SET status = 'suspended'",
+        "DELETE": "DELETE FROM identity_tenant_directory",
+    }
+
+    with (
+        tenant_context(TENANT_A),
+        unit_of_work(),
+        pytest.raises(ProgrammingError, match="permission denied"),
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(statements[statement])

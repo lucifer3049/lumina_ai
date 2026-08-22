@@ -20,6 +20,12 @@ app.tenant_id = %s`` 是行不通的；改成字串拼接就把使用者可控�
 ``SELECT set_config('app.tenant_id', %s, true)`` 是同義的函式形式，可參數化，
 第三個引數 ``true`` 就是 ``LOCAL``（交易結束即失效）。
 
+（`repositories/knowledge.py` 的 `EmbeddingRepository.search` 確實寫了
+``SET LOCAL hnsw.ef_search = %s`` 而且能動，兩處不矛盾：那個 ``%s`` 由 Django 的
+``ClientCursor`` 在**送出前**替換成字面值，PostgreSQL 收到的仍是一句沒有參數的
+SQL。本模組不靠那個行為——租戶 id 是隔離的根據，不該把它的安全性押在「後端目前
+用哪種 binding 模式」上，而 `set_config` 在兩種模式下都對。）
+
 **必須是交易區域（local）而非 session 級**：PgBouncer 走 transaction pooling
 （05 §5.5），連線在交易結束後會還給池子；session 級設定會跟著連線交給下一個
 client，變成租戶 A 的值成為租戶 B 的預設——RLS 上線後即為跨租戶讀取。

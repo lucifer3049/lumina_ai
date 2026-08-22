@@ -24,7 +24,7 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
-from django.db import connection
+from django.db import connection, connections
 from django.db.utils import ProgrammingError
 
 from core.tenant import tenant_context
@@ -218,3 +218,80 @@ class TestWriteIsolation:
                 "VALUES (%s, NULL, 'forged', 'forged', '', now(), now())",
                 [str(uuid.uuid4())],
             )
+
+    def test_a_tenant_cannot_delete_the_system_template(
+        self, prompts_in_both_tenants: dict[str, uuid.UUID]
+    ) -> None:
+        """0002 只擋住了「建立」。``FOR ALL`` 的 DELETE **只檢查 ``USING``**，而
+        ``USING`` 為了讓所有租戶讀得到系統模板放行了 ``tenant_id IS NULL``。
+
+        刪掉的後果比外洩更立即：`PromptVersion.prompt` 是 ``on_delete=CASCADE``，
+        **FK 級聯不受 RLS 約束**，模板內容一起消失，所有租戶的問答同時失去依據。
+        """
+        with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
+            cursor.execute("DELETE FROM ai_prompt WHERE tenant_id IS NULL")
+            assert cursor.rowcount == 0
+
+        with connections["admin"].cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM ai_prompt WHERE tenant_id IS NULL")
+            assert cursor.fetchone()[0] >= 1
+
+    def test_a_tenant_cannot_hijack_the_system_template(
+        self, prompts_in_both_tenants: dict[str, uuid.UUID]
+    ) -> None:
+        """把系統模板的 ``tenant_id`` 改成自己：舊列過 ``USING``（NULL 放行）、新列過
+        ``WITH CHECK``（是自己的租戶）——於是它變成某租戶私有，其他租戶的問答瞬間找不到
+        模板，而資料庫裡沒有任何一列被刪。
+        """
+        with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE ai_prompt SET tenant_id = %s WHERE tenant_id IS NULL", [str(TENANT_A)]
+            )
+            assert cursor.rowcount == 0
+
+        with tenant_context(TENANT_B), unit_of_work(), connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM ai_prompt WHERE key = %s", [SYSTEM_RAG_PROMPT_KEY])
+            assert cursor.fetchone()[0] == 1, "系統模板被劫持了——B 租戶已經看不到它"
+
+    def test_a_tenant_cannot_delete_the_system_templates_versions(
+        self, prompts_in_both_tenants: dict[str, uuid.UUID]
+    ) -> None:
+        """**模板本體在這張表**。prompts 收窄了而 versions 沒收，等於門鎖了、窗開著——
+        而且刪掉的正是內容最敏感的那一半。
+
+        版本表的 UPDATE 原本就擋住了（``WITH CHECK`` 要求父列屬於自己），DELETE 沒有
+        ——它只看 ``USING``，而讀的條件必須放行系統模板的版本。
+        """
+        with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM ai_promptversion v USING ai_prompt p"
+                " WHERE p.id = v.prompt_id AND p.tenant_id IS NULL"
+            )
+            assert cursor.rowcount == 0
+
+        with connections["admin"].cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM ai_promptversion v JOIN ai_prompt p ON p.id = v.prompt_id"
+                " WHERE p.tenant_id IS NULL"
+            )
+            assert cursor.fetchone()[0] >= 1
+
+    def test_a_tenant_can_still_change_and_delete_its_own_prompt(
+        self, prompts_in_both_tenants: dict[str, uuid.UUID]
+    ) -> None:
+        """收窄寫入方向的另一半：自己的模板必須照常改得動、刪得掉。
+
+        只驗「擋住了」的話，``USING (false)`` 也會全綠——而那會讓 Phase 5 的 `/prompts`
+        寫入端點整個失效，症狀是「存了沒反應也沒錯誤」（影響 0 列）。
+        """
+        with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE ai_prompt SET name = 'renamed' WHERE id = %s",
+                [str(prompts_in_both_tenants["prompt_a"])],
+            )
+            assert cursor.rowcount == 1
+            cursor.execute(
+                "DELETE FROM ai_promptversion WHERE id = %s",
+                [str(prompts_in_both_tenants["version_a"])],
+            )
+            assert cursor.rowcount == 1

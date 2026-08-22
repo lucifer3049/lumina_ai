@@ -473,12 +473,10 @@ class TestRequeueCommand:
 
         from django.core.management import call_command
 
-        from apps.identity.models import TenantDirectory
-
-        with tenant_scope(TENANT_A):
-            TenantDirectory.objects.update_or_create(
-                slug="tenant-a", defaults={"tenant_id": TENANT_A, "status": "active"}
-            )
+        # 目錄表那一列由 `identity_tenant` 的 trigger 維護（0004_auth_support），
+        # `tenants` fixture 建租戶時就跟著寫好了——這裡不再自己補一次：應用角色對
+        # `identity_tenant_directory` 已無寫入權（0012_platform_table_grants），
+        # 而正當的寫入者只有那個 SECURITY DEFINER trigger。
         document_id = _upload(TENANT_A)
         with tenant_scope(TENANT_A):
             Document.objects.filter(id=document_id).update(

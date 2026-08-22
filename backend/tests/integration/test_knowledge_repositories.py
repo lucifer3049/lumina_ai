@@ -15,9 +15,13 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
+from unittest import mock
 
 import pytest
+from django.db import connections
 
+from apps.knowledge.models import EtlJob
 from core.db import run_orm
 from core.exceptions import TenantContextMissingError
 from core.tenant import tenant_context
@@ -32,7 +36,8 @@ from tests.conftest import TENANT_A, TENANT_B
 from tests.factories.identity import make_tenant, tenant_scope
 from tests.factories.knowledge import make_chunk, make_document, make_etl_job, make_knowledge_base
 
-pytestmark = pytest.mark.django_db(transaction=True)
+# `admin` 也要列進來：`TestEtlJobAttemptCounter` 用它扮演「另一個 worker 的連線」。
+pytestmark = pytest.mark.django_db(transaction=True, databases=["default", "admin"])
 
 ALL_REPOSITORIES = (
     KnowledgeBaseRepository,
@@ -236,3 +241,69 @@ class TestEtlJobIdempotencyKey:
 
         assert found is not None, "同版本同階段應查得到（重跑要能判定為已完成）"
         assert not_found is None, "下一版的同階段不該查到上一版的 job（08 §6 冪等鍵）"
+
+
+class TestEtlJobAttemptCounter:
+    """``attempt`` 是「重試 ≤3」（08 §6）的唯一依據，所以它少算一次就是多跑一次。"""
+
+    def test_each_start_counts_one_attempt(
+        self, two_tenants_with_content: dict[str, uuid.UUID]
+    ) -> None:
+        with tenant_context(TENANT_A), unit_of_work():
+            repo = EtlJobRepository()
+            doc_id = two_tenants_with_content["doc_a"]
+            repo.start(doc_id=doc_id, doc_version=1, stage="extract")
+            job = repo.start(doc_id=doc_id, doc_version=1, stage="extract")
+
+        assert job.attempt == 2, "重跑同一個階段要累計，否則重試上限永遠達不到"
+
+    def test_a_concurrent_start_is_not_lost(
+        self, two_tenants_with_content: dict[str, uuid.UUID]
+    ) -> None:
+        """併發的兩次 `start()` 必須各算一次。
+
+        ``job.attempt += 1`` 是 read-modify-write：兩個觸發（重試與排程撞在一起——
+        `EtlJob` 的 Meta 自己就舉了這個情境）各自讀到同一個舊值、各自寫回 +1，於是兩次
+        執行只加了一次。症狀是 ``≤3`` 的上限悄悄變成第 4 次，而 job 那一列看起來完全正常。
+
+        這裡把那個交錯**確定性地**重現：在 repository 讀到列之後、寫回之前，讓另一條
+        連線（另一個 worker）先遞增並 COMMIT。``F()`` 的版本在 READ COMMITTED 下會重讀
+        最新的已提交值，於是第二次 `start()` 之後是 3（1 → 另一個 worker 加成 2 → 我們加成 3）；
+        read-modify-write 則會拿手上的舊值寫回 2，另一個 worker 的那一次就這樣不見了。
+        """
+        doc_id = two_tenants_with_content["doc_a"]
+
+        def _bump_on_another_connection(job_id: uuid.UUID) -> None:
+            with connections["admin"].cursor() as cursor:
+                # owner 也受 policy 管（FORCE RLS），所以這條連線同樣要有租戶參數。
+                cursor.execute("SELECT set_config('app.tenant_id', %s, false)", [str(TENANT_A)])
+                try:
+                    cursor.execute(
+                        "UPDATE knowledge_etljob SET attempt = attempt + 1 WHERE id = %s",
+                        [str(job_id)],
+                    )
+                finally:
+                    cursor.execute("SELECT set_config('app.tenant_id', '', false)")
+
+        with tenant_context(TENANT_A), unit_of_work():
+            created = EtlJobRepository().start(doc_id=doc_id, doc_version=1, stage="extract")
+
+        assert created.attempt == 1
+
+        original = EtlJob.objects.get_or_create
+
+        def _read_then_let_the_other_worker_win(**kwargs: Any) -> tuple[EtlJob, bool]:
+            job, was_created = original(**kwargs)
+            _bump_on_another_connection(job.id)
+            return job, was_created
+
+        with (
+            mock.patch.object(
+                EtlJob.objects, "get_or_create", side_effect=_read_then_let_the_other_worker_win
+            ),
+            tenant_context(TENANT_A),
+            unit_of_work(),
+        ):
+            job = EtlJobRepository().start(doc_id=doc_id, doc_version=1, stage="extract")
+
+        assert job.attempt == 3, "另一個 worker 的那一次被蓋掉了——attempt 少算 = 重試上限失效"

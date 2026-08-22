@@ -292,6 +292,26 @@ class TestIndexIsActuallyUsable:
 
         assert int(applied) == EF_SEARCH == 80
 
+    def test_searching_outside_a_transaction_fails_loudly(self, tenants: None) -> None:
+        """交易外的 ``SET LOCAL`` 只發一則 WARNING——**設定不生效，查詢照跑**。
+
+        於是 ef_search 悄悄退回 PostgreSQL 的預設值（40），召回率下降而結果依然看起來
+        完全正常。上一條測試證明的是「在交易內時它有生效」，這條釘住的是那個前提本身：
+        呼叫端一旦跑到交易外，要當場失敗而不是安靜地變差。
+        """
+        from repositories.knowledge import EmbeddingRepository
+
+        # 參數不需要對得上真實資料：守門在方法開頭，任何一次交易外的呼叫都到不了查詢。
+        with pytest.raises(RuntimeError, match="交易內"):
+            EmbeddingRepository().search(
+                [0.0],
+                kb_id=uuid.uuid4(),
+                model="mock",
+                embedding_version=1,
+                top_k=5,
+                ef_search=80,
+            )
+
 
 class TestTenantIsolation:
     def test_another_tenants_chunks_never_surface(self, tenants: None) -> None:

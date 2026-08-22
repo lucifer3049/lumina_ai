@@ -76,6 +76,11 @@ GRANT USAGE ON SCHEMA public TO :"app_user";
 
 -- migration 之後才存在的表也要能被應用讀寫。沒有這兩行的話，每加一張表就要
 -- 手動 GRANT 一次，而漏掉的症狀是執行期 permission denied（測試不一定覆蓋到）。
+--
+-- **這是給業務表的一次性設定，不分表**。平台級的表（全域權限字典、登入路由表）
+-- 的寫入權由 `apps/identity/migrations/0012_platform_table_grants.py` 事後收回
+-- ——它們在這支腳本跑的時候還不存在（表由 migration 建立），而 default privileges
+-- 也無法針對個別表例外。
 ALTER DEFAULT PRIVILEGES FOR ROLE :"admin_user" IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_user";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"admin_user" IN SCHEMA public

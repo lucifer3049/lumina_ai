@@ -94,10 +94,16 @@ class TenantRoleFactory(factory.django.DjangoModelFactory[Role]):
 
 
 class PermissionFactory(factory.django.DjangoModelFactory[Permission]):
-    """全域字典表，沒有 tenant_id、不開 RLS（理由見 test_rls_identity.py）。"""
+    """全域字典表，沒有 tenant_id、不開 RLS（理由見 test_rls_identity.py）。
+
+    **走 ``admin`` 連線**：應用角色對這張表只剩 SELECT（0012_platform_table_grants
+    ——正當的寫入者只有 migration）。用它的測試因此要在 `django_db` 標記上列出
+    ``databases=["default", "admin"]``，同 `tests/seed.py` 的補種。
+    """
 
     class Meta:
         model = Permission
+        database = "admin"
 
     id = factory.LazyFunction(uuid.uuid4)
     code = factory.Sequence(lambda n: f"resource{n}:read")

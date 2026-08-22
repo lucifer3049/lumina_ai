@@ -397,9 +397,22 @@ class EmbeddingRepository(TenantScopedRepository[Embedding]):
         過濾條件一個都不能少：租戶（``get_queryset``）、KB、``superseded``、以及
         model + embedding_version。少任何一個，回來的 chunk 都「確實存在且看起來合理」。
         """
+        # ``SET LOCAL`` 在交易外只發一則 WARNING 就沒事了——**設定不生效，查詢照跑**，
+        # 於是 ef_search 悄悄退回 PostgreSQL 的預設值（比 11 §2 定的 80 低），召回率
+        # 下降而結果依然看起來完全正常。唯一的呼叫端目前在 `unit_of_work` 內，這一行
+        # 把那個前提釘住，免得日後有人在交易外呼叫。
+        if not connection.in_atomic_block:
+            raise RuntimeError("EmbeddingRepository.search 必須在交易內呼叫（SET LOCAL 的前提）")
+
         with connection.cursor() as cursor:
             # 參數化而非字面值：ef_search 目前是常數，但它遲早會變成 KB 可覆寫的設定
             # （06 §3.1 的「KB 可覆寫」），而那時這裡就是使用者輸入的落點。
+            #
+            # `core/uow.py` 說「``SET`` 不吃查詢參數」而這裡用了 `%s`，兩處看似矛盾：
+            # 差別在**誰做替換**。PostgreSQL 的 `SET` 語法確實不接受 bind parameter，
+            # 但 Django 的 psycopg3 後端預設用 ``ClientCursor``（``OPTIONS`` 沒開
+            # ``server_side_binding``），`%s` 在送出前就已經被替換成字面值，PostgreSQL
+            # 收到的是完整的一句 SQL。`int()` 是那個替換的安全前提，不是型別潔癖。
             cursor.execute("SET LOCAL hnsw.ef_search = %s", [int(ef_search)])
 
         distance = CosineDistance("vector", HalfVector(list(query_vector)))
@@ -488,6 +501,11 @@ class EtlJobRepository(TenantScopedRepository[EtlJob]):
         ``get_or_create`` 走 DB 的唯一約束（08 §6 的冪等鍵）而不是「先查再建」：
         併發觸發（使用者連點兩次、重試與排程同時進來）時，先查再建的兩邊都會查到
         「不存在」，於是各自建一筆——而那兩個 job 會同時處理同一份文件。
+
+        ``attempt`` 用 ``F()`` 而非讀出來加一再存回去（同
+        `repositories/identity.py` 的 `bump_token_version`）：後者在上面那個併發情境下
+        會互相覆蓋，兩次執行只加了一次。而這個欄位是 08 §6「重試 ≤3」的依據——少算
+        一次就是多跑一次，而多跑的那一次沒有任何症狀，只是重試上限悄悄變成 4。
         """
         job, _ = EtlJob.objects.get_or_create(
             tenant_id=get_current_tenant_id(operation="EtlJobRepository.start"),
@@ -495,11 +513,17 @@ class EtlJobRepository(TenantScopedRepository[EtlJob]):
             doc_version=doc_version,
             stage=stage,
         )
-        job.status = "running"
-        job.attempt += 1
-        job.started_at = timezone.now()
-        job.finished_at = None
-        job.save(update_fields=["status", "attempt", "started_at", "finished_at", "updated_at"])
+        now = timezone.now()
+        # `updated_at` 顯式寫入：``.update()`` 不會觸發 ``auto_now``（那是 `save()` 的
+        # 行為），少了它「這個 job 最後被動過的時間」會停在建立的當下。
+        self.get_queryset().filter(id=job.id).update(
+            status="running",
+            attempt=models.F("attempt") + 1,
+            started_at=now,
+            finished_at=None,
+            updated_at=now,
+        )
+        job.refresh_from_db()
         return job
 
     def finish(
