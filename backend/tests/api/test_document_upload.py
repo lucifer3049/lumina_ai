@@ -28,6 +28,7 @@ from api.main import create_app
 from common.passwords import hash_password
 from core.db import run_orm
 from core.redis import get_redis, tenant_key
+from core.tenant import tenant_context
 from tests.conftest import TENANT_A
 from tests.factories.identity import make_tenant, make_user, make_user_role, tenant_scope
 from tests.factories.knowledge import make_knowledge_base
@@ -109,8 +110,11 @@ def stored_objects() -> Iterator[set[str]]:
 
     before = _tenant_object_keys()
     yield before
+    # `tenant_context`：刪除會比對 key 的租戶前綴（鐵則 4 在 core/object_storage.py 的
+    # 實施點），沒有 context 就 raise。掃描用的 `list_keys` 是刻意豁免的那一個。
     for key in _tenant_object_keys() - before:
-        delete_object(key)
+        with tenant_context(TENANT_A):
+            delete_object(key)
 
 
 async def _token(client: httpx.AsyncClient) -> str:

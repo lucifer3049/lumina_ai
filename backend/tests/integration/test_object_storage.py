@@ -3,14 +3,18 @@
 與 `test_infra_object_storage.py` 的分工：那一檔驗**基礎設施本身**（bucket 存在、
 版本化開啟、匿名讀取被拒、應用憑證不是 root）；本檔驗**我們寫的那層 client** 的行為。
 
-三件事非驗不可：
+四件事非驗不可：
 
 1. **key 一律帶租戶前綴**（鐵則 4 在物件儲存這一側的實施點）。前綴若留給呼叫端自己
    記得加，遲早有人漏掉——而漏掉的後果是兩個租戶的檔案混在同一個 prefix 底下，
    日後任何「以 prefix 掃描」的清理或匯出都會跨租戶。
-2. **timeout 一定要設**（11 §4.1：MinIO 30s）。沒有 timeout 時 MinIO 卡住會慢慢佔滿
+2. **前綴是真的被擋，不是靠約定**（`TestPrefixEnforcement`）。只有 `build_document_key`
+   會加前綴，而它是「請呼叫端自願使用」的函式；讀寫三兄弟若接受任意 key，任何一個
+   自己組 key 的呼叫端、或一個被寫壞的 ``documents.storage_key``，就能讀寫別的租戶的
+   物件——無例外、無 log。物件 key 會持久化在 DB 裡，這一點比 Redis 那側更要緊。
+3. **timeout 一定要設**（11 §4.1：MinIO 30s）。沒有 timeout 時 MinIO 卡住會慢慢佔滿
    threadpool，症狀是「整個網站變慢」而不是「物件儲存有問題」。
-3. **刪除是冪等的**：清理流程會重跑，刪一個已經不存在的 key 不該炸。
+4. **刪除是冪等的**：清理流程會重跑，刪一個已經不存在的 key 不該炸。
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ import uuid
 
 import pytest
 
-from core.exceptions import TenantContextMissingError
+from core.exceptions import CrossTenantObjectKeyError, TenantContextMissingError
 from core.object_storage import build_document_key, delete_object, get_object, put_object
 from core.tenant import tenant_context
 from tests.conftest import TENANT_A, TENANT_B
@@ -63,23 +67,27 @@ class TestKeyNaming:
 
 
 class TestRoundTrip:
+    """讀寫都在 `tenant_context` 內——這一層的每個操作都要有租戶可比（見下一個 class）。"""
+
     @pytest.fixture
     def key(self) -> str:
         with tenant_context(TENANT_A):
             return build_document_key(kb_id=uuid.uuid4(), document_id=uuid.uuid4())
 
     def test_put_then_get_returns_the_same_bytes(self, key: str) -> None:
-        try:
-            put_object(key, CONTENT, content_type="application/pdf")
-            assert get_object(key) == CONTENT
-        finally:
-            delete_object(key)
+        with tenant_context(TENANT_A):
+            try:
+                put_object(key, CONTENT, content_type="application/pdf")
+                assert get_object(key) == CONTENT
+            finally:
+                delete_object(key)
 
     def test_delete_is_idempotent(self, key: str) -> None:
         """刪一個不存在的 key 不該炸——清理流程會重跑（08 §6 的冪等原則）。"""
-        put_object(key, CONTENT, content_type="application/pdf")
-        delete_object(key)
-        delete_object(key)  # 第二次不得 raise
+        with tenant_context(TENANT_A):
+            put_object(key, CONTENT, content_type="application/pdf")
+            delete_object(key)
+            delete_object(key)  # 第二次不得 raise
 
     def test_get_missing_key_raises_a_domain_error(self, key: str) -> None:
         """讀不存在的物件要是我們自己的例外，不是 botocore 的 ClientError。
@@ -89,8 +97,75 @@ class TestRoundTrip:
         """
         from core.exceptions import ObjectNotFoundError
 
-        with pytest.raises(ObjectNotFoundError):
+        with tenant_context(TENANT_A), pytest.raises(ObjectNotFoundError):
             get_object(key)
+
+
+class TestPrefixEnforcement:
+    """讀寫三兄弟自己擋跨租戶的 key，不倚賴呼叫端有沒有用 `build_document_key`。
+
+    這一組測試的存在理由是「防線不能建立在自願上」：模組 docstring 宣稱租戶前綴強制
+    在這一層，而在這些測試之前，那句話只是口號——`put_object` 之類接受任意字串。
+    """
+
+    @pytest.fixture
+    def foreign_key(self) -> str:
+        """另一個租戶的合法 key——正是「storage_key 被寫壞」時會拿到的東西。"""
+        with tenant_context(TENANT_B):
+            return build_document_key(kb_id=uuid.uuid4(), document_id=uuid.uuid4())
+
+    def test_put_rejects_another_tenants_key(self, foreign_key: str) -> None:
+        with tenant_context(TENANT_A), pytest.raises(CrossTenantObjectKeyError):
+            put_object(foreign_key, CONTENT, content_type="application/pdf")
+
+    def test_get_rejects_another_tenants_key(self, foreign_key: str) -> None:
+        with tenant_context(TENANT_A), pytest.raises(CrossTenantObjectKeyError):
+            get_object(foreign_key)
+
+    def test_delete_rejects_another_tenants_key(self, foreign_key: str) -> None:
+        """刪除**不是**冪等的藉口：刪掉別人的物件與刪掉不存在的物件差別無限大。"""
+        with tenant_context(TENANT_A), pytest.raises(CrossTenantObjectKeyError):
+            delete_object(foreign_key)
+
+    def test_a_key_without_any_prefix_is_rejected(self) -> None:
+        """自己組的 key（漏了前綴）會落在 bucket 根目錄——不屬於任何租戶。"""
+        with tenant_context(TENANT_A), pytest.raises(CrossTenantObjectKeyError):
+            put_object("orphan.pdf", CONTENT, content_type="application/pdf")
+
+    def test_prefix_match_is_not_merely_startswith_on_the_uuid(self) -> None:
+        """前綴比對必須含尾端的 ``/``。
+
+        少了它，``tenant-{A}extra/...`` 會通過 ``tenant-{A}`` 的比對。UUID 沒有規定
+        誰不能是誰的前綴，而這種洞不會有症狀——直到有人真的撞上為止。
+        """
+        with tenant_context(TENANT_A), pytest.raises(CrossTenantObjectKeyError):
+            get_object(f"tenant-{TENANT_A}evil/kb/x/y")
+
+    def test_no_tenant_context_is_a_hard_stop(self) -> None:
+        """缺 context 時「比不了就放行」是最糟的選項（Fail Fast，鐵則 4）。"""
+        with tenant_context(TENANT_A):
+            key = build_document_key(kb_id=uuid.uuid4(), document_id=uuid.uuid4())
+
+        with pytest.raises(TenantContextMissingError):
+            get_object(key)
+
+    def test_list_keys_is_the_documented_exemption(self) -> None:
+        """`list_keys` 刻意不擋：維運與測試要看得見不屬於當前租戶的 key。
+
+        釘住這個豁免是為了讓它保持是「有意的例外」而不是「漏掉的那一個」——把它也
+        擋掉的話，`tests/api/test_document_upload.py` 的孤兒物件檢查就無從寫起。
+        """
+        from core.object_storage import list_keys
+
+        with tenant_context(TENANT_B):
+            foreign = build_document_key(kb_id=uuid.uuid4(), document_id=uuid.uuid4())
+            put_object(foreign, CONTENT, content_type="application/pdf")
+        try:
+            with tenant_context(TENANT_A):
+                assert foreign in list_keys(f"tenant-{TENANT_B}/")
+        finally:
+            with tenant_context(TENANT_B):
+                delete_object(foreign)
 
 
 def test_client_has_timeouts_configured() -> None:

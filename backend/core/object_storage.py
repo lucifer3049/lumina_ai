@@ -5,6 +5,15 @@ key 一律 ``tenant-{tenant_id}/kb/{kb_id}/{doc_id}``；前綴若留給呼叫端
 遲早有人漏掉，而漏掉的後果是兩個租戶的檔案落在同一個 prefix 底下——日後任何
 「以 prefix 掃描」的清理、匯出、配額計算都會跨租戶，而且沒有任何錯誤訊息。
 
+**「強制」是真的擋，不是靠約定**：:func:`put_object` / :func:`get_object` /
+:func:`delete_object` 每一次都比對 key 的前綴與當前 TenantContext，不符即 raise
+（:class:`~core.exceptions.CrossTenantObjectKeyError`）。只提供 :func:`build_document_key`
+是不夠的——它是「請呼叫端自願使用」的函式，而防線不能建立在自願上：任何一個
+自己組 key 的呼叫端、或一個被寫壞的 ``documents.storage_key``，都能讀寫別的租戶的
+物件。這一點比 Redis 那側更要緊，因為 Redis 的 key 每次現組，物件 key 卻會**持久化
+在 DB 裡**——寫壞一次就一直錯下去。唯一豁免的是 :func:`list_keys`（測試／維運通道，
+理由見該函式）。
+
 **走 S3 API（boto3）而不是 minio SDK**：11 §4.2 的演進路徑是「MinIO → 雲物件儲存
 （S3 相容，零程式改動）」，用 S3 client 那條路才真的走得通。
 
@@ -28,7 +37,7 @@ import botocore.config
 import botocore.exceptions
 
 from config.settings.app_settings import get_app_settings
-from core.exceptions import ObjectNotFoundError
+from core.exceptions import CrossTenantObjectKeyError, ObjectNotFoundError
 from core.tenant import get_current_tenant_id
 
 
@@ -72,17 +81,43 @@ def warm_up() -> None:
     get_s3_client()
 
 
+def _tenant_prefix(*, operation: str) -> str:
+    """當前租戶的 key 前綴（``tenant-{tenant_id}/``）。
+
+    缺 TenantContext 一律 raise（Fail Fast）：沒有租戶就沒有前綴可比，而「比不了
+    就放行」正是這一層要消滅的東西。
+    """
+    return f"tenant-{get_current_tenant_id(operation=operation)}/"
+
+
+def _require_own_key(key: str, *, operation: str) -> None:
+    """key 必須屬於當前租戶，否則 raise。
+
+    **每一次讀寫都比對，不是只在組 key 的時候**：key 會被存進 ``documents.storage_key``
+    再拿回來用，而中間隔著一次 DB 往返、一次 Celery 任務參數、以及未來任何一個
+    自己拼 key 的呼叫端。前綴只在組的時候正確，等於防線只擋得住從沒出過錯的路徑。
+
+    比對用 ``startswith`` 而非相等：同一個租戶底下還有 kb／版本／中間產物等層級
+    （見 `services/knowledge/ingestion.py` 的 cleaned.json）。前綴尾端的 ``/`` 不能
+    省——少了它，``tenant-1...`` 會通過 ``tenant-1`` 開頭的比對，而 UUID 沒有規定
+    誰不能是誰的前綴。
+    """
+    prefix = _tenant_prefix(operation=operation)
+    if not key.startswith(prefix):
+        raise CrossTenantObjectKeyError(operation=operation, expected_prefix=prefix)
+
+
 def build_document_key(*, kb_id: uuid.UUID, document_id: uuid.UUID) -> str:
     """組出文件的 object key。
 
     缺 TenantContext 一律 raise（Fail Fast）：回一個沒有前綴的 key 會讓檔案落在
     bucket 根目錄——不屬於任何租戶、不會被任何清理流程掃到，而且完全沒有錯誤。
     """
-    tenant_id = get_current_tenant_id(operation="build_document_key")
-    return f"tenant-{tenant_id}/kb/{kb_id}/{document_id}"
+    return f"{_tenant_prefix(operation='build_document_key')}kb/{kb_id}/{document_id}"
 
 
 def put_object(key: str, content: bytes, *, content_type: str) -> None:
+    _require_own_key(key, operation="put_object")
     get_s3_client().put_object(
         Bucket=get_app_settings().s3_bucket,
         Key=key,
@@ -98,6 +133,7 @@ def get_object(key: str) -> bytes:
     `api/main.py` 的兜底 handler 變成 500，而它的訊息帶著 bucket 名稱與端點
     ——那是內部拓撲（鐵則 9）。
     """
+    _require_own_key(key, operation="get_object")
     try:
         response = get_s3_client().get_object(Bucket=get_app_settings().s3_bucket, Key=key)
     except botocore.exceptions.ClientError as exc:
@@ -114,6 +150,7 @@ def delete_object(key: str) -> None:
     S3 的 DeleteObject 本身對不存在的 key 就回成功，這裡不另外檢查：清理流程會重跑
     （08 §6 的冪等原則），而「先查再刪」除了多一次往返之外，中間還有競態。
     """
+    _require_own_key(key, operation="delete_object")
     get_s3_client().delete_object(Bucket=get_app_settings().s3_bucket, Key=key)
 
 
@@ -124,6 +161,11 @@ def list_keys(prefix: str = "") -> list[str]:
     成本隨物件數成長，而應用需要的資訊（某個租戶有哪些文件）在 DB 裡查得更快也
     更準（DB 才有軟刪除與狀態）。留在這一層而不是讓測試自己建 client，是為了不讓
     連線設定（endpoint、憑證、timeout）出現第二份。
+
+    **這是唯一豁免租戶前綴檢查的函式**（其餘三個一律比對，見 `_require_own_key`）：
+    它的用途本來就是「跨租戶看整個 bucket」——維運要確認孤兒物件、測試要確認某個
+    租戶的前綴底下真的沒有別人的東西，而那兩件事都必須看得見不屬於當前租戶的 key。
+    正式路徑沒有它的呼叫點，所以豁免不會變成繞道。
     """
     paginator = get_s3_client().get_paginator("list_objects_v2")
     keys: list[str] = []

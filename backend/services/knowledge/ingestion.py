@@ -27,6 +27,7 @@ from typing import Any
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
 from core.exceptions import (
+    CrossTenantObjectKeyError,
     DomainError,
     ExtractionFailedError,
     NotFoundError,
@@ -243,8 +244,16 @@ class IngestionService:
             return None
 
         try:
-            payload = get_object(self._artifact_key(target))
+            # 物件儲存會拿當前租戶比對 key 前綴（鐵則 4），所以讀取也要在 context 內。
+            # 放在上面那個 `with` 裡也可以，但那會把一次網路往返關進交易——中間產物
+            # 有幾 MB，交易開著等它讀完就是白白佔住一條連線。
+            with tenant_context(tenant_id):
+                payload = get_object(self._artifact_key(target))
             return from_json(payload), stats
+        except CrossTenantObjectKeyError:
+            # **前綴不符不是「產物不在」**：那是 `storage_key` 壞了，而重跑 extract 會
+            # 拿同一個壞 key 去讀原始檔。讓它冒出去，別偽裝成一次無害的續跑失敗。
+            raise
         except (DomainError, OSError):
             logger.info(
                 "ingestion_artifact_unavailable_rerunning",
@@ -257,7 +266,8 @@ class IngestionService:
     def _extract_stage(self, tenant_id: uuid.UUID, target: _Target) -> ExtractedDoc:
         job_id = self._begin(tenant_id, target, STAGE_EXTRACT)
         try:
-            content = get_object(target.storage_key)
+            with tenant_context(tenant_id):
+                content = get_object(target.storage_key)
             # 解析跑在子行程裡：畸形檔的 OOM 與無限迴圈不是 try/except 接得住的，
             # 而 worker 掛掉會停掉那台機器上所有租戶的 ETL（08 §6）。
             document = extract_isolated(content, media_type=target.media_type)
@@ -291,11 +301,12 @@ class IngestionService:
             }
             # 中間產物先落地再標成功：反過來的話，下一次重跑會相信一個不存在的產物，
             # 而 `_resume_cleaned` 的讀取失敗雖然接得住，那條路徑不該是常態。
-            put_object(
-                self._artifact_key(target),
-                to_json(cleaned).encode("utf-8"),
-                content_type="application/json",
-            )
+            with tenant_context(tenant_id):
+                put_object(
+                    self._artifact_key(target),
+                    to_json(cleaned).encode("utf-8"),
+                    content_type="application/json",
+                )
         except Exception as exc:
             self._fail_job(tenant_id, job_id, exc)
             raise

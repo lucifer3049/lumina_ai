@@ -129,3 +129,46 @@ def test_app_settings_fail_fast_when_secret_missing(monkeypatch: pytest.MonkeyPa
     # `_env_file=None`：斷開 .env，否則測試會讀到開發用的真值而永遠不失敗。
     with pytest.raises(ValidationError):
         AppSettings(_env_file=None)  # type: ignore[call-arg]
+
+
+class TestSmtpCredentials:
+    """`smtp_password` 是檔頭規則 1（憑證沒有預設值）唯一的例外，這裡釘住它的邊界。
+
+    匿名中繼是合法設定（開發的 Mailpit、內網 MTA），所以不能一律必填；但「有帳號、
+    沒密碼」永遠是漏帶——空密碼登入會被伺服器以 535 拒絕，症狀是每一封通知信都進
+    DLQ，而 DLQ 只說認證失敗，不會說密碼是空的。
+    """
+
+    @staticmethod
+    def _build(monkeypatch: pytest.MonkeyPatch, **env: str) -> AppSettings:
+        """從環境變數建一份設定（`_env_file=None` 斷開 .env，否則會讀到開發真值）。
+
+        走 `setenv` 而不是建構子參數：這條規則要擋的正是「環境變數漏帶」，用參數
+        直接塞值等於繞過被測的那條路。
+        """
+        for key in list(os.environ):
+            if key.startswith("SMTP_"):
+                monkeypatch.delenv(key, raising=False)
+        required = {"REDIS_PASSWORD": "pw", "S3_ACCESS_KEY": "ak", "S3_SECRET_KEY": "sk"}
+        for key, value in (required | env).items():
+            monkeypatch.setenv(key, value)
+        return AppSettings(_env_file=None)  # type: ignore[call-arg]
+
+    def test_username_without_password_is_rejected_in_production(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with pytest.raises(ValidationError, match="SMTP_PASSWORD"):
+            self._build(monkeypatch, ENVIRONMENT="production", SMTP_USERNAME="mailer")
+
+    def test_anonymous_relay_stays_legal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """完全沒有帳密是明確的選擇（Mailpit、內網 MTA），不是漏帶。"""
+        settings = self._build(monkeypatch, ENVIRONMENT="production")
+
+        assert settings.smtp_password.get_secret_value() == ""
+
+    def test_development_is_not_blocked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """開發與 CI 用無認證的 Mailpit；在那裡炸掉只會逼人在 .env 塞假值，
+        而假值會蓋掉這條檢查真正想擋的東西（同 `refresh_cookie_secure` 的分界）。"""
+        settings = self._build(monkeypatch, ENVIRONMENT="development", SMTP_USERNAME="mailer")
+
+        assert settings.smtp_username == "mailer"

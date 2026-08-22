@@ -354,6 +354,27 @@ class CrossTenantTransactionError(DomainError):
         )
 
 
+class CrossTenantObjectKeyError(DomainError):
+    """→ 500 + P1 告警。
+
+    物件 key 的租戶前綴與當前 TenantContext 不符（core/object_storage.py）。與
+    :class:`CrossTenantTransactionError` 同一類：這是程式錯誤，不是使用者錯誤——
+    要嘛有人自己組了 key 而忘了前綴，要嘛 ``documents.storage_key`` 被寫壞了。
+    兩者都不該安靜地讀寫成功：物件 key 會持久化在 DB 裡，錯一次就一直錯下去。
+
+    **訊息只帶前綴、不帶完整 key**：完整 key 含另一個租戶的 id 與文件 id，那是
+    跨租戶的資訊，不該落進這個租戶的 log 與錯誤鏈（鐵則 9）。
+    """
+
+    code = ErrorCode.INTERNAL_ERROR
+
+    def __init__(self, *, operation: str, expected_prefix: str) -> None:
+        super().__init__(
+            f"物件 key 的租戶前綴不符，拒絕{operation}（本租戶前綴：{expected_prefix}）",
+            details={"operation": operation, "expected_prefix": expected_prefix},
+        )
+
+
 class ResumeExpiredError(DomainError):
     """SSE 的續傳緩衝區已過期（09 §3.2、附錄 A：409）。
 

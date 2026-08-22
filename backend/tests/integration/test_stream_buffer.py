@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from redis.exceptions import ResponseError
 
 from core.streams import BUFFER_TTL_SECONDS, StreamBuffer
 from tests.conftest import TENANT_A, TENANT_B
@@ -146,6 +147,52 @@ class TestExpiry:
         await buffer.append("delta", {"text": "a"})
 
         assert 0 < await buffer.ttl_seconds() <= BUFFER_TTL_SECONDS
+
+
+class TestRegeneration:
+    """同一個 message_id 被寫第二輪時會發生什麼——一條**守門**測試，不是功能測試。
+
+    `seq` 由寫入端自己數（省掉每個 token 一次的 round trip），代價是新的 instance
+    一律從 1 開始，而 Redis 的 entry id 必須嚴格遞增。目前寫入端唯一，所以撞不到；
+    未來加上「失敗重跑」就會踩到，而錯誤訊息（``equal or smaller than the target
+    stream top item``）完全不指向 `StreamBuffer`。這兩條測試把地雷寫成可執行的說明：
+    重跑之前必須先 `drop()`。
+    """
+
+    async def test_rewriting_without_dropping_is_rejected_by_redis(self) -> None:
+        message_id = uuid.uuid4()
+        first = StreamBuffer(tenant_id=TENANT_A, message_id=message_id)
+        await first.append("delta", {"text": "第一輪"})
+
+        second = StreamBuffer(tenant_id=TENANT_A, message_id=message_id)
+
+        with pytest.raises(ResponseError) as raised:
+            await second.append("delta", {"text": "第二輪"})
+
+        # Redis 說的是「The ID specified in XADD is equal or smaller than the target
+        # stream top item」，但 `append` 走 pipeline，而 redis-py 6.4.0 的
+        # `Pipeline.annotate_exception` 少寫一個 f 前綴（asyncio/client.py:1530），
+        # 於是原因整段被替換成字面上的 ``{exception.args}``。**實際看到的錯誤訊息連
+        # 「編號撞了」都不會說**——比原本預期的還糟，這正是這條測試存在的理由。
+        # 不斷言那句英文：redis-py 修掉那個 bug 之後訊息會變，而變了不代表這裡壞了。
+        assert "XADD" in str(raised.value)
+
+        await first.drop()
+
+    async def test_dropping_first_makes_the_rerun_clean(self) -> None:
+        """正確的重跑姿勢：先清掉，編號才回得到 1。"""
+        message_id = uuid.uuid4()
+        first = StreamBuffer(tenant_id=TENANT_A, message_id=message_id)
+        await first.append("delta", {"text": "第一輪"})
+        await first.drop()
+
+        second = StreamBuffer(tenant_id=TENANT_A, message_id=message_id)
+        event = await second.append("delta", {"text": "第二輪"})
+
+        assert event.seq == 1
+        assert [e.data["text"] for e in await second.history()] == ["第二輪"]
+
+        await second.drop()
 
 
 class TestCleanup:

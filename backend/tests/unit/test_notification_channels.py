@@ -210,6 +210,26 @@ class TestMailer:
         message = smtp.instances[0].sent[0][2]
         assert "法規手冊.pdf 解析失敗" in _decoded_subject(message)
 
+    def test_a_filename_with_a_newline_does_not_kill_the_delivery(
+        self, smtp: type[_FakeSMTP]
+    ) -> None:
+        """標題含檔名（2A-5），而檔名是使用者可控的。
+
+        `EmailMessage` 對含 CR／LF 的 header 值會拋 ``ValueError: Header values may
+        not contain linefeed or carriage return characters``（Python 已經擋掉 header
+        injection，這點是好消息）。但那個例外會讓這則通知的 email 派送**每次都失敗**、
+        重試耗盡後進 DLQ，而錯誤訊息半個字都不提檔名——沒有人查得出上傳一個帶換行的
+        檔名可以讓通知消失。
+        """
+        from core.mailer import send_email
+
+        send_email(to=["a@example.com"], subject="報告\r\n.pdf 解析失敗", body="內文")
+
+        subject = _decoded_subject(smtp.instances[0].sent[0][2])
+        assert "\n" not in subject
+        assert "\r" not in subject
+        assert "報告" in subject and ".pdf 解析失敗" in subject
+
 
 def _decoded_body(message: str) -> str:
     from email import message_from_string

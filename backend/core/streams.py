@@ -49,6 +49,15 @@ class StreamBuffer:
     **一個 message_id 一個 buffer**，而寫入端只有一個（產生那則訊息的那個 task）。
     `seq` 因此可以由寫入端自己數，不必每次去問 Redis——那是每個 token 一次額外的
     round trip，而 token 是以百計的。
+
+    **代價：同一個 message_id 不能被寫第二輪。** 新的 instance 一律從 1 開始數，而
+    Redis 的 entry id 必須嚴格遞增——舊的事件還在（TTL 5 分鐘）的話，第二輪的第一個
+    `XADD id=1-0` 會被拒。而**看到的錯誤訊息連原因都不會說**：`append` 走 pipeline，
+    redis-py 6.4.0 的 `Pipeline.annotate_exception` 少一個 f 前綴，Redis 原本那句
+    「equal or smaller than the target stream top item」會被替換成字面上的
+    ``{exception.args}``。目前寫入端唯一（一則訊息生成一次），所以不會發生；
+    **未來要加「失敗重跑」的話，重跑前必須先 `drop()`**——由
+    tests/integration/test_stream_buffer.py 的 `TestRegeneration` 守著。
     """
 
     def __init__(self, *, tenant_id: uuid.UUID, message_id: uuid.UUID) -> None:
@@ -85,7 +94,10 @@ class StreamBuffer:
         **逾時回空清單而不是例外**：讀取端要靠這個空回合送心跳（09 §3.2 的 15 秒），
         而「沒有新事件」是串流最正常的狀態——LLM 正在想下一個 token。
         """
-        client = get_async_redis()
+        # **唯一用阻塞 client 的地方**（`blocking=True` = 沒有 socket_timeout）：這條
+        # 指令本來就要等，逾時由 `block_ms` 決定。其餘指令一律走有逾時的那一個，
+        # 否則 Redis 半死不活時它們會無限期掛在 event loop 上（見 core/redis.py）。
+        client = get_async_redis(blocking=True)
         result = await client.xread({self.key: f"{after}-0"}, block=block_ms)
         if not result:
             return []

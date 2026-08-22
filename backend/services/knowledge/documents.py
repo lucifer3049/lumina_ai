@@ -139,7 +139,10 @@ class DocumentService:
                 raise ConflictError("這份文件已經在這個知識庫裡")
             storage_key = build_document_key(kb_id=kb_id, document_id=document_id)
 
-        put_object(storage_key, content, content_type=media_type)
+        # `tenant_context` 不只是為了 DB：物件儲存那一層現在會拿當前租戶去比對 key 的
+        # 前綴（鐵則 4 的實施點），沒有 context 就直接 raise。
+        with tenant_context(tenant_id):
+            put_object(storage_key, content, content_type=media_type)
 
         try:
             with tenant_context(tenant_id), unit_of_work():
@@ -157,7 +160,7 @@ class DocumentService:
                     uploaded_by=uploaded_by,
                 )
         except Exception as exc:
-            self._discard(storage_key)
+            self._discard(tenant_id, storage_key)
             if isinstance(exc, IntegrityError):
                 # 上面的重複檢查與這裡之間有競態：兩個併發請求送同一份內容時，
                 # 兩邊都會通過檢查，而唯一約束只會讓其中一個成功。對使用者來說
@@ -174,7 +177,7 @@ class DocumentService:
         audit.describe(resource_id=document.id, after={"filename": filename})
         return self._view(document)
 
-    def _discard(self, storage_key: str) -> None:
+    def _discard(self, tenant_id: uuid.UUID, storage_key: str) -> None:
         """回收剛上傳的物件；失敗只記 log。
 
         不讓回收的錯誤覆蓋原本的錯誤：使用者要看到的是「上傳失敗」，不是「刪除
@@ -182,7 +185,8 @@ class DocumentService:
         流程處理。
         """
         try:
-            delete_object(storage_key)
+            with tenant_context(tenant_id):
+                delete_object(storage_key)
         except Exception:
             logger.warning("orphan_object_left_behind", storage_key=storage_key, exc_info=True)
 

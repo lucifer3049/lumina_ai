@@ -49,14 +49,16 @@ def get_redis() -> Redis:
     )
 
 
-# 一個 event loop 一個 client（見 `get_async_redis`）。**弱參考鍵**：loop 結束後這一
-# 筆要能被回收，否則測試每跑一條就留下一個永遠不會再用的連線池。
-_async_clients: weakref.WeakKeyDictionary[AbstractEventLoop, AsyncRedis] = (
+# 一個 event loop 一個 client（見 `get_async_redis`），而且**阻塞與非阻塞各一個**
+# ——兩者的 `socket_timeout` 必須不同，理由見 `get_async_redis`。鍵是
+# `(loop, blocking)`。**弱參考鍵**：loop 結束後這一筆要能被回收，否則測試每跑一條
+# 就留下一個永遠不會再用的連線池。
+_async_clients: weakref.WeakKeyDictionary[AbstractEventLoop, dict[bool, AsyncRedis]] = (
     weakref.WeakKeyDictionary()
 )
 
 
-def get_async_redis() -> AsyncRedis:
+def get_async_redis(*, blocking: bool = False) -> AsyncRedis:
     """SSE 串流專用的非同步 client（1D-4a）。**其他地方一律用 `get_redis()`。**
 
     **不是模組層單例，而是「每個 event loop 一個」**：`redis.asyncio` 的連線與
@@ -64,20 +66,33 @@ def get_async_redis() -> AsyncRedis:
     ``got Future attached to a different loop``。正式環境只有一個 loop，所以這與
     單例等價；但測試每一條都跑在自己的 loop 上，單例會在第二條測試就炸——而那個
     錯誤訊息完全不會指向這裡。
+
+    **`blocking` 決定有沒有 `socket_timeout`，而預設是「有」**：
+
+    - ``blocking=True`` 只給 ``XREAD BLOCK`` 用。那條指令的用途就是「沒有事件時就
+      等著」，設了逾時等於把它該做的事當成故障中斷；逾時改由 ``block_ms`` 在每次
+      呼叫上決定（core/streams.py 的 `StreamBuffer.follow`）。
+    - 其餘指令（XADD／XRANGE／EXISTS／SET／TTL／DEL）都是幾毫秒該回來的東西，
+      一律走有逾時的那一個。少了它，Redis 半死不活時這些呼叫會**無限期**掛在
+      event loop 上的 SSE coroutine 裡——症狀是「所有串流都卡住不吐字」，而那不會
+      指向 Redis（CLAUDE.md：所有對外呼叫必有 timeout）。
+
+    分成兩個 client 而不是在呼叫端包 `asyncio.timeout`：逾時由 redis-py 自己偵測時，
+    它知道要把那條連線丟掉；從外面取消一個進行到一半的指令，連線上還留著沒讀完的
+    回應，下一個借到它的呼叫會拿到別人的答案。
     """
     loop = get_running_loop()
-    client = _async_clients.get(loop)
+    per_loop = _async_clients.setdefault(loop, {})
+    client = per_loop.get(blocking)
     if client is None:
         settings = get_app_settings()
         client = AsyncRedis.from_url(
             settings.redis_url.get_secret_value(),
-            # **不設 socket_timeout**：這個 client 的用途是 `XREAD BLOCK`，也就是
-            # 「沒有事件時就等著」。設了逾時的話，等待本身會被當成故障中斷——而
-            # 那正是它該做的事。逾時由 `block_ms` 在每次呼叫上決定（core/streams.py）。
+            socket_timeout=None if blocking else settings.redis_timeout_seconds,
             socket_connect_timeout=settings.redis_timeout_seconds,
             decode_responses=True,
         )
-        _async_clients[loop] = client
+        per_loop[blocking] = client
     return client
 
 

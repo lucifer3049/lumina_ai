@@ -7,7 +7,9 @@ Django settings 只管 ORM/Migration（見 base.py）；Redis、物件儲存這�
 三條規則寫死在型別裡，不靠人記得：
 
 1. **憑證沒有預設值**（`SecretStr` 且必填）：缺就在建構期炸掉。有預設值的密碼
-   最危險——設定漏帶時程式照跑，只是連到別的地方。
+   最危險——設定漏帶時程式照跑，只是連到別的地方。**唯一的例外是 `smtp_password`**
+   （匿名中繼是合法設定），而例外的邊界由 `_reject_half_configured_smtp_auth`
+   守住——理由寫在那兩處，別再開第二個。
 2. **憑證用 `SecretStr`**：`repr()` 與 log 中顯示為 `**********`，
    避免 secrets 隨錯誤訊息或 structlog 事件外流（鐵則 9）。
 3. **連線 URL 由片段組出來**，不另存一份完整 URL：兩份一定會漂，
@@ -24,7 +26,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/config/settings/app_settings.py → repo 根目錄
@@ -222,6 +224,13 @@ class AppSettings(BaseSettings):
     smtp_host: str = "localhost"
     smtp_port: int = 1025
     smtp_username: str = ""
+    # **檔頭規則 1（憑證沒有預設值）的刻意例外**，理由與代價都寫在這裡：
+    # 大量的 SMTP 中繼站根本不做認證（開發環境的 Mailpit、正式環境常見的內網 MTA），
+    # 把它設成必填等於逼每個環境為一個用不到的東西塞一個假值——而假值會讓「這裡到底
+    # 有沒有在認證」變得看不出來。
+    # 例外的邊界由下面的 `_reject_half_configured_smtp_auth` 守著：沒有帳號就是匿名
+    # 中繼（合法），有帳號卻沒有密碼則是**設定漏帶**（規則 1 描述的那種病），要在建構期
+    # 就炸掉，不能讓它在正式環境跑成「每封信都 535 認證失敗」。
     smtp_password: SecretStr = SecretStr("")
     smtp_use_tls: bool = False
     # 所有對外呼叫都要有 timeout。收信端不回應時，沒有它的那條 worker 執行緒會
@@ -234,6 +243,29 @@ class AppSettings(BaseSettings):
     # quota 告警的門檻（百分比，`;` 分隔）。80 是「該注意了」、100 是「已經被擋住」
     # ——兩件不同的事，因此是兩則通知（04 §8.5）。
     notification_quota_thresholds: str = "80;100"
+
+    @model_validator(mode="after")
+    def _reject_half_configured_smtp_auth(self) -> AppSettings:
+        """有 SMTP 帳號就必須有密碼（正式環境）。
+
+        只擋「一半」的設定，不擋「完全沒有」：後者是明確選擇匿名中繼，前者則永遠是
+        漏帶——空密碼登入會被伺服器以 535 拒絕，而症狀是**每一封通知信都進 DLQ**，
+        而 DLQ 裡的錯誤只說認證失敗，不會說密碼是空的。
+
+        限定 production 的理由與 `refresh_cookie_secure` 相同：開發與 CI 用的是無認證
+        的 Mailpit，讓它們為此炸掉只會逼人在 `.env` 裡塞假值，而假值會蓋掉這條檢查
+        真正想擋的東西。`environment` 預設就是 production，漏設環境變數時落在嚴格那邊。
+        """
+        if (
+            self.environment == "production"
+            and self.notification_email_enabled
+            and self.smtp_username
+            and not self.smtp_password.get_secret_value()
+        ):
+            raise ValueError(
+                "SMTP_USERNAME 有值但 SMTP_PASSWORD 是空的——正式環境不接受半套的認證設定"
+            )
+        return self
 
     @property
     def redis_url(self) -> SecretStr:

@@ -29,6 +29,8 @@ def send_email(*, to: list[str], subject: str, body: str) -> None:
 
     收件人為空時直接回：沒有人可以寄不是錯誤（例如租戶裡的 owner 全被停用），
     而 `sendmail` 對空清單的行為是拋例外，那會在 DLQ 留下一筆看起來像故障的紀錄。
+
+    標題先過 `_single_line`：通知標題帶檔名（2A-5），而檔名是使用者可控的。
     """
     if not to:
         return
@@ -39,7 +41,7 @@ def send_email(*, to: list[str], subject: str, body: str) -> None:
     message["To"] = ", ".join(to)
     # `EmailMessage` 會自動對非 ASCII 的標題做 RFC 2047 編碼——直接塞中文而不編碼
     # 的話，收件匣裡看到的是亂碼，而寄信本身完全成功（沒有任何錯誤可查）。
-    message["Subject"] = subject
+    message["Subject"] = _single_line(subject)
     message.set_content(body)
 
     # timeout 一定要給（CLAUDE.md：所有對外呼叫）。收信端不回應時，沒有它的那條
@@ -56,3 +58,18 @@ def send_email(*, to: list[str], subject: str, body: str) -> None:
         smtp.sendmail(settings.notification_email_from, to, message.as_string())
 
     logger.info("notification_email_sent", recipients=len(to))
+
+
+def _single_line(value: str) -> str:
+    r"""把 CR／LF 換成空白——header 只能是一行。
+
+    Python 的 `EmailMessage` 已經擋掉 header injection（含換行的值會拋
+    ``ValueError: Header values may not contain linefeed or carriage return
+    characters``），所以**這不是安全修補**，是可用性修補：通知標題帶檔名（2A-5），
+    而檔名是使用者可控的。一個叫做 ``報告\n.pdf`` 的檔案會讓這則通知的 email
+    派送每次都炸、重試三次後進 DLQ，而錯誤訊息半個字都不提檔名。
+
+    換成空白而不是刪掉：使用者仍認得出那是哪一份檔案。``\r\n`` 會變成兩個空白，
+    那不值得為它多寫一個正規表示式——標題本來就不保證等寬。
+    """
+    return value.replace("\r", " ").replace("\n", " ")
