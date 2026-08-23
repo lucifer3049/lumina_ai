@@ -393,6 +393,20 @@ CAPABILITY ?= embedding
 verify-provider: ## 手動打一次真的 API（PROVIDER= 指定廠商、CAPABILITY=embedding|chat）
 	$(UV_RUN) python scripts/verify_provider.py --provider $(PROVIDER) --capability $(CAPABILITY)
 
+# 離線檢索評測（13 §4 工作包 2B-0）。與 verify-provider 同一條界線：手動執行、打真
+# API、**不准接進 make test / lint / smoke 或 CI**——評測要有意義就得用真的 embedding
+# 模型（mock 的向量沒有語意相似性，量出來是亂數），而那要花錢也會因外部服務中斷而紅。
+# 守門：tests/unit/test_eval_runner.py::TestItStaysOutOfTheAutomatedSuites
+#
+# 前置：評測租戶要先存在（make demo-tenant DEMO_SLUG=$(EVAL_TENANT)）。
+DATASET ?= drcd
+MODE ?= vector
+EVAL_TENANT ?= lumina-eval
+
+eval-retrieval: ## 離線檢索評測（DATASET=drcd|handwritten MODE=vector|hybrid|hybrid+rerank）
+	$(UV_RUN) python scripts/eval_retrieval.py --dataset $(DATASET) --mode $(MODE) \
+		--tenant $(EVAL_TENANT) $(EVAL_ARGS)
+
 # 只挑 test_infra_*.py（-k 會比對 module 名，不用 shell glob——glob 會在 repo 根展開，
 # 而 pytest 的工作目錄是 backend/，路徑對不上）。與 test-integration 的差別在此：
 # 那個目標跑整個 integration 層（含 bridge / tenant scope / db timeout）。
