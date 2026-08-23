@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, replace
 
@@ -37,7 +37,7 @@ from ai.gateway.chat import (
     TextDelta,
     UsageDelta,
 )
-from ai.gateway.providers import ChatProvider, EmbeddingProvider
+from ai.gateway.providers import ChatProvider, EmbeddingProvider, RerankedDocument, RerankProvider
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
 from core.exceptions import (
@@ -50,7 +50,7 @@ from core.exceptions import (
 
 logger = get_logger(__name__)
 
-__all__ = ["AIGateway", "EmbedResult", "Usage", "build_gateway"]
+__all__ = ["AIGateway", "EmbedResult", "RerankResult", "Usage", "build_gateway"]
 
 # 退避秒數；長度 = 重試次數。空 tuple = 不重試（測試用）。
 _DEFAULT_BACKOFF_SECONDS = (1.0, 2.0)
@@ -78,6 +78,23 @@ class EmbedResult:
     model: str
     provider: str
     usage: Usage
+
+
+@dataclass(frozen=True, slots=True)
+class RerankResult:
+    """Gateway 的 rerank 回傳——**上層只認得這個型別**，不知道 provider 是誰。
+
+    ``documents`` 是 (原始索引, 分數) 且已依分數由高到低排好；呼叫端用索引把結果對回
+    自己的 `RetrievedChunk`（見 `providers.RerankedDocument` 的說明）。
+
+    **沒有 usage**：rerank 的計價單位是「查詢次數」而不是 token（Cohere 一次查詢
+    ≤100 段算一次），而 2B 的定案是自架 TEI——電費不進 usage_logs。真要計費時
+    這裡再加欄位。
+    """
+
+    documents: list[RerankedDocument]
+    model: str
+    provider: str
 
 
 @dataclass(slots=True)
@@ -150,6 +167,7 @@ class AIGateway:
         *,
         embedding_provider: EmbeddingProvider | None = None,
         chat_provider: ChatProvider | None = None,
+        rerank_provider: RerankProvider | None = None,
         timeout_seconds: float | None = None,
         chat_timeouts: ChatTimeouts | None = None,
         chat_fallback_models: tuple[str, ...] = (),
@@ -157,6 +175,7 @@ class AIGateway:
     ) -> None:
         self._provider = embedding_provider
         self._chat = chat_provider
+        self._rerank = rerank_provider
         self._timeout = timeout_seconds or get_app_settings().ai_embedding_timeout_seconds
         self._chat_timeouts = chat_timeouts or ChatTimeouts.from_settings()
         self._chat_fallback_models = chat_fallback_models
@@ -219,6 +238,55 @@ class AIGateway:
                 )
 
     # ── 串流對話（1D-3a）──────────────────────────────────────
+
+    def rerank(
+        self,
+        query: str,
+        documents: Sequence[str],
+        *,
+        model: str,
+        top_n: int,
+        timeout_seconds: float | None = None,
+    ) -> RerankResult:
+        """把候選段落交給 cross-encoder 重新打分（06 §3.1 的 Rerank 階段）。
+
+        **這條路的規則與 embedding／chat 刻意不同**，因為 rerank 是**可跳過的增強**：
+
+        - **不重試**。11 §4.1 的重試上限是給冪等且必要的呼叫用的；這裡的預算只有 1.2s
+          （11 §4），重試一次就變 2.4s——使用者等的是那個，不是更好的排序。
+        - **失敗往上拋**，降級由 service 決定（`services/rag/retrieval.py`）。在這裡吞掉
+          的話，「rerank 從來沒成功過」與「rerank 一切正常」在上層看起來一模一樣。
+        - **空清單不打 provider**：沒有候選就沒有東西可排，而那一趟仍然要付延遲
+          （TEI 要載 batch、雲端 API 要一次 round-trip）。
+
+        `top_n` 只是「最多回幾筆」；provider 回得比它少是正常的（有些家會自己截斷）。
+        """
+        if not documents:
+            return RerankResult(documents=[], model=model, provider=self.rerank_provider_name)
+
+        provider = self._require_rerank()
+        timeout = timeout_seconds or get_app_settings().ai_rerank_timeout_seconds
+        started = time.monotonic()
+        result = provider.rerank(query, list(documents), model=model, timeout_seconds=timeout)
+        logger.info(
+            "rerank_completed",
+            provider=provider.name,
+            model=result.model,
+            candidate_count=len(documents),
+            elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+        )
+        return RerankResult(
+            documents=result.results[:top_n], model=result.model, provider=provider.name
+        )
+
+    def _require_rerank(self) -> RerankProvider:
+        if self._rerank is None:
+            self._rerank = _rerank_provider(get_app_settings().ai_rerank_provider)
+        return self._rerank
+
+    @property
+    def rerank_provider_name(self) -> str:
+        return self._rerank.name if self._rerank is not None else "unset"
 
     async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[Delta, None]:
         """跑一次生成，逐段吐回來。
@@ -458,6 +526,7 @@ def build_gateway() -> AIGateway:
     return AIGateway(
         embedding_provider=_embedding_provider(settings.ai_embedding_provider),
         chat_provider=_chat_provider(settings.ai_chat_provider),
+        rerank_provider=_rerank_provider(settings.ai_rerank_provider),
         chat_fallback_models=_fallback_models(settings.ai_chat_fallback_models),
     )
 
@@ -466,6 +535,20 @@ def _fallback_models(raw: str) -> tuple[str, ...]:
     """逗號分隔 → tuple。空白項丟掉（`"a,,b"`、結尾逗號都是常見的手誤，而一個空字串
     的模型名會變成一次必然失敗的 API 呼叫）。"""
     return tuple(name.strip() for name in raw.split(",") if name.strip())
+
+
+def _rerank_provider(name: str) -> RerankProvider:
+    """名稱 → rerank adapter（2B-3）。
+
+    **未知的名稱明確失敗，不退回 mock**（同 chat 的理由）：退回的話 rerank 會安靜地
+    變成「字元重疊比例」，而排序看起來仍然合理——沒有任何地方會顯示它其實沒在工作。
+    真 adapter（TEI／Jina）屬 2B-4。
+    """
+    if name == "mock":
+        from ai.gateway.providers.mock import MockRerankProvider
+
+        return MockRerankProvider()
+    raise ProviderUnavailableError(f"未知或尚未實作的 rerank provider：{name}")
 
 
 def _chat_provider(name: str) -> ChatProvider:

@@ -53,11 +53,14 @@ async def rag_query(
     404 的意思是「這個 KB 不存在」，而「存在但沒有相關內容」是完全不同的情況——
     1D 對後者有自己的處置（06 §3.1：回「知識庫無相關內容」而不是硬答）。
     """
-    results = await run_orm(
+    outcome = await run_orm(
         _retrieval.query,
         principal.tenant_id,
         kb_id=body.kb_id,
         query=body.query,
         top_k=body.top_k,
     )
-    return RagQueryOut(items=[_chunk_out(chunk) for chunk in results])
+    # 降級標記（`outcome.degraded`）暫時不出現在回應裡：那要動 09 §2.3 的 schema 與
+    # 前端 generated client，而兩者排在 2B 結案的文件同步（2B-5 的 rag_trace 會用到
+    # 同一份資料）。目前它走 log 與 `usage.rag`。
+    return RagQueryOut(items=[_chunk_out(chunk) for chunk in outcome.chunks])

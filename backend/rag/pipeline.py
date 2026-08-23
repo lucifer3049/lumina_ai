@@ -25,7 +25,13 @@ from dataclasses import replace
 from etl.tokens import estimate_tokens
 from rag.retrievers.vector import RetrievedChunk, normalise_query
 
-__all__ = ["build_search_query", "fuse_candidates", "gate_by_score", "select_context"]
+__all__ = [
+    "build_search_query",
+    "fuse_candidates",
+    "gate_by_absolute_score",
+    "gate_by_score",
+    "select_context",
+]
 
 
 def build_search_query(
@@ -134,6 +140,27 @@ def gate_by_score(
 
     floor = best * min_score_ratio
     return [chunk for index, chunk in enumerate(candidates) if index == 0 or chunk.score >= floor]
+
+
+def gate_by_absolute_score(
+    candidates: Sequence[RetrievedChunk], *, threshold: float
+) -> list[RetrievedChunk]:
+    """絕對門檻：低於 `threshold` 的一律丟掉（06 §3.1 的 0.3，2B-3 第一次生效）。
+
+    **與相對門檻是兩件事，位置也不同**：相對門檻在融合之前、比的是「跟同一路的第一名
+    差多少」；這一條在 **rerank 之後**、比的是 cross-encoder 給的 0~1 分數。
+
+    **它會回空清單，而那是刻意的**（06 §3.3 的幻覺防線一）：全部低於門檻代表「知識庫
+    裡沒有能回答這個問題的東西」，那時該讓模型誠實說不知道，而不是拿一堆不相關的段落
+    硬答——後者產生的是看起來有根據的錯誤答案。
+
+    **只有在 rerank 真的跑過時才准套用。** 跳過 rerank 之後手上是 RRF 的融合分數
+    （第一名 1/61 ≈ 0.016），拿 0.3 去比會把全部砍光——那正是 1D-5 拒絕在 Phase 1
+    啟用它的同一個理由。位置的強制在 `services/rag/retrieval.py`，這裡只做算術。
+    """
+    if threshold <= 0:
+        return list(candidates)
+    return [chunk for chunk in candidates if chunk.score >= threshold]
 
 
 def select_context(

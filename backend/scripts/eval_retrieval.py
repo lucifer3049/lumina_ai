@@ -100,10 +100,19 @@ DATASETS: dict[str, tuple[Path, Path]] = {
     ),
 }
 
-# 三個模式先宣告、2B-0 只實作第一個（06 §3.1 的檢索鏈）。
-MODES = ("vector", "hybrid", "hybrid+rerank")
+# 四個模式先宣告，實作逐包開通（06 §3.1 的檢索鏈）。
+#
+# **兩個 rerank 模式在 2B-3 仍不開通**：那一包只有 MockProvider，而 mock 的分數是字元
+# 重疊比例、沒有語意——拿它跑評測量到的是亂數，而報告看起來完全正常。真 TEI 屬 2B-4。
+#
+# `vector+rerank` 這一格的存在理由是**歸因**：少了它，`hybrid+rerank` 贏了也分不出是
+# rerank 的功勞還是 hybrid 的，而 2B-2 的數據顯示 hybrid 目前是負貢獻。
+MODES = ("vector", "vector+rerank", "hybrid", "hybrid+rerank")
 IMPLEMENTED_MODES = ("vector", "hybrid")
-_MODE_OWNERS = {"hybrid+rerank": "2B-4（TEI reranker）"}
+_MODE_OWNERS = {
+    "vector+rerank": "2B-4（TEI reranker）",
+    "hybrid+rerank": "2B-4（TEI reranker）",
+}
 
 SCHEMA_VERSION = 1
 # 報告要回答的是「前幾名裡有沒有」，而不同的 k 回答不同的問題：k=1 是「第一名就對」，
@@ -403,7 +412,7 @@ def run_evaluation(
     outcomes: list[QuestionOutcome] = []
     rows: list[dict[str, Any]] = []
     for question in questions:
-        hits = service.query(
+        retrieved_outcome = service.query(
             tenant_id,
             kb_id=kb_id,
             query=question.question,
@@ -414,6 +423,7 @@ def run_evaluation(
             # hybrid 比——差距是 0，報告看起來完全正常。
             mode=mode,
         )
+        hits = retrieved_outcome.chunks
         # **chunk id 全部記下，包含對不回 passage 的那些**：對不回來的命中若被丟掉，
         # 「檢索回了不屬於這個語料的東西」這件事就會從報告裡消失，而那正是租戶隔離
         # 出問題時唯一看得見的痕跡。

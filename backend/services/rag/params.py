@@ -55,6 +55,7 @@ class RagParams:
     rrf_k: int
     hybrid_candidates: int
     retrieval_mode: str
+    rerank_threshold: float
     context_chunks: int
     context_token_budget: int
     min_score_ratio: float
@@ -83,6 +84,9 @@ def resolve_rag_params(kb_config: Mapping[str, Any] | None) -> RagParams:
             high=MAX_TOP_K,
         ),
         retrieval_mode=_mode(section, settings.rag_retrieval_mode),
+        rerank_threshold=_float(
+            section, "rerank_threshold", settings.rag_rerank_threshold, low=0.0, high=1.0
+        ),
         context_chunks=_int(
             section, "context_chunks", settings.rag_context_chunks, low=1, high=_MAX_CONTEXT_CHUNKS
         ),
@@ -107,9 +111,12 @@ def resolve_rag_params(kb_config: Mapping[str, Any] | None) -> RagParams:
 
 
 # 這一層認得的模式。**不是從 `app_settings` 的 Literal 推導**：那份型別是給環境變數用的，
-# 而這裡的輸入是使用者寫得到的 KB config（2C 之後更是）。`hybrid+rerank` 刻意不在其中，
-# 理由見 `app_settings.rag_retrieval_mode`。
-_MODES = frozenset({"vector", "hybrid"})
+# 而這裡的輸入是使用者寫得到的 KB config（2C 之後更是）。
+#
+# 四格而不是三格（2B-3）：沒有 `vector+rerank` 的話，`hybrid+rerank` 贏了也分不出是
+# rerank 的功勞還是 hybrid 的——而 2B-2 的數據顯示 hybrid 目前是負貢獻，這個歸因問題
+# 不是假想的。
+_MODES = frozenset({"vector", "vector+rerank", "hybrid", "hybrid+rerank"})
 
 
 def _mode(section: Mapping[str, Any], default: str) -> str:

@@ -27,7 +27,7 @@ from ai.gateway.chat import (
     TextDelta,
     UsageDelta,
 )
-from ai.gateway.providers import ProviderEmbedding
+from ai.gateway.providers import ProviderEmbedding, ProviderRerank, RerankedDocument
 
 # 一個 token 大約幾個字元（估算用，理由同 etl/tokens.py）。provider 沒回報用量時
 # 寧可高估：低估會讓 2A 的成本統計看起來比實際便宜。
@@ -135,3 +135,36 @@ def _vector(text: str, dimensions: int) -> list[float]:
     values = raw[:dimensions]
     norm = math.sqrt(sum(value * value for value in values)) or 1.0
     return [value / norm for value in values]
+
+
+class MockRerankProvider:
+    """假的 cross-encoder：**分數與查詢有關，但沒有語意**（2B-3）。
+
+    與 `MockEmbeddingProvider` 同一個定位——它讓「rerank 有沒有被呼叫、有沒有真的改變
+    順序、降級鏈會不會動」驗得出來，但**量不出品質**：分數是字元重疊比例，不是理解。
+    真的品質評測要等 2B-4 接上 TEI 與 `bge-reranker-v2-m3`。
+
+    分數落在 0~1，與真 cross-encoder 同一個尺度——否則 06 §3.1 的絕對門檻 0.3 會在假
+    資料上通過、在真 provider 上失效。
+    """
+
+    name = "mock"
+
+    def rerank(
+        self, query: str, documents: list[str], *, model: str, timeout_seconds: float
+    ) -> ProviderRerank:
+        scored = [
+            RerankedDocument(index=index, score=_overlap(query, document))
+            for index, document in enumerate(documents)
+        ]
+        # 由高到低；同分時以索引為第二鍵（決定性，同 RRF 的理由）。
+        scored.sort(key=lambda doc: (-doc.score, doc.index))
+        return ProviderRerank(results=scored, model=model)
+
+
+def _overlap(query: str, document: str) -> float:
+    """查詢與文件的字元重疊比例（0~1）。完全相同 → 1.0，毫無交集 → 0.0。"""
+    left, right = set(query.strip()), set(document.strip())
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)

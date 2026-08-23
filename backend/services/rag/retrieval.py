@@ -21,14 +21,15 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ai.gateway import AIGateway, build_gateway
 from config.logging import get_logger
+from config.settings.app_settings import get_app_settings
 from core.exceptions import NotFoundError
 from core.tenant import tenant_context
 from core.uow import unit_of_work
-from rag.pipeline import fuse_candidates, gate_by_score, select_context
+from rag.pipeline import fuse_candidates, gate_by_absolute_score, gate_by_score, select_context
 from rag.retrievers.keyword import build_fts_query
 from rag.retrievers.vector import RetrievedChunk, normalise_query, to_retrieved
 from repositories.knowledge import ChunkRepository, EmbeddingRepository, KnowledgeBaseRepository
@@ -37,7 +38,7 @@ from services.rag.params import MAX_TOP_K, RagParams, resolve_rag_params
 
 logger = get_logger(__name__)
 
-__all__ = ["MAX_TOP_K", "RetrievalService", "default_top_k"]
+__all__ = ["MAX_TOP_K", "RetrievalOutcome", "RetrievalService", "default_top_k"]
 
 # 11 §2：`ef_search=80` 起步（HNSW 的「找多仔細」旋鈕，預設值 40 比這低）。
 # 不設的話召回會比評測時差一截，而那個差距不會出現在任何錯誤訊息裡。
@@ -54,6 +55,20 @@ def default_top_k() -> int:
     沒有人會想到去比對兩個預設值。
     """
     return resolve_rag_params(None).top_k
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalOutcome:
+    """一次檢索的結果 + **哪幾個增強步驟被跳過了**。
+
+    降級要說得出來（06 §1 的「降級優先於失敗」只講了一半）：rerank 掛掉時答案仍然
+    出得來，差別只在排序——沒有標記的話，「品質變差」在任何地方都查不到，而評測分數
+    掉一截時沒有人會想到是 rerank 靜靜地停了三天。標記一路走到 `usage.rag.degraded`
+    （1D-5 的 `usage.rag` 子物件）。
+    """
+
+    chunks: list[RetrievedChunk]
+    degraded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +124,7 @@ class RetrievalService:
         query: str,
         top_k: int | None = None,
         mode: str | None = None,
-    ) -> list[RetrievedChunk]:
+    ) -> RetrievalOutcome:
         """在一個 KB 內檢索最相關的 chunk（`/rag/query` 的路徑）。
 
         `mode` 覆寫這個 KB 生效中的檢索模式，**只給離線評測用**
@@ -133,11 +148,12 @@ class RetrievalService:
         if not 1 <= limit <= MAX_TOP_K:
             raise ValueError(f"top_k 必須介於 1 與 {MAX_TOP_K} 之間")
 
-        groups = self._retrieve(tenant_id, kb, text, params, top_k=limit, mode=mode)
+        groups, degraded = self._retrieve(tenant_id, kb, text, params, top_k=limit, mode=mode)
         # **`/rag/query` 與問答看到同一組候選**：這個端點存在的理由就是「看檢索準不
         # 準」，兩邊各自融合一次的話，1D-5 那個「除錯 API 查得到、實際問答查不到」的
         # 情境會換個位置重演。
-        return fuse_candidates(groups, k=params.rrf_k, limit=params.hybrid_candidates)
+        fused = fuse_candidates(groups, k=params.rrf_k, limit=params.hybrid_candidates)
+        return self._rerank(text, fused, params, mode=mode, degraded=degraded)
 
     def retrieve_for_chat(
         self,
@@ -146,7 +162,7 @@ class RetrievalService:
         kb_ids: Sequence[uuid.UUID],
         query: str,
         mode: str | None = None,
-    ) -> list[RetrievedChunk]:
+    ) -> RetrievalOutcome:
         """一場對話掛著的所有 KB → 真正進 context 的那幾段（1D-5）。
 
         **找不到的 KB 跳過，不讓整輪失敗。** 對話是長命的，而 KB 可以在對話中途被刪掉
@@ -161,13 +177,13 @@ class RetrievalService:
         text = normalise_query(query)
         if not text or not kb_ids:
             # 沒掛 KB 就是純閒聊路徑（06 §9），連一次 embedding 的錢都不該付。
-            return []
+            return RetrievalOutcome(chunks=[])
 
         available = [kb for kb in (self._find_kb(tenant_id, kb_id) for kb_id in kb_ids) if kb]
         for kb_id in set(kb_ids) - {kb.id for kb in available}:
             logger.warning("rag_kb_unavailable", kb_id=str(kb_id))
         if not available:
-            return []
+            return RetrievalOutcome(chunks=[])
 
         params = resolve_rag_params(available[0].config)
         # **同一個模型只算一次向量。** 查詢向量與 KB 無關，只與模型有關；每個 KB 各
@@ -175,15 +191,21 @@ class RetrievalService:
         # 各 KB 的 `embedding_model` 可以不同（06 §2.2：向量只在同一個模型的空間裡
         # 可比較），因此快取的鍵是模型而不是「這次查詢」。
         cache: dict[str, _EmbeddedQuery] = {}
-        groups = [
-            group
-            for kb in available
-            for group in self._retrieve(
+        groups: list[list[RetrievedChunk]] = []
+        degraded: tuple[str, ...] = ()
+        for kb in available:
+            kb_groups, kb_degraded = self._retrieve(
                 tenant_id, kb, text, params, top_k=params.top_k, mode=mode, cache=cache
             )
-        ]
+            groups.extend(kb_groups)
+            # 多 KB 時任何一個 KB 的 FTS 出事都算降級：使用者感受到的是「答案變差」，
+            # 而那與「只有第二個知識庫的字面檢索掛了」在畫面上沒有分別。
+            degraded = tuple(dict.fromkeys([*degraded, *kb_degraded]))
+
+        fused = fuse_candidates(groups, k=params.rrf_k, limit=params.hybrid_candidates)
+        reranked = self._rerank(text, fused, params, mode=mode, degraded=degraded)
         selected = select_context(
-            fuse_candidates(groups, k=params.rrf_k, limit=params.hybrid_candidates),
+            reranked.chunks,
             max_chunks=params.context_chunks,
             token_budget=params.context_token_budget,
         )
@@ -193,8 +215,9 @@ class RetrievalService:
             group_count=len(groups),
             candidate_count=sum(len(group) for group in groups),
             context_count=len(selected),
+            degraded=list(reranked.degraded),
         )
-        return selected
+        return RetrievalOutcome(chunks=selected, degraded=reranked.degraded)
 
     def params_for(self, tenant_id: uuid.UUID, kb_ids: Sequence[uuid.UUID]) -> RagParams:
         """這場對話的檢索參數。`ChatService` 用它決定查詢要往前帶幾個問題。
@@ -220,7 +243,7 @@ class RetrievalService:
         top_k: int,
         mode: str | None,
         cache: dict[str, _EmbeddedQuery] | None = None,
-    ) -> list[list[RetrievedChunk]]:
+    ) -> tuple[list[list[RetrievedChunk]], tuple[str, ...]]:
         """一個 KB → 各路的候選清單（融合前）。
 
         **門檻在這裡套、逐路各自套**（`rag/pipeline.py` 的 `gate_by_score`）：融合之後
@@ -236,15 +259,78 @@ class RetrievalService:
                 min_score_ratio=params.min_score_ratio,
             )
         ]
-        if effective != "vector":
-            keyword = self._search_fts(tenant_id, kb, text, top_k=params.fts_top_k)
+        degraded: tuple[str, ...] = ()
+        if effective.startswith("hybrid"):
+            keyword, failed = self._search_fts(tenant_id, kb, text, top_k=params.fts_top_k)
+            if failed:
+                degraded = ("fts",)
             if keyword:
                 groups.append(gate_by_score(keyword, min_score_ratio=params.min_score_ratio))
-        return groups
+        return groups, degraded
+
+    def _rerank(
+        self,
+        text: str,
+        candidates: list[RetrievedChunk],
+        params: RagParams,
+        *,
+        mode: str | None,
+        degraded: tuple[str, ...],
+    ) -> RetrievalOutcome:
+        """融合後的候選 → cross-encoder 重排 → 絕對門檻（06 §3.1 的 Rerank 階段，2B-3）。
+
+        **失敗一律降級成「維持融合順序」，不往外拋**（06 §1）：rerank 是可跳過的增強，
+        而它是讀路徑上最脆弱的一環（06 §6）——外部服務、GPU、模型載入，任何一項出事都
+        不該讓使用者問不了問題。
+
+        **絕對門檻只在 rerank 真的跑完時才套用。** 這不是保險而是正確性：門檻 0.3 是
+        cross-encoder 的尺度，而降級之後手上是 RRF 的融合分數（第一名 1/61 ≈ 0.016），
+        套上去會把候選**全部**砍光——使用者看到的是「這個知識庫突然什麼都答不出來」，
+        而 log 裡只有一行降級 warning。1D-5 當初拒絕在 Phase 1 啟用它，就是同一個理由。
+
+        `top_n` 直接用 `context_chunks`（06 §3.1 的 top_n 6~8 **就是**「進 context 幾段」）
+        ——兩個數字分開會漂，而漂掉的症狀是「rerank 排了 8 段、context 只放得下 6 段」：
+        花了 cross-encoder 的錢卻把它排最好的那兩段丟掉。
+        """
+        effective = mode or params.retrieval_mode
+        if not effective.endswith("+rerank") or not candidates:
+            return RetrievalOutcome(chunks=candidates, degraded=degraded)
+
+        settings = get_app_settings()
+        try:
+            result = self.gateway.rerank(
+                text,
+                [chunk.content for chunk in candidates],
+                model=settings.ai_rerank_model,
+                top_n=params.context_chunks,
+                timeout_seconds=settings.ai_rerank_timeout_seconds,
+            )
+        # 同 FTS：什麼錯都接得住是降級的前提（provider、連線、逾時都在這裡收斂）。
+        except Exception as exc:
+            logger.warning("rag_rerank_degraded", error=type(exc).__name__, detail=str(exc))
+            return RetrievalOutcome(
+                chunks=candidates, degraded=tuple(dict.fromkeys([*degraded, "rerank"]))
+            )
+
+        reordered = [
+            replace(candidates[doc.index], score=doc.score)
+            for doc in result.documents
+            # provider 回一個超出範圍的索引是它的 bug，但代價會落在我們身上
+            # （IndexError → 整輪失敗）。忽略掉並讓其餘的照常。
+            if 0 <= doc.index < len(candidates)
+        ]
+        kept = gate_by_absolute_score(reordered, threshold=params.rerank_threshold)
+        logger.info(
+            "rerank_applied",
+            candidate_count=len(candidates),
+            kept_count=len(kept),
+            threshold=params.rerank_threshold,
+        )
+        return RetrievalOutcome(chunks=kept, degraded=degraded)
 
     def _search_fts(
         self, tenant_id: uuid.UUID, kb: _KnowledgeBaseSnapshot, text: str, *, top_k: int
-    ) -> list[RetrievedChunk]:
+    ) -> tuple[list[RetrievedChunk], bool]:
         """字面比對那一路。**失敗一律降級成「這一路沒有候選」，不往外拋。**
 
         06 §1 的「降級優先於失敗」：FTS 是增強而不是必要。索引壞掉、pgroonga 沒裝、
@@ -260,8 +346,11 @@ class RetrievalService:
             # **沒有識別符就棄權**（2B-2b）：純中文的概念問句與純小寫的英文問句裡沒有
             # 字面比對幫得上忙的東西，投一張模糊票的代價是把向量找對的答案擠下去
             # ——2B-2 的評測實測到這件事。理由見 `rag/retrievers/keyword.py`。
+            # 棄權**不是降級**：它是「這句話裡沒有字面比對幫得上忙的東西」的正確
+            # 答案，而降級指的是「該做卻做不到」。混在一起的話 `usage.rag.degraded`
+            # 會被純中文問句灌爆，而真正的故障就淹在裡面了。
             logger.info("fts_abstained", kb_id=str(kb.id))
-            return []
+            return [], False
 
         try:
             with tenant_context(tenant_id), unit_of_work():
@@ -272,13 +361,13 @@ class RetrievalService:
             logger.warning(
                 "rag_fts_degraded", kb_id=str(kb.id), error=type(exc).__name__, detail=str(exc)
             )
-            return []
+            return [], True
 
         results = to_retrieved(hits)
         logger.info(
             "fts_retrieval_completed", kb_id=str(kb.id), top_k=top_k, hit_count=len(results)
         )
-        return results
+        return results, False
 
     def _search(
         self,

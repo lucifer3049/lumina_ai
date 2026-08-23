@@ -47,6 +47,9 @@ class TestSystemDefaults:
         # 裁判。數據與理由見 `app_settings.rag_retrieval_mode` 的註解；2B-4 接上
         # reranker 後用同一套評測再決定要不要翻回來。
         assert settings.rag_retrieval_mode == "vector"
+        # 06 §3.1 的絕對門檻 0.3——**預設關閉**（0）：它是 cross-encoder 的尺度，只有
+        # rerank 真的跑過時才有意義，而開不開由資料決定（同相對門檻，1D-5）。
+        assert settings.rag_rerank_threshold == 0.0
         assert settings.rag_context_chunks == 8
         assert settings.rag_context_token_budget == 4500
 
@@ -156,9 +159,21 @@ class TestHybridParams:
 
         assert params.retrieval_mode == "vector"
 
-    def test_rerank_mode_is_not_accepted_yet(self) -> None:
-        """`hybrid+rerank` 要等 2B-3／2B-4。提前接受它的話，KB 設了之後**什麼都不會
-        發生**——而使用者會以為 rerank 已經在跑了。"""
-        params = resolve_rag_params({"retrieval": {"retrieval_mode": "hybrid+rerank"}})
 
-        assert params.retrieval_mode == "vector"
+class TestRerankParams:
+    """2B-3 的旋鈕。"""
+
+    def test_the_kb_can_set_an_absolute_threshold(self) -> None:
+        assert resolve_rag_params({"retrieval": {"rerank_threshold": 0.3}}).rerank_threshold == 0.3
+
+    def test_the_threshold_is_clamped_to_the_scale(self) -> None:
+        """cross-encoder 的分數是 0~1；讓 KB 設 5 的話那個 KB 從此答不出任何問題。"""
+        assert resolve_rag_params({"retrieval": {"rerank_threshold": 5}}).rerank_threshold == 1.0
+        assert resolve_rag_params({"retrieval": {"rerank_threshold": -1}}).rerank_threshold == 0.0
+
+    def test_the_rerank_modes_are_accepted_now(self) -> None:
+        """2B-2 時它們被擋掉（設了也不會有事發生）；2B-3 起 rerank 真的存在。"""
+        for mode in ("vector+rerank", "hybrid+rerank"):
+            assert (
+                resolve_rag_params({"retrieval": {"retrieval_mode": mode}}).retrieval_mode == mode
+            )

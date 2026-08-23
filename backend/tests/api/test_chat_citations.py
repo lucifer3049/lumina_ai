@@ -559,7 +559,14 @@ class TestCitationStats:
         await _ask(client, grounded_chat, await _token(client))
 
         stored = await _stored_answer(grounded_chat)
-        assert stored.usage["rag"] == {"context_chunks": 1, "citations": 1, "dropped": 1}
+        # `degraded` 是 2B-3 加的：rerank／FTS 被跳過時要說得出來，否則「檢索品質變差」
+        # 在任何地方都查不到，而看得到的只有評測分數掉了一截。正常路徑是空清單。
+        assert stored.usage["rag"] == {
+            "context_chunks": 1,
+            "citations": 1,
+            "dropped": 1,
+            "degraded": [],
+        }
 
     async def test_they_do_not_disturb_the_token_counts(
         self, client: httpx.AsyncClient, script: _Script, grounded_chat: uuid.UUID

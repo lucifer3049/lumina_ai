@@ -107,7 +107,7 @@ class TestRanking:
         """
         kb_id, chunk_ids = _kb_with_vectors(TENANT_A)
 
-        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[1])
+        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[1]).chunks
 
         assert results
         assert results[0].chunk_id == chunk_ids[1]
@@ -153,7 +153,7 @@ class TestRanking:
         """
         kb_id, _ = _kb_with_vectors(TENANT_A)
 
-        top = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[2])[0]
+        top = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[2]).chunks[0]
 
         assert top.document_id is not None
         assert top.content == _CONTENTS[2]
@@ -171,7 +171,7 @@ class TestFilters:
         kb_a, _ = _kb_with_vectors(TENANT_A)
         _, other_ids = _kb_with_vectors(TENANT_A, contents=("完全不同的另一個知識庫內容",))
 
-        results = _service().query(TENANT_A, kb_id=kb_a, query="完全不同的另一個知識庫內容")
+        results = _service().query(TENANT_A, kb_id=kb_a, query="完全不同的另一個知識庫內容").chunks
 
         assert all(result.chunk_id not in other_ids for result in results)
 
@@ -187,7 +187,7 @@ class TestFilters:
         with tenant_scope(TENANT_A):
             Chunk.objects.filter(id=chunk_ids[0]).update(superseded=True)
 
-        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0])
+        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0]).chunks
 
         assert all(result.chunk_id != chunk_ids[0] for result in results)
 
@@ -205,7 +205,7 @@ class TestFilters:
             Embedding.objects.filter(chunk_id__in=chunk_ids).update(model="another-model")
 
         # 同上一條：驗的是向量那一路的過濾條件，因此明確走 `vector`。
-        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0], mode="vector")
+        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0], mode="vector").chunks
 
         assert results == []
 
@@ -220,7 +220,7 @@ class TestFilters:
         # **明確指定 `vector`**：2B-2 之後預設是 hybrid，而字面比對照樣找得到這些
         # chunk（它們有內容、只是還沒有向量）。那不是錯誤——re-embedding 期間由 FTS
         # 頂住是 hybrid 的紅利之一——但這條驗的是**向量那一路**的過濾條件。
-        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0], mode="vector")
+        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0], mode="vector").chunks
 
         assert results == []
 
@@ -238,7 +238,7 @@ class TestTopK:
     def test_it_limits_the_number_of_results(self, tenants: None) -> None:
         kb_id, _ = _kb_with_vectors(TENANT_A)
 
-        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0], top_k=2)
+        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0], top_k=2).chunks
 
         assert len(results) == 2
 
@@ -246,7 +246,7 @@ class TestTopK:
         """候選比 top_k 少是正常情況，不是錯誤。"""
         kb_id, chunk_ids = _kb_with_vectors(TENANT_A)
 
-        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0], top_k=100)
+        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0], top_k=100).chunks
 
         assert len(results) == len(chunk_ids)
 
@@ -343,7 +343,7 @@ class TestTenantIsolation:
         _, foreign_ids = _kb_with_vectors(TENANT_B)
         kb_a, _ = _kb_with_vectors(TENANT_A)
 
-        results = _service().query(TENANT_A, kb_id=kb_a, query=_CONTENTS[0])
+        results = _service().query(TENANT_A, kb_id=kb_a, query=_CONTENTS[0]).chunks
 
         assert all(result.chunk_id not in foreign_ids for result in results)
 
@@ -369,7 +369,7 @@ class TestEdgeCases:
         with tenant_scope(TENANT_A):
             kb = make_knowledge_base(tenant_id=TENANT_A)
 
-        results = _service().query(TENANT_A, kb_id=uuid.UUID(str(kb.id)), query="任何問題")
+        results = _service().query(TENANT_A, kb_id=uuid.UUID(str(kb.id)), query="任何問題").chunks
 
         assert results == []
 

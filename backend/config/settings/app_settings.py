@@ -160,6 +160,21 @@ class AppSettings(BaseSettings):
     # **不屬於這一段的**：安全邊界與保護 DB 的硬上限（`services/rag/params.py` 的
     # `MAX_TOP_K`、`ai/prompts/` 的定界標記）——那些不是使用者該決定的東西。
 
+    # ── Rerank（06 §3.1 的 cross-encoder，2B-3）────────────────────
+    #
+    # **與 embedding／chat 是第三組獨立設定**（同 1D-3a 的理由）：三者的選型依據完全
+    # 不同，而共用一組會讓「換 rerank」變成「連 embedding 一起換」——那是重嵌入。
+    #
+    # 預設 `mock`：漏設環境變數時要得到的是假分數，而不是一筆真帳單或一個起不來的
+    # 服務（同 1C-1）。真 adapter（自架 TEI + `bge-reranker-v2-m3`）屬 2B-4。
+    ai_rerank_provider: Literal["mock", "tei", "jina"] = "mock"
+    ai_rerank_api_key: SecretStr | None = None
+    ai_rerank_base_url: str = ""
+    ai_rerank_model: str = "mock-rerank"
+    # 11 §4：rerank 逾 1.2s 直接跳過（降級鏈）。**不重試**——重試一次就是 2.4s，而
+    # 使用者等的是那個，不是更好的排序（見 `AIGateway.rerank`）。
+    ai_rerank_timeout_seconds: float = 1.2
+
     # 06 §3.1：vector search 候選數。
     rag_top_k: int = 40
     # 06 §3.1：FTS（pgroonga）候選數。與 `rag_top_k` 分開是因為兩路的成本不同——
@@ -171,6 +186,12 @@ class AppSettings(BaseSettings):
     # 06 §3.1 的「RRF → 24」：融合後留幾筆進下一關。2B-4 的 rerank 吃的就是它，
     # 而 cross-encoder 的成本與這個數字成正比（11 §4 的 rerank < 800ms）。
     rag_hybrid_candidates: int = 24
+    # 06 §3.1 的絕對門檻。**預設 0＝關閉**：它是 cross-encoder 的尺度（0~1），只有在
+    # rerank 真的跑過時才有意義——降級跳過 rerank 之後手上是 RRF 的融合分數
+    # （第一名 1/61 ≈ 0.016），套 0.3 會把候選全砍光。位置的強制在
+    # `services/rag/retrieval.py`；開不開由資料決定（同相對門檻，1D-5）。
+    rag_rerank_threshold: float = 0.0
+
     # 檢索模式（2B-2）。**預設 `vector`，而 06 §3.1 的設計是 hybrid**——這個偏離有
     # 數據支撐，2026-08-23 由使用者裁決：
     #
@@ -187,7 +208,7 @@ class AppSettings(BaseSettings):
     #
     # `hybrid+rerank` 等 2B-3／2B-4——提前接受它的話，設了之後什麼都不會發生，而使用者
     # 會以為 rerank 已經在跑。
-    rag_retrieval_mode: Literal["vector", "hybrid"] = "vector"
+    rag_retrieval_mode: Literal["vector", "vector+rerank", "hybrid", "hybrid+rerank"] = "vector"
     # 06 §3.1 的 rerank top_n 6~8。Phase 1 沒有 rerank，這是「進 context 幾段」。
     rag_context_chunks: int = 8
     # 06 §3.2：RAG context 的 token 預算。與 chunker 用同一個估算器（`etl/tokens.py`），

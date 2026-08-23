@@ -96,7 +96,7 @@ class TestHybrid:
         而字面比對一找就到。純向量模式下這一段不會出現。"""
         kb_id = _kb(TENANT_A)
 
-        hits = _service().query(TENANT_A, kb_id=kb_id, query="ES256", mode="hybrid")
+        hits = _service().query(TENANT_A, kb_id=kb_id, query="ES256", mode="hybrid").chunks
 
         assert _FTS_TARGET in [hit.content for hit in hits]
 
@@ -104,7 +104,7 @@ class TestHybrid:
         """hybrid 不能是「FTS 蓋過向量」：換句話說的問題仍然只有向量答得出來。"""
         kb_id = _kb(TENANT_A)
 
-        hits = _service().query(TENANT_A, kb_id=kb_id, query=_VECTOR_TARGET, mode="hybrid")
+        hits = _service().query(TENANT_A, kb_id=kb_id, query=_VECTOR_TARGET, mode="hybrid").chunks
 
         assert hits[0].content == _VECTOR_TARGET
 
@@ -112,7 +112,7 @@ class TestHybrid:
         """重複的代價是兩份 token 換零份新資訊，而 hybrid 讓重複變成常態。"""
         kb_id = _kb(TENANT_A)
 
-        hits = _service().query(TENANT_A, kb_id=kb_id, query=_FTS_TARGET, mode="hybrid")
+        hits = _service().query(TENANT_A, kb_id=kb_id, query=_FTS_TARGET, mode="hybrid").chunks
 
         chunk_ids = [hit.chunk_id for hit in hits]
         assert len(chunk_ids) == len(set(chunk_ids))
@@ -122,7 +122,7 @@ class TestHybrid:
         kb_a = _kb(TENANT_A)
         kb_b = _kb(TENANT_B)
 
-        hits = _service().query(TENANT_A, kb_id=kb_a, query="ES256", mode="hybrid")
+        hits = _service().query(TENANT_A, kb_id=kb_a, query="ES256", mode="hybrid").chunks
 
         with tenant_scope(TENANT_B):
             other_ids = {chunk.id for chunk in ChunkRepository().for_retrieval(kb_id=kb_b)}
@@ -184,11 +184,13 @@ class TestDegradation:
         """
         kb_id = _kb(TENANT_A)
 
-        hits = _service(_BrokenChunks()).query(
+        outcome = _service(_BrokenChunks()).query(
             TENANT_A, kb_id=kb_id, query=_VECTOR_TARGET, mode="hybrid"
         )
 
-        assert hits and hits[0].content == _VECTOR_TARGET
+        assert outcome.chunks and outcome.chunks[0].content == _VECTOR_TARGET
+        # 2B-3 起 FTS 的降級也走同一條通道（原本只在 log 裡）。
+        assert outcome.degraded == ("fts",)
 
     def test_the_fallback_is_recorded(
         self, tenants: None, capsys: pytest.CaptureFixture[str]
@@ -212,8 +214,10 @@ class TestChatPath:
         症狀是「除錯 API 查得到、實際問答查不到」）。"""
         kb_id = _kb(TENANT_A, retrieval={"context_chunks": 2})
 
-        selected = _service().retrieve_for_chat(
-            TENANT_A, kb_ids=[kb_id], query="ES256", mode="hybrid"
+        selected = (
+            _service()
+            .retrieve_for_chat(TENANT_A, kb_ids=[kb_id], query="ES256", mode="hybrid")
+            .chunks
         )
 
         assert len(selected) <= 2

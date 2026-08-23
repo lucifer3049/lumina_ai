@@ -32,7 +32,12 @@ from __future__ import annotations
 import uuid
 
 from etl.tokens import estimate_tokens
-from rag.pipeline import build_search_query, gate_by_score, select_context
+from rag.pipeline import (
+    build_search_query,
+    gate_by_absolute_score,
+    gate_by_score,
+    select_context,
+)
 from rag.retrievers.vector import RetrievedChunk
 
 
@@ -197,3 +202,39 @@ class TestRelativeScoreGate:
         candidates = [_chunk(-0.2, content="甲"), _chunk(-0.3, content="乙")]
 
         assert len(gate_by_score(candidates, min_score_ratio=0.8)) == 2
+
+
+class TestAbsoluteScoreGate:
+    """絕對門檻——06 §3.1 的 0.3，**2B-3 第一次生效**（1D-5 記的那筆兌現）。
+
+    它與相對門檻是兩件事，位置也不同：相對門檻在**融合之前**、比的是「跟同一路的第一名
+    差多少」；絕對門檻在 **rerank 之後**、比的是 cross-encoder 給的 0~1 分數。
+
+    **只有在 rerank 真的跑過時才准套用**。跳過 rerank 之後手上是 RRF 的融合分數
+    （第一名 1/61 ≈ 0.016），套 0.3 會把全部砍光——那正是 1D-5 當初拒絕啟用它的理由。
+    位置的強制在 `services/rag/retrieval.py`，這裡只驗算術。
+    """
+
+    def test_it_drops_everything_below_the_threshold(self) -> None:
+        """06 §3.3 的幻覺防線一：全部低於門檻就誠實回「知識庫無相關內容」，而不是拿
+        一堆不相關的段落硬答。**這一條與相對門檻最大的差別**——它會回空清單。"""
+        candidates = [_chunk(0.28, content="甲"), _chunk(0.1, content="乙")]
+
+        assert gate_by_absolute_score(candidates, threshold=0.3) == []
+
+    def test_it_keeps_the_ones_at_or_above(self) -> None:
+        candidates = [
+            _chunk(0.9, content="甲"),
+            _chunk(0.3, content="乙"),
+            _chunk(0.29, content="丙"),
+        ]
+
+        kept = gate_by_absolute_score(candidates, threshold=0.3)
+
+        assert [chunk.content for chunk in kept] == ["甲", "乙"]
+
+    def test_zero_disables_it(self) -> None:
+        """預設關閉（同相對門檻的理由：它會砍東西，開不開由資料決定）。"""
+        candidates = [_chunk(0.01, content="甲")]
+
+        assert gate_by_absolute_score(candidates, threshold=0.0) == candidates

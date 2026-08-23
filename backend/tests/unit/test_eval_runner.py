@@ -179,18 +179,23 @@ class TestReportShape:
 
 class TestModes:
     def test_all_three_modes_are_declared(self, runner: ModuleType) -> None:
-        assert tuple(runner.MODES) == ("vector", "hybrid", "hybrid+rerank")
+        # `vector+rerank` 是 2B-3 加的第四格：沒有它就分不出「hybrid+rerank 贏了」是
+        # rerank 的功勞還是 hybrid 的——而 2B-2 的數據顯示 hybrid 目前是負貢獻，這個
+        # 歸因問題因此不是假想的。
+        assert tuple(runner.MODES) == ("vector", "vector+rerank", "hybrid", "hybrid+rerank")
 
     def test_hybrid_became_available_in_2b2(self, runner: ModuleType) -> None:
-        """`hybrid+rerank` 仍未實作（2B-4）。每開通一個模式就改這裡一次——清單是
-        「評測現在量得出什麼」的唯一聲明。"""
+        """兩個 rerank 模式仍未開通（2B-4）：2B-3 只有 MockProvider，而 mock 的分數
+        沒有語意——拿它跑評測量到的是亂數。每開通一個模式就改這裡一次，清單是「評測
+        現在量得出什麼」的唯一聲明。"""
         assert tuple(runner.IMPLEMENTED_MODES) == ("vector", "hybrid")
 
     def test_a_declared_but_unimplemented_mode_refuses_to_run(self, runner: ModuleType) -> None:
         """**不得偷偷跑成純向量**：那會產生一份標著 hybrid 而其實是向量的報告，而它
         與真的 hybrid 報告長得一模一樣。"""
-        with pytest.raises(NotImplementedError):
-            runner.validate_mode("hybrid+rerank")
+        for mode in ("vector+rerank", "hybrid+rerank"):
+            with pytest.raises(NotImplementedError):
+                runner.validate_mode(mode)
 
     def test_an_unknown_mode_is_a_plain_error(self, runner: ModuleType) -> None:
         with pytest.raises(ValueError):

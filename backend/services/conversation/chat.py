@@ -58,7 +58,7 @@ from services.ai.prompts import SYSTEM_RAG_PROMPT_KEY, PromptService
 from services.conversation.conversations import MessageView, message_view
 from services.platform.quota import QuotaExceededError, QuotaReservation, QuotaService
 from services.platform.usage import UsageEvent, UsageService
-from services.rag.retrieval import RetrievalService
+from services.rag.retrieval import RetrievalOutcome, RetrievalService
 
 logger = get_logger(__name__)
 
@@ -120,6 +120,8 @@ class _PreparedTurn:
     prompt_version: int
     chunks: tuple[RetrievedChunk, ...]
     retrieved: bool
+    # 哪幾個增強步驟被跳過了（2B-3）——一路走到 `usage.rag.degraded`。
+    degraded: tuple[str, ...] = ()
 
 
 class ChatService:
@@ -493,7 +495,8 @@ class ChatService:
         """
         rendered = await run_orm(self._prompts.render, tenant_id, key=SYSTEM_RAG_PROMPT_KEY)
         history, previous_questions = await run_orm(self._history, tenant_id, turn)
-        chunks = await self._retrieve(tenant_id, turn, previous_questions)
+        outcome = await self._retrieve(tenant_id, turn, previous_questions)
+        chunks = outcome.chunks
 
         context = ""
         if chunks:
@@ -520,15 +523,21 @@ class ChatService:
             prompt_version=rendered.version,
             chunks=tuple(chunks),
             retrieved=bool(turn.kb_ids),
+            degraded=outcome.degraded,
         )
 
     async def _retrieve(
         self, tenant_id: uuid.UUID, turn: TurnStarted, previous_questions: Sequence[str]
-    ) -> list[RetrievedChunk]:
+    ) -> RetrievalOutcome:
         """這一輪的 context（06 §3）。沒掛 KB 就整段跳過——06 §9 的純閒聊路徑不付
-        RAG 成本，而沒有 KB 時檢索一定查不到任何東西。"""
+        RAG 成本，而沒有 KB 時檢索一定查不到任何東西。
+
+        回的是 `RetrievalOutcome` 而不是清單（2B-3）：降級標記要跟著走到
+        `usage.rag.degraded`，而把它掛在 service 的 instance 上會在併發請求之間外洩
+        ——這個 service 是跨請求共用的。
+        """
         if not turn.kb_ids:
-            return []
+            return RetrievalOutcome(chunks=[])
 
         params = await run_orm(self._retrieval.params_for, tenant_id, turn.kb_ids)
         query = build_search_query(
@@ -679,7 +688,7 @@ class ChatService:
 
     def _citations(
         self, answer: str, prepared: _PreparedTurn | None, *, message_id: uuid.UUID
-    ) -> tuple[list[dict[str, Any]], dict[str, int] | None]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         """回答 + 本輪 context → 驗證過的引用，以及**這一輪的三個數字**（06 §3.3）。
 
         `prepared` 是 `None` 代表在組請求之前就失敗了（prompt 讀不到、檢索炸了）——
@@ -712,6 +721,9 @@ class ChatService:
             "context_chunks": len(prepared.chunks),
             "citations": len(result.citations),
             "dropped": len(result.dropped_markers),
+            # 哪幾個增強步驟被跳過了（2B-3）。**正常路徑是空清單而不是省略欄位**：
+            # 省略的話，「這一輪沒有降級」與「這個版本還沒有這個欄位」在報表上分不出來。
+            "degraded": list(prepared.degraded),
         }
         return [citation.as_dict() for citation in result.citations], stats
 
@@ -778,7 +790,7 @@ class EmptyMessageError(DomainError):
         super().__init__("訊息內容不得為空")
 
 
-def _with_rag_stats(usage: dict[str, Any], stats: dict[str, int] | None) -> dict[str, Any]:
+def _with_rag_stats(usage: dict[str, Any], stats: dict[str, Any] | None) -> dict[str, Any]:
     """把這一輪的引用統計併進生成快照（05 §3.4 的 `usage jb`）。
 
     **放在 `usage["rag"]` 這個子物件裡，不與 token 平放**：`prompt_tokens` 那幾個鍵是

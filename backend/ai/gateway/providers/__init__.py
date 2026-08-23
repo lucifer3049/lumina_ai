@@ -72,3 +72,44 @@ class ChatProvider(Protocol):
     def stream_chat(
         self, request: ChatRequest, *, timeouts: ChatTimeouts
     ) -> AsyncGenerator[ProviderDelta, None]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RerankedDocument:
+    """rerank 的一筆結果：**原始清單的索引**與 cross-encoder 給的分數。
+
+    回索引而不是回重排後的文字：呼叫端手上是 `RetrievedChunk`（帶 chunk_id、頁碼、
+    檔名、doc_version），只拿文字回來的話那些欄位就對不回去了——而引用要靠它們說出
+    「這句話出自哪份文件第幾頁」。
+    """
+
+    index: int
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRerank:
+    """adapter 的回傳。``model`` 由 adapter 回報（同 embedding：provider 會做別名解析，
+    而「當時用了哪個模型」是 06 §1 版本化貫穿要留的快照）。"""
+
+    results: list[RerankedDocument]
+    model: str
+
+
+@runtime_checkable
+class RerankProvider(Protocol):
+    """rerank adapter（2B-3）。
+
+    **這個介面不共用 `openai_compatible.py`**（13 §4 的 2B 開工前定案）：rerank 沒有
+    OpenAI 相容的共通形狀，TEI 的 `/rerank`、Cohere、Jina、NVIDIA 各一套 request 與
+    response。1C-5「五家共用一個 adapter」的紅利在這裡不成立。
+
+    介面因此只說「我們要什麼」——一組 (原始索引, 分數)，由各家 adapter 自己翻譯。
+    `timeout_seconds` 同樣由 Gateway 傳入（11 §4.1 的 timeout 字典是全域的）。
+    """
+
+    name: str
+
+    def rerank(
+        self, query: str, documents: list[str], *, model: str, timeout_seconds: float
+    ) -> ProviderRerank: ...
