@@ -162,6 +162,20 @@ class AppSettings(BaseSettings):
 
     # 06 §3.1：vector search 候選數。
     rag_top_k: int = 40
+    # 06 §3.1：FTS（pgroonga）候選數。與 `rag_top_k` 分開是因為兩路的成本不同——
+    # 向量那路每次要先算 embedding（真的錢），字面那路只是一次 DB 查詢。
+    rag_fts_top_k: int = 40
+    # 06 §3.1 的 RRF k=60。「名次差距要壓多平」的旋鈕：越大越看重「有多少路都提到
+    # 它」，越小越信任各路自己的排序。
+    rag_rrf_k: int = 60
+    # 06 §3.1 的「RRF → 24」：融合後留幾筆進下一關。2B-4 的 rerank 吃的就是它，
+    # 而 cross-encoder 的成本與這個數字成正比（11 §4 的 rerank < 800ms）。
+    rag_hybrid_candidates: int = 24
+    # 檢索模式（2B-2）。**預設 hybrid**；`vector` 保留給兩件事：離線評測要量得出
+    # 「hybrid 比純向量好多少」，以及 FTS 出事時能手動退回（降級鏈之外的人工開關）。
+    # `hybrid+rerank` 等 2B-3／2B-4——提前接受它的話，設了之後什麼都不會發生，而
+    # 使用者會以為 rerank 已經在跑。
+    rag_retrieval_mode: Literal["vector", "hybrid"] = "hybrid"
     # 06 §3.1 的 rerank top_n 6~8。Phase 1 沒有 rerank，這是「進 context 幾段」。
     rag_context_chunks: int = 8
     # 06 §3.2：RAG context 的 token 預算。與 chunker 用同一個估算器（`etl/tokens.py`），

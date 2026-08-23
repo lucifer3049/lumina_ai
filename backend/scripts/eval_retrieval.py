@@ -102,8 +102,8 @@ DATASETS: dict[str, tuple[Path, Path]] = {
 
 # 三個模式先宣告、2B-0 只實作第一個（06 §3.1 的檢索鏈）。
 MODES = ("vector", "hybrid", "hybrid+rerank")
-IMPLEMENTED_MODES = ("vector",)
-_MODE_OWNERS = {"hybrid": "2B-2（RRF 融合）", "hybrid+rerank": "2B-4（TEI reranker）"}
+IMPLEMENTED_MODES = ("vector", "hybrid")
+_MODE_OWNERS = {"hybrid+rerank": "2B-4（TEI reranker）"}
 
 SCHEMA_VERSION = 1
 # 報告要回答的是「前幾名裡有沒有」，而不同的 k 回答不同的問題：k=1 是「第一名就對」，
@@ -403,7 +403,17 @@ def run_evaluation(
     outcomes: list[QuestionOutcome] = []
     rows: list[dict[str, Any]] = []
     for question in questions:
-        hits = service.query(tenant_id, kb_id=kb_id, query=question.question, top_k=effective_top_k)
+        hits = service.query(
+            tenant_id,
+            kb_id=kb_id,
+            query=question.question,
+            top_k=effective_top_k,
+            # **模式由報告說了算，不是由 KB 的設定說了算**：評測要在同一份資料上量出
+            # 兩種模式的差距，而 KB config 是「正式路徑用哪一種」。不覆寫的話，
+            # `--mode vector` 會安靜地跑成 hybrid，而 2B-2 的結論就是拿 hybrid 跟
+            # hybrid 比——差距是 0，報告看起來完全正常。
+            mode=mode,
+        )
         # **chunk id 全部記下，包含對不回 passage 的那些**：對不回來的命中若被丟掉，
         # 「檢索回了不屬於這個語料的東西」這件事就會從報告裡消失，而那正是租戶隔離
         # 出問題時唯一看得見的痕跡。
@@ -450,6 +460,8 @@ def run_evaluation(
             # 用的是同一個解析（`services/knowledge/embedding.model_for`）。
             "embedding_model": model_for(str(kb.embedding_model) if kb else ""),
             "top_k": effective_top_k,
+            # 報告要記**實際生效**的模式，不是 KB 設定的那個（見上方 `mode=mode`）。
+            "mode": mode,
             "params": dataclasses.asdict(params),
         },
         per_question=rows,

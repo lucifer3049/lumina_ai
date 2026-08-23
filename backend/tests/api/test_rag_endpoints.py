@@ -151,7 +151,11 @@ class TestQuery:
         items = response.json()["items"]
         assert len(items) == 1
         assert items[0]["content"] == _CONTENT
-        assert items[0]["score"] > 0.99
+        # **2B-2 起 `score` 是 RRF 的融合分數**（名次倒數和，第一名 1/61），不再是
+        # 餘弦相似度。只保證「越大越相關」，尺度本身沒有意義——因此這裡驗的是正數
+        # 與排序，不是絕對值。餘弦的性質改由 `test_vector_retrieval.py` 在 repository
+        # 那一層守。09 §2.3 的欄位說明待同步（2B 結案時一併改，含 `pnpm gen:api`）。
+        assert items[0]["score"] > 0
 
     async def test_the_response_carries_what_a_citation_needs(
         self, client: httpx.AsyncClient, seeded_kb: uuid.UUID

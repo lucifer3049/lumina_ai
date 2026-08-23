@@ -28,9 +28,10 @@ from config.logging import get_logger
 from core.exceptions import NotFoundError
 from core.tenant import tenant_context
 from core.uow import unit_of_work
-from rag.pipeline import merge_candidates, select_context
+from rag.pipeline import fuse_candidates, gate_by_score, select_context
+from rag.retrievers.keyword import build_fts_query
 from rag.retrievers.vector import RetrievedChunk, normalise_query, to_retrieved
-from repositories.knowledge import EmbeddingRepository, KnowledgeBaseRepository
+from repositories.knowledge import ChunkRepository, EmbeddingRepository, KnowledgeBaseRepository
 from services.knowledge.embedding import model_for
 from services.rag.params import MAX_TOP_K, RagParams, resolve_rag_params
 
@@ -85,12 +86,14 @@ class RetrievalService:
         gateway: AIGateway | None = None,
         knowledge_bases: KnowledgeBaseRepository | None = None,
         embeddings: EmbeddingRepository | None = None,
+        chunks: ChunkRepository | None = None,
     ) -> None:
         # Gateway 惰性建立，理由同 EmbeddingService：`build_gateway()` 會解析 provider
         # 名稱，而未實作的 provider 直接 raise——建構 service 本身不該因此失敗。
         self._gateway = gateway
         self._knowledge_bases = knowledge_bases or KnowledgeBaseRepository()
         self._embeddings = embeddings or EmbeddingRepository()
+        self._chunks = chunks or ChunkRepository()
 
     @property
     def gateway(self) -> AIGateway:
@@ -105,8 +108,13 @@ class RetrievalService:
         kb_id: uuid.UUID,
         query: str,
         top_k: int | None = None,
+        mode: str | None = None,
     ) -> list[RetrievedChunk]:
         """在一個 KB 內檢索最相關的 chunk（`/rag/query` 的路徑）。
+
+        `mode` 覆寫這個 KB 生效中的檢索模式，**只給離線評測用**
+        （`scripts/eval_retrieval.py` 要能在同一份資料上量出 `vector` 與 `hybrid` 的
+        差距）。正常路徑一律傳 `None`，讓 15 §4.1 的那條解析說了算。
 
         KB 不存在（或屬於別的租戶）時 raise `NotFoundError`——**不是回空清單**。
         空清單的意思是「這個 KB 存在但沒有相關內容」，兩者對呼叫端的處置完全不同，
@@ -120,14 +128,24 @@ class RetrievalService:
         if kb is None:
             raise NotFoundError("知識庫不存在")
 
-        limit = resolve_rag_params(kb.config).top_k if top_k is None else top_k
+        params = resolve_rag_params(kb.config)
+        limit = params.top_k if top_k is None else top_k
         if not 1 <= limit <= MAX_TOP_K:
             raise ValueError(f"top_k 必須介於 1 與 {MAX_TOP_K} 之間")
 
-        return self._search(tenant_id, kb, text, top_k=limit)
+        groups = self._retrieve(tenant_id, kb, text, params, top_k=limit, mode=mode)
+        # **`/rag/query` 與問答看到同一組候選**：這個端點存在的理由就是「看檢索準不
+        # 準」，兩邊各自融合一次的話，1D-5 那個「除錯 API 查得到、實際問答查不到」的
+        # 情境會換個位置重演。
+        return fuse_candidates(groups, k=params.rrf_k, limit=params.hybrid_candidates)
 
     def retrieve_for_chat(
-        self, tenant_id: uuid.UUID, *, kb_ids: Sequence[uuid.UUID], query: str
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        kb_ids: Sequence[uuid.UUID],
+        query: str,
+        mode: str | None = None,
     ) -> list[RetrievedChunk]:
         """一場對話掛著的所有 KB → 真正進 context 的那幾段（1D-5）。
 
@@ -158,17 +176,21 @@ class RetrievalService:
         # 可比較），因此快取的鍵是模型而不是「這次查詢」。
         cache: dict[str, _EmbeddedQuery] = {}
         groups = [
-            self._search(tenant_id, kb, text, top_k=params.top_k, cache=cache) for kb in available
+            group
+            for kb in available
+            for group in self._retrieve(
+                tenant_id, kb, text, params, top_k=params.top_k, mode=mode, cache=cache
+            )
         ]
         selected = select_context(
-            merge_candidates(groups),
+            fuse_candidates(groups, k=params.rrf_k, limit=params.hybrid_candidates),
             max_chunks=params.context_chunks,
             token_budget=params.context_token_budget,
-            min_score_ratio=params.min_score_ratio,
         )
         logger.info(
             "rag_context_selected",
             kb_count=len(available),
+            group_count=len(groups),
             candidate_count=sum(len(group) for group in groups),
             context_count=len(selected),
         )
@@ -187,6 +209,76 @@ class RetrievalService:
         return resolve_rag_params(None)
 
     # ── 內部 ────────────────────────────────────────────────────
+
+    def _retrieve(
+        self,
+        tenant_id: uuid.UUID,
+        kb: _KnowledgeBaseSnapshot,
+        text: str,
+        params: RagParams,
+        *,
+        top_k: int,
+        mode: str | None,
+        cache: dict[str, _EmbeddedQuery] | None = None,
+    ) -> list[list[RetrievedChunk]]:
+        """一個 KB → 各路的候選清單（融合前）。
+
+        **門檻在這裡套、逐路各自套**（`rag/pipeline.py` 的 `gate_by_score`）：融合之後
+        分數換成名次倒數和，相對門檻在那個尺度上不是砍不掉東西就是把大半砍光。
+
+        回傳的是 list of list 而不是攤平的一份：RRF 吃的是「每一路各自的名次」，攤平
+        之後那個資訊就沒有了。
+        """
+        effective = mode or params.retrieval_mode
+        groups = [
+            gate_by_score(
+                self._search(tenant_id, kb, text, top_k=top_k, cache=cache),
+                min_score_ratio=params.min_score_ratio,
+            )
+        ]
+        if effective != "vector":
+            keyword = self._search_fts(tenant_id, kb, text, top_k=params.fts_top_k)
+            if keyword:
+                groups.append(gate_by_score(keyword, min_score_ratio=params.min_score_ratio))
+        return groups
+
+    def _search_fts(
+        self, tenant_id: uuid.UUID, kb: _KnowledgeBaseSnapshot, text: str, *, top_k: int
+    ) -> list[RetrievedChunk]:
+        """字面比對那一路。**失敗一律降級成「這一路沒有候選」，不往外拋。**
+
+        06 §1 的「降級優先於失敗」：FTS 是增強而不是必要。索引壞掉、pgroonga 沒裝、
+        planner 選了一個 `&@*` 用不了的計畫——這些的正確處置都是退回純向量，而不是讓
+        使用者從此問不了問題。整輪失敗的代價是「這個知識庫壞了」，降級的代價只是
+        「稀有詞暫時找不到」。
+
+        **但一定要留下痕跡**：安靜的降級會讓「檢索品質變差」查不到原因，而那時看得到
+        的只有評測分數掉了一截。
+        """
+        query = build_fts_query(text)
+        if not query:
+            # **沒有識別符就棄權**（2B-2b）：純中文的概念問句與純小寫的英文問句裡沒有
+            # 字面比對幫得上忙的東西，投一張模糊票的代價是把向量找對的答案擠下去
+            # ——2B-2 的評測實測到這件事。理由見 `rag/retrievers/keyword.py`。
+            logger.info("fts_abstained", kb_id=str(kb.id))
+            return []
+
+        try:
+            with tenant_context(tenant_id), unit_of_work():
+                hits = self._chunks.search_fts(query, kb_id=kb.id, top_k=top_k)
+        # 什麼錯都接得住是降級的前提：這裡的例外可能來自 DB（索引不存在）、PGroonga
+        # （計畫選錯）、甚至連線層。分類它們只會讓下一種沒想到的錯誤變成 500。
+        except Exception as exc:
+            logger.warning(
+                "rag_fts_degraded", kb_id=str(kb.id), error=type(exc).__name__, detail=str(exc)
+            )
+            return []
+
+        results = to_retrieved(hits)
+        logger.info(
+            "fts_retrieval_completed", kb_id=str(kb.id), top_k=top_k, hit_count=len(results)
+        )
+        return results
 
     def _search(
         self,

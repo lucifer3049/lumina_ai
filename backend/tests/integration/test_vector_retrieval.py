@@ -34,6 +34,7 @@ from django.db import connection
 from ai.gateway import AIGateway
 from ai.gateway.providers.mock import MockEmbeddingProvider
 from core.exceptions import NotFoundError
+from repositories.knowledge import EmbeddingRepository
 from services.knowledge.embedding import EmbeddingService
 from services.rag.retrieval import RetrievalService, default_top_k
 from tests.conftest import TENANT_A, TENANT_B
@@ -112,24 +113,38 @@ class TestRanking:
         assert results[0].chunk_id == chunk_ids[1]
 
     def test_scores_are_similarities_not_distances(self, tenants: None) -> None:
-        """分數是**相似度**：越大越相關，範圍 0~1。
+        """分數是**相似度**：越大越相關，範圍 -1~1。
 
         距離與相似度差一個負號，而兩者都會排出一個看起來像答案的清單。06 §3.1 的
         rerank 門檻 0.3 是相似度——方向反了，1D 會把最不相關的六筆餵給 LLM，而回答
         看起來只是「品質不好」。
+
+        **量的是 repository 而不是 service**（2B-2 起）：service 的回傳值經過 RRF
+        融合，分數已經換成名次倒數和（第一名 1/61）。餘弦相似度的性質只在這一層還
+        看得到，而它仍然要有人守——1D 的門檻與 2B-3 的絕對門檻都建立在它上面。
         """
-        kb_id, _ = _kb_with_vectors(TENANT_A)
+        kb_id, chunk_ids = _kb_with_vectors(TENANT_A)
+        embedded = _gateway().embed([_CONTENTS[0]], model="text-embedding-3-small")
 
-        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0])
+        with tenant_scope(TENANT_A):
+            hits = EmbeddingRepository().search(
+                embedded.vectors[0],
+                kb_id=kb_id,
+                model=embedded.model,
+                embedding_version=1,
+                top_k=10,
+                ef_search=80,
+            )
 
-        scores = [result.score for result in results]
+        assert [hit.chunk_id for hit in hits][:1] == chunk_ids[:1]
+        scores = [hit.score for hit in hits]
         assert scores == sorted(scores, reverse=True), "分數必須由大到小"
         # **範圍是 -1~1 而不是 0~1**：cosine 距離的範圍是 0~2（夾角 0°~180°），
         # 相似度 = 1 - 距離。夾角超過 90° 就是負的，那是「意思相反」而不是錯誤。
         # 寫成 0~1 的話，第一個真的不相關的查詢就會踩到，而那時看起來像分數算錯。
         assert all(-1.0 <= score <= 1.0 for score in scores)
         # 完全相同的文字 → 距離 0 → 相似度 1。halfvec 是 fp16，留 0.01 的容差。
-        assert results[0].score > 0.99
+        assert hits[0].score > 0.99
 
     def test_citation_fields_survive(self, tenants: None) -> None:
         """1D 的引用要說出「哪份文件、第幾頁、哪一節」。
@@ -189,7 +204,8 @@ class TestFilters:
             # 把既有向量改標成「別的模型」——目前版本因此一筆都不剩。
             Embedding.objects.filter(chunk_id__in=chunk_ids).update(model="another-model")
 
-        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0])
+        # 同上一條：驗的是向量那一路的過濾條件，因此明確走 `vector`。
+        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0], mode="vector")
 
         assert results == []
 
@@ -201,7 +217,10 @@ class TestFilters:
         """
         kb_id, _ = _kb_with_vectors(TENANT_A, embed=False)
 
-        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0])
+        # **明確指定 `vector`**：2B-2 之後預設是 hybrid，而字面比對照樣找得到這些
+        # chunk（它們有內容、只是還沒有向量）。那不是錯誤——re-embedding 期間由 FTS
+        # 頂住是 hybrid 的紅利之一——但這條驗的是**向量那一路**的過濾條件。
+        results = _service().query(TENANT_A, kb_id=kb_id, query=_CONTENTS[0], mode="vector")
 
         assert results == []
 

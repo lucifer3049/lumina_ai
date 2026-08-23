@@ -40,6 +40,9 @@ _SECTION = "retrieval"
 MAX_TOP_K = 200
 _MAX_CONTEXT_CHUNKS = 50
 _MAX_TOKEN_BUDGET = 100_000
+# RRF 的 k 沒有物理上限，但大到某個程度之後每一段的貢獻都趨近 1/k——名次完全失去意義，
+# 而結果看起來只是「排序怪怪的」。
+_MAX_RRF_K = 1000
 _MAX_HISTORY_TURNS = 10
 
 
@@ -48,6 +51,10 @@ class RagParams:
     """一次檢索要用的全部參數。**上層只認得這個型別**，不知道值從哪一層來。"""
 
     top_k: int
+    fts_top_k: int
+    rrf_k: int
+    hybrid_candidates: int
+    retrieval_mode: str
     context_chunks: int
     context_token_budget: int
     min_score_ratio: float
@@ -66,6 +73,16 @@ def resolve_rag_params(kb_config: Mapping[str, Any] | None) -> RagParams:
 
     return RagParams(
         top_k=_int(section, "top_k", settings.rag_top_k, low=1, high=MAX_TOP_K),
+        fts_top_k=_int(section, "fts_top_k", settings.rag_fts_top_k, low=1, high=MAX_TOP_K),
+        rrf_k=_int(section, "rrf_k", settings.rag_rrf_k, low=1, high=_MAX_RRF_K),
+        hybrid_candidates=_int(
+            section,
+            "hybrid_candidates",
+            settings.rag_hybrid_candidates,
+            low=1,
+            high=MAX_TOP_K,
+        ),
+        retrieval_mode=_mode(section, settings.rag_retrieval_mode),
         context_chunks=_int(
             section, "context_chunks", settings.rag_context_chunks, low=1, high=_MAX_CONTEXT_CHUNKS
         ),
@@ -87,6 +104,19 @@ def resolve_rag_params(kb_config: Mapping[str, Any] | None) -> RagParams:
             high=_MAX_HISTORY_TURNS,
         ),
     )
+
+
+# 這一層認得的模式。**不是從 `app_settings` 的 Literal 推導**：那份型別是給環境變數用的，
+# 而這裡的輸入是使用者寫得到的 KB config（2C 之後更是）。`hybrid+rerank` 刻意不在其中，
+# 理由見 `app_settings.rag_retrieval_mode`。
+_MODES = frozenset({"vector", "hybrid"})
+
+
+def _mode(section: Mapping[str, Any], default: str) -> str:
+    value = section.get("retrieval_mode", default)
+    if isinstance(value, str) and value in _MODES:
+        return value
+    return _rejected("retrieval_mode", value, default)
 
 
 def _int(section: Mapping[str, Any], key: str, default: int, *, low: int, high: int) -> int:

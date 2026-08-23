@@ -17,8 +17,9 @@ provider 以 context window 超限退回（看得見），或前面的指令被�
 
 1. **追問查不到東西**。「那病假呢？」單獨拿去檢索，命中的是一組與請假無關的內容——
    而模型會很有禮貌地依據那些內容回答。
-2. **多 KB 的合併沒有依分數排序**。順序即相關性，而 `build_context_block` 照原順序
-   輸出——最相關的那一段落在 context 中段，正是長 context 最容易被忽略的位置。
+2. **多路候選的融合排錯**。順序即相關性，而 `build_context_block` 照原順序輸出——
+   最相關的那一段落在 context 中段，正是長 context 最容易被忽略的位置。融合本身
+   （RRF）的驗收在 `test_rrf.py`；本檔只驗它前後的兩段：門檻與裁切。
 3. **裁切從高分端下手**。剩下的是最不相關的那幾段，而回答看起來只是「答得不好」。
 4. **預算算得比實際少**。chunk 的大小是 chunker 用 `estimate_tokens` 量出來的，
    context 預算若用另一套估法，兩邊的數字對不起來——而症狀是偶爾超限。
@@ -31,7 +32,7 @@ from __future__ import annotations
 import uuid
 
 from etl.tokens import estimate_tokens
-from rag.pipeline import build_search_query, merge_candidates, select_context
+from rag.pipeline import build_search_query, gate_by_score, select_context
 from rag.retrievers.vector import RetrievedChunk
 
 
@@ -90,40 +91,6 @@ class TestBuildSearchQuery:
         assert build_search_query("   ", previous_questions=["  "], history_turns=1) == ""
 
 
-class TestMergeCandidates:
-    def test_it_orders_across_knowledge_bases_by_score(self) -> None:
-        """**跨 KB 之後只有分數是共同尺度。**
-
-        一場對話可以掛多個 KB（05 §3.4 的 `kb_ids`），而每個 KB 各自查一次、各自
-        由高到低排好。照 KB 順序串起來的話，第二個 KB 裡分數最高的那一段會排在
-        第一個 KB 裡分數最低的那一段後面——而兩邊各自看起來都是排好的。
-        """
-        kb_one = [_chunk(0.9, content="甲"), _chunk(0.4, content="乙")]
-        kb_two = [_chunk(0.7, content="丙"), _chunk(0.5, content="丁")]
-
-        merged = merge_candidates([kb_one, kb_two])
-
-        assert [chunk.content for chunk in merged] == ["甲", "丙", "丁", "乙"]
-
-    def test_the_same_chunk_appears_once(self) -> None:
-        """同一個 chunk 不該進 context 兩次。
-
-        現在的資料模型下 chunk 只屬於一個 KB，所以這件事「不會發生」——但同一份
-        文件掛進兩個 KB（09 §2.2 的未來項）與 Phase 2 的 hybrid（同一段同時被向量與
-        FTS 命中）都會讓它發生，而重複的代價是**兩份 token 換零份新資訊**。
-        """
-        shared = _chunk(0.8, content="共用")
-
-        merged = merge_candidates([[shared], [shared]])
-
-        assert merged == [shared]
-
-    def test_no_candidates_is_not_an_error(self) -> None:
-        """一筆都沒命中是正常情況（06 §3.1 的門檻），不是失敗。"""
-        assert merge_candidates([]) == []
-        assert merge_candidates([[], []]) == []
-
-
 class TestSelectContext:
     def test_it_keeps_the_most_relevant_ones(self) -> None:
         """裁切從**低分端**下手。反過來的話，留下的是最不相關的那幾段——而回答
@@ -179,6 +146,12 @@ class TestSelectContext:
 class TestRelativeScoreGate:
     """相對門檻——Phase 1 唯一安全的「及格線」形式（1D-5 決定）。
 
+    **2B-2 起它套在融合之前、逐路各自套用**（原本在 `select_context` 裡、融合之後）。
+    理由是尺度：RRF 之後每一段的分數都是名次倒數和（第 1 名 1/61、第 10 名 1/70），
+    彼此的比值全部落在 0.87~1.0 之間——門檻設 0.8 也砍不掉任何東西，設 0.99 則會把
+    第三名以後全砍光。兩種都不是使用者要的，而且沒有任何錯誤。套在融合前，比較的
+    就還是各路自己的尺度（餘弦相似度、pgroonga 分數），語意與 1D-5 當初定的一致。
+
     06 §3.1 的絕對門檻 0.3 是 **rerank（cross-encoder）分數**，而 Phase 1 只有餘弦
     相似度。兩者是不同尺度的數字：套上去的結果不是「品質變好」，是每次都回
     「知識庫中找不到相關內容」。
@@ -191,11 +164,7 @@ class TestRelativeScoreGate:
     def test_off_by_default_keeps_everything(self) -> None:
         candidates = [_chunk(0.9, content="甲"), _chunk(0.01, content="乙")]
 
-        selected = select_context(
-            candidates, max_chunks=8, token_budget=10_000, min_score_ratio=0.0
-        )
-
-        assert len(selected) == 2
+        assert len(gate_by_score(candidates, min_score_ratio=0.0)) == 2
 
     def test_it_drops_candidates_far_behind_the_best(self) -> None:
         """「只留下分數接近第一名的那幾張」。第一名 0.9、門檻 0.5 → 低於 0.45 的丟掉。"""
@@ -205,22 +174,18 @@ class TestRelativeScoreGate:
             _chunk(0.1, content="丙"),
         ]
 
-        selected = select_context(
-            candidates, max_chunks=8, token_budget=10_000, min_score_ratio=0.5
-        )
+        kept = gate_by_score(candidates, min_score_ratio=0.5)
 
-        assert [chunk.content for chunk in selected] == ["甲", "乙"]
+        assert [chunk.content for chunk in kept] == ["甲", "乙"]
 
     def test_it_never_drops_the_best_candidate(self) -> None:
         """第一名對自己的比值永遠是 1，所以它一定留得下來——**否則門檻調到 1.0 就會
         把全部砍光**，而那時使用者看到的是「這個知識庫突然什麼都答不出來」。"""
         candidates = [_chunk(0.9, content="甲"), _chunk(0.89, content="乙")]
 
-        selected = select_context(
-            candidates, max_chunks=8, token_budget=10_000, min_score_ratio=1.0
-        )
+        kept = gate_by_score(candidates, min_score_ratio=1.0)
 
-        assert [chunk.content for chunk in selected] == ["甲"]
+        assert [chunk.content for chunk in kept] == ["甲"]
 
     def test_a_negative_best_score_disables_the_gate(self) -> None:
         """**餘弦相似度可以是負的**（兩個向量方向相反）。
@@ -231,8 +196,4 @@ class TestRelativeScoreGate:
         """
         candidates = [_chunk(-0.2, content="甲"), _chunk(-0.3, content="乙")]
 
-        selected = select_context(
-            candidates, max_chunks=8, token_budget=10_000, min_score_ratio=0.8
-        )
-
-        assert len(selected) == 2
+        assert len(gate_by_score(candidates, min_score_ratio=0.8)) == 2

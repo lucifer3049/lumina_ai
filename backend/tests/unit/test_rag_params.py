@@ -38,6 +38,12 @@ class TestSystemDefaults:
         settings = get_app_settings()
 
         assert settings.rag_top_k == 40
+        # 2B-2 的四個新旋鈕（06 §3.1 的 FTS top_k=40、Hybrid RRF k=60 → 24）。
+        assert settings.rag_fts_top_k == 40
+        assert settings.rag_rrf_k == 60
+        assert settings.rag_hybrid_candidates == 24
+        # 2B-2 起 hybrid 是預設路徑；`vector` 保留給評測與「FTS 出事時手動退回」。
+        assert settings.rag_retrieval_mode == "hybrid"
         assert settings.rag_context_chunks == 8
         assert settings.rag_context_token_budget == 4500
 
@@ -112,3 +118,44 @@ class TestKnowledgeBaseOverride:
         這個 KB 突然什麼都答不出來。"""
         assert resolve_rag_params({"retrieval": {"min_score_ratio": 5}}).min_score_ratio == 1.0
         assert resolve_rag_params({"retrieval": {"min_score_ratio": -1}}).min_score_ratio == 0.0
+
+
+class TestHybridParams:
+    """2B-2 的四個旋鈕，全部走同一條解析（15 §4.1）。"""
+
+    def test_kb_can_override_each_of_them(self) -> None:
+        params = resolve_rag_params(
+            {
+                "retrieval": {
+                    "fts_top_k": 10,
+                    "rrf_k": 20,
+                    "hybrid_candidates": 5,
+                    "retrieval_mode": "vector",
+                }
+            }
+        )
+
+        assert (params.fts_top_k, params.rrf_k, params.hybrid_candidates) == (10, 20, 5)
+        assert params.retrieval_mode == "vector"
+
+    def test_fts_top_k_is_capped_like_the_vector_one(self) -> None:
+        """它同樣直接進 SQL 的 LIMIT（`ChunkRepository.search_fts`）——沒有上限的話，
+        一個極大值不會失敗，只會讓那幾秒對**所有租戶**都很慢。"""
+        params = resolve_rag_params({"retrieval": {"fts_top_k": 10_000}})
+
+        assert params.fts_top_k == MAX_TOP_K
+
+    def test_an_unknown_mode_falls_back_to_the_default(self) -> None:
+        """**壞值退回預設並記一筆**（讀取時容忍，同其他參數的理由）：KB config 是使用者
+        寫得到的 JSON，一個 `"retrieval_mode": "hybird"` 不該讓那個 KB 從此問不了問題。
+        """
+        params = resolve_rag_params({"retrieval": {"retrieval_mode": "hybird"}})
+
+        assert params.retrieval_mode == "hybrid"
+
+    def test_rerank_mode_is_not_accepted_yet(self) -> None:
+        """`hybrid+rerank` 要等 2B-3／2B-4。提前接受它的話，KB 設了之後**什麼都不會
+        發生**——而使用者會以為 rerank 已經在跑了。"""
+        params = resolve_rag_params({"retrieval": {"retrieval_mode": "hybrid+rerank"}})
+
+        assert params.retrieval_mode == "hybrid"

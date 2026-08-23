@@ -181,15 +181,16 @@ class TestModes:
     def test_all_three_modes_are_declared(self, runner: ModuleType) -> None:
         assert tuple(runner.MODES) == ("vector", "hybrid", "hybrid+rerank")
 
-    def test_only_vector_is_implemented_in_2b0(self, runner: ModuleType) -> None:
-        assert tuple(runner.IMPLEMENTED_MODES) == ("vector",)
+    def test_hybrid_became_available_in_2b2(self, runner: ModuleType) -> None:
+        """`hybrid+rerank` 仍未實作（2B-4）。每開通一個模式就改這裡一次——清單是
+        「評測現在量得出什麼」的唯一聲明。"""
+        assert tuple(runner.IMPLEMENTED_MODES) == ("vector", "hybrid")
 
     def test_a_declared_but_unimplemented_mode_refuses_to_run(self, runner: ModuleType) -> None:
         """**不得偷偷跑成純向量**：那會產生一份標著 hybrid 而其實是向量的報告，而它
         與真的 hybrid 報告長得一模一樣。"""
-        for mode in ("hybrid", "hybrid+rerank"):
-            with pytest.raises(NotImplementedError):
-                runner.validate_mode(mode)
+        with pytest.raises(NotImplementedError):
+            runner.validate_mode("hybrid+rerank")
 
     def test_an_unknown_mode_is_a_plain_error(self, runner: ModuleType) -> None:
         with pytest.raises(ValueError):

@@ -1,48 +1,73 @@
-"""全文檢索的**純邏輯**（06 §3.1 的 FTS 一路、05 §5.3、13 §4 工作包 2B-1）。
+"""全文檢索的**查詢建構**（06 §3.1 的 FTS 一路、05 §5.3、13 §4 工作包 2B-1／2B-2b）。
 
-與 `vector.py` 對稱：這一層不碰 ORM、不認識上層（鐵則 2），真正的 SQL 在
-`ChunkRepository.search_fts`。回傳形狀也共用——FTS 的命中同樣經 `vector.to_retrieved`
-變成 `RetrievedChunk`，因為 2B-2 要把兩路的候選混在一起融合，形狀不同的話融合那一層
-就得為每一路各寫一次「這筆是從哪來的」。
+與 `vector.py` 對稱：這一層不碰 ORM、不認識上層（鐵則 2），SQL 在
+`ChunkRepository.search_fts`。回傳形狀共用——FTS 的命中同樣經 `vector.to_retrieved`
+變成 `RetrievedChunk`，因為 RRF 要把兩路的候選混在一起。
 
-**送給 PGroonga 的是整句原文，不是關鍵字清單**，理由是 2B-1 開工前的實測（暫存表，
-2026-08-23）：
+## 為什麼是「識別符才發言」（2B-2b，2026-08-23）
 
-- `content &@ '<整句中文問句>'` → **0 筆**。PGroonga 把整句斷成 bigram 後**全部 AND**，
-  而一段話不可能同時包含問句的每一個字組。
-- `content &@~ '<整句>'` → 同樣 0 筆，而且 `(`、`-`、`"` 是查詢語法的運算子：問句裡
-  一個括號就讓結果變空，**而且不報錯**。
-- `content &@~ '密碼 OR 鎖住'` → 有效，但要我們自己把中文斷成詞。這個 build 沒有
-  `pgroonga_tokenize`，Python 這側也沒有斷詞器——這條路現在走不通。
-- `content &@* '<整句>'`（similar search）→ **正中**。它自己從查詢文字裡挑代表性的詞，
-  短詞、英文問句、含語法字元的問句都正常，不相關的查詢與空白回空。
+2B-1 送整句問句進 `&@*`（similar search）。2B-2 的評測顯示那樣**反而更差**
+（手寫題 recall@1 0.4375 → 0.3958、DRCD 0.9417 → 0.9333），追因後的實測很清楚：
 
-因此這裡**只做三件事**：去頭尾空白、把空查詢變成空字串（由呼叫端擋掉）、過長截斷。
-**不做跳脫**——`&@*` 把那些字元當普通文字，補上 escape 只會讓查詢字串多出字面上的
-反斜線，而那些反斜線會被當成要比對的字元。症狀是「問句裡有括號的那幾題突然都查不到」，
-一樣沒有錯誤。
+- `ef_search` 單獨查 → 正解在前三名。
+- 同一個詞放進 `「向量索引的 ef_search 建議從多少開始調？」` → **0 筆**。中文的 bigram
+  把那個詞稀釋掉了，而 similar search 要求足夠多的代表詞同時命中。
+- 換 bigram-OR（把整句切成字組再 OR）更糟：pgroonga 的分數沒有 IDF，比的是命中**次數**，
+  於是長段落靠字數贏，正解掉出前五名。
 
-`&@~`（查詢語法）沒有被否定：2B-2 之後若要支援「必須包含某詞」的進階查詢，那是唯一
-走得通的路。現在不做。
+**結論：字面檢索只有在問句帶著「向量最弱的那種詞」時才有話講。** 那種詞是識別符——
+`ef_search`、`ES256`、`pgBackRest`、`PITR`、`第 14 條` 的 `14`。純中文的概念問句
+（「租戶隔離怎麼做？」）與純小寫的英文問句沒有這種詞，**這一層就回空字串讓那一路棄權**：
+沒有話講的時候閉嘴，比投一張模糊票好——後者的代價是把向量找對的答案擠下去。
+
+判斷規則刻意保守（寧可棄權也不要亂投）：
+- 含數字或 `_` `.` `-` → 是（`ES256`、`ef_search`、`v1.2`、`14`）
+- 全大寫且長度 ≥2 → 是（`API`、`JWT`、`RRF`、`PITR`）
+- 第一個字元之後還有大寫 → 是（`pgBackRest`、`MinIO`）
+- 其餘（`why`、`Why`、`document`）→ 不是。句首大寫的普通英文單字會被這條擋掉。
+
+送出的運算式是 `&@~` 的查詢語法（`"詞" OR "詞"`），每個詞用雙引號包住——詞本身只可能
+由 `[A-Za-z0-9_.-]` 組成，包起來之後 `-` 之類的字元不會被當成運算子。
 """
 
 from __future__ import annotations
 
-__all__ = ["MAX_FTS_QUERY_CHARS", "normalise_fts_query"]
+import re
+
+__all__ = ["MAX_FTS_QUERY_CHARS", "MAX_FTS_TERMS", "build_fts_query"]
 
 # **保護 DB 的硬上限，不是使用者可調的東西**（同 `services/rag/params.py` 的 `MAX_TOP_K`，
-# 15 §4.1 的例外條款）。similar search 的成本隨查詢長度上升，而查詢字串的來源是使用者
-# 輸入（`MessageCreateIn.content` 上限 4,000 字）——截在這裡，DB 那側才有上界。
-#
-# 1,000 字遠大於任何真實問句：它擋的是貼上整篇文章那種用法，不是正常提問。
+# 15 §4.1 的例外條款）。查詢字串的來源是使用者輸入（`MessageCreateIn.content` 上限
+# 4,000 字），截在這裡 DB 那側才有上界。
 MAX_FTS_QUERY_CHARS = 1000
+# 一句話裡的識別符很少超過個位數；上限擋的是「貼一整段設定檔進來提問」那種用法——
+# 那會組出上百個 OR，而每個都要掃一次倒排索引。
+MAX_FTS_TERMS = 12
+
+# 詞的形狀：英數起頭的識別符，或純數字（`第 14 條` 的 `14`）。單一數字不算——
+# 「3 天」的 `3` 到處都是。
+_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_.\-]+|[0-9]{2,}")
 
 
-def normalise_fts_query(query: str) -> str:
-    """問句 → 送進 `&@*` 的字串。
+def build_fts_query(text: str) -> str:
+    """問句 → `&@~` 的查詢運算式；**沒有識別符就回空字串（那一路棄權）**。
 
-    **空白查詢在這裡變成空字串**，由呼叫端拒絕（`search_fts` 會 raise）。不能讓它往下
-    走：PGroonga 對空字串回空集合，而那與「這個知識庫真的沒有相關內容」在結果上一模
-    一樣——兩者對上層的處置完全不同。
+    回空字串不是失敗，是「這句話裡沒有字面比對幫得上忙的東西」。呼叫端
+    （`services/rag/retrieval.py`）看到空字串就不打 DB——連查詢都不必送。
     """
-    return query.strip()[:MAX_FTS_QUERY_CHARS]
+    terms: list[str] = []
+    for token in _TOKEN.findall(text[:MAX_FTS_QUERY_CHARS]):
+        if _is_distinctive(token) and token not in terms:
+            terms.append(token)
+        if len(terms) >= MAX_FTS_TERMS:
+            break
+    return " OR ".join(f'"{term}"' for term in terms)
+
+
+def _is_distinctive(token: str) -> bool:
+    """這個詞是不是「向量最弱、字面最強」的那一種（見模組 docstring 的規則）。"""
+    if any(char.isdigit() for char in token) or any(char in "_.-" for char in token):
+        return True
+    if token.isupper() and len(token) >= 2:
+        return True
+    return any(char.isupper() for char in token[1:])
