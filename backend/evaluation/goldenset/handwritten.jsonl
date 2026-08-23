@@ -1,0 +1,24 @@
+{"language": "zh-Hant", "passage_ids": ["10_安全設計#2"], "question": "存取權杖的有效期是多久？系統用哪一種簽章演算法，為什麼不用共享密鑰的那一種？", "question_id": "hw-01", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["10_安全設計#3"], "question": "密碼連續打錯幾次帳號會被鎖住？鎖多久？", "question_id": "hw-02", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["10_安全設計#4"], "question": "API 金鑰在資料庫裡實際存的是什麼？驗證的時候怎麼做到只查一次索引？", "question_id": "hw-03", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["07_Tool架構#4"], "question": "工具的熔斷在什麼條件下觸發？斷開之後多久才會再試？", "question_id": "hw-04", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["08_ETL_Pipeline#7"], "question": "上傳的檔案有大小上限嗎？PDF 最多幾頁？", "question_id": "hw-05", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["05_資料庫設計#13"], "question": "重新處理文件時，如果冪等鍵只用文件 id 而不帶版本，會發生什麼事？", "question_id": "hw-06", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["06_AI_Pipeline#4"], "question": "向量檢索與關鍵字檢索各自取幾筆候選？兩邊融合之後留下幾筆進下一關？", "question_id": "hw-07", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["05_資料庫設計#27"], "question": "中文的全文檢索最後選了哪一套？如果雲端資料庫不支援它，替代方案是什麼？", "question_id": "hw-08", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["11_NFR_效能與可用性#2"], "question": "向量索引的 ef_search 建議從多少開始調？", "question_id": "hw-09", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["11_NFR_效能與可用性#25"], "question": "連資料庫、Redis 與物件儲存的逾時分別設定多少秒？", "question_id": "hw-10", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["11_NFR_效能與可用性#23"], "question": "Redis 整個掛掉的時候，限流和配額會怎麼處理？服務會不會停？", "question_id": "hw-11", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["09_REST_API設計#11"], "question": "回答串到一半網路斷了，要怎麼接回原本的內容？暫存最多留多久，過期之後會拿到什麼？", "question_id": "hw-12", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["03_前端專案結構#1", "09_REST_API設計#11"], "question": "前端為什麼不直接用瀏覽器內建的 EventSource 來收串流？", "question_id": "hw-13", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["03_前端專案結構#5"], "question": "登入之後兩種權杖分別放在哪裡？為什麼要分開放？", "question_id": "hw-14", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["02_後端專案結構#2"], "question": "哪一層被禁止直接引用 repositories 與 apps？", "question_id": "hw-15", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["02_後端專案結構#3", "15_計畫審查報告#3"], "question": "介面與實作的綁定只准寫在哪一個檔案裡？", "question_id": "hw-16", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["10_安全設計#7"], "question": "租戶之間的資料在快取和檔案儲存這兩層分別靠什麼隔開？", "question_id": "hw-17", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["10_安全設計#11"], "question": "如果有人在文件裡藏了指令，被檢索出來送進模型，最後是靠什麼擋下來？", "question_id": "hw-18", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["03_前端專案結構#4"], "question": "產生前端型別時為什麼要把「有預設值就當成必定存在」這個選項關掉？", "question_id": "hw-19", "source": "handwritten"}
+{"language": "zh-Hant", "passage_ids": ["14_Production_Checklist#14"], "question": "誠實清單裡提到評測題組初期規模太小，打算怎麼補？", "question_id": "hw-20", "source": "handwritten"}
+{"language": "en", "passage_ids": ["10_安全設計#8"], "question": "How are provider API keys encrypted at rest, and where is the key-encryption key kept?", "question_id": "hw-21", "source": "handwritten"}
+{"language": "en", "passage_ids": ["12_NFR_維運與AI特有需求#7"], "question": "What is the recovery point objective for the PostgreSQL backups, and which tool provides point-in-time recovery?", "question_id": "hw-22", "source": "handwritten"}
+{"language": "en", "passage_ids": ["08_ETL_Pipeline#7"], "question": "Why is document extraction run inside a separate subprocess instead of the worker itself?", "question_id": "hw-23", "source": "handwritten"}
+{"language": "en", "passage_ids": ["07_Tool架構#6"], "question": "Why are long-running jobs unsuitable for the synchronous tool execution loop?", "question_id": "hw-24", "source": "handwritten"}

@@ -111,7 +111,18 @@ SCHEMA_VERSION = 1
 # 2B-4 再怎麼調都救不回來——那是 2B-1／2B-2 的責任範圍。
 KS = (1, 5, 10, 20)
 # **主指標事先講好**：事後挑一個有進步的指標宣布勝利，是評測最容易出現的自欺。
-PRIMARY_METRIC = "recall@10"
+#
+# **2026-08-23 由 `recall@10` 改為 `recall@1` + `mrr`，依據是 2B-0 的 baseline 實測**：
+# DRCD 題組在純向量下 recall@5 起就是 1.000（120 題有 113 題排第一，最差名次 3），
+# 也就是原本的主指標**只有退步空間、沒有進步空間**——拿它證明「hybrid 優於純向量」
+# 在數學上不可能成立。recall@1 與 mrr 兩邊都還有空間（DRCD 0.9417／0.9653，自家文件
+# 的手寫題組 0.4375／0.6046）。
+#
+# **兩個指標一起看，而不是只換一個**：recall@1 上升而 mrr 下降的意思是「第一名多對了
+# 幾題，其餘題目整體往後掉」——那不是進步，是把分數挪到看得見的地方。因此判定規則是
+# 主指標上升**且**次指標不退步。
+PRIMARY_METRIC = "recall@1"
+SECONDARY_METRIC = "mrr"
 
 DEFAULT_TENANT_SLUG = "lumina-eval"
 _EVAL_MIME = "application/x-ndjson"
@@ -132,8 +143,11 @@ class IncomparableReportsError(EvaluationError):
 @dataclass(frozen=True, slots=True)
 class Comparison:
     primary: str
+    secondary: str
     baseline: float
     candidate: float
+    secondary_baseline: float
+    secondary_candidate: float
     deltas: Mapping[str, float]
     improved: bool
 
@@ -201,20 +215,27 @@ def write_report(report: Mapping[str, Any], path: Path) -> Path:
 
 
 def compare_reports(
-    baseline: Mapping[str, Any], candidate: Mapping[str, Any], *, primary: str = PRIMARY_METRIC
+    baseline: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    primary: str = PRIMARY_METRIC,
+    secondary: str = SECONDARY_METRIC,
 ) -> Comparison:
     """兩份報告的差異。**不是同一把尺量出來的就拒絕比較。**
 
     擋的是最有可能發生的意外：題組補了幾題、`.env` 換過 embedding 模型，而報告看起來
     完全正常。兩個數字照樣相減得出來，差值也照樣「看起來有進步」。
+
+    `improved` 的規則見 `PRIMARY_METRIC` 上方的說明：主指標上升**且**次指標不退步。
     """
     _require_comparable(baseline, candidate)
 
     base_metrics = _metrics(baseline)
     cand_metrics = _metrics(candidate)
     for source, metrics in (("baseline", base_metrics), ("candidate", cand_metrics)):
-        if primary not in metrics:
-            raise IncomparableReportsError(f"{source} 報告沒有主指標 {primary}")
+        for role, key in (("主指標", primary), ("次指標", secondary)):
+            if key not in metrics:
+                raise IncomparableReportsError(f"{source} 報告沒有{role} {key}")
 
     deltas = {
         key: float(cand_metrics[key]) - float(value)
@@ -225,10 +246,16 @@ def compare_reports(
     }
     return Comparison(
         primary=primary,
+        secondary=secondary,
         baseline=float(base_metrics[primary]),
         candidate=float(cand_metrics[primary]),
+        secondary_baseline=float(base_metrics[secondary]),
+        secondary_candidate=float(cand_metrics[secondary]),
         deltas=deltas,
-        improved=float(cand_metrics[primary]) > float(base_metrics[primary]),
+        improved=(
+            float(cand_metrics[primary]) > float(base_metrics[primary])
+            and float(cand_metrics[secondary]) >= float(base_metrics[secondary])
+        ),
     )
 
 
@@ -523,9 +550,10 @@ def _print_summary(report: Mapping[str, Any], path: Path) -> None:
 def _print_comparison(comparison: Comparison) -> None:
     verdict = "優於" if comparison.improved else "未優於"
     print(
-        f"\n對照 baseline：{comparison.primary} "
-        f"{comparison.baseline:.4f} → {comparison.candidate:.4f}"
-        f"（{verdict} baseline）"
+        f"\n對照 baseline（{verdict} baseline）："
+        f"{comparison.primary} {comparison.baseline:.4f} → {comparison.candidate:.4f}；"
+        f"{comparison.secondary} {comparison.secondary_baseline:.4f} → "
+        f"{comparison.secondary_candidate:.4f}"
     )
     for key in sorted(comparison.deltas):
         print(f"  {key:<12} {comparison.deltas[key]:+.4f}")

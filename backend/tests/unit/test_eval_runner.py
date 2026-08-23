@@ -218,19 +218,60 @@ class TestCompare:
 
         comparison = runner.compare_reports(baseline, candidate)
 
-        assert set(comparison.deltas) >= {"recall@10", "mrr"}
+        assert set(comparison.deltas) >= {"recall@1", "recall@10", "mrr"}
 
-    def test_it_names_the_metric_that_decides_the_verdict(
+    def test_it_names_the_metrics_that_decide_the_verdict(
         self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
     ) -> None:
-        """DoD ②「hybrid 優於純向量」要有一個**事先講好的**主指標。事後挑一個有進步的
-        指標來宣布勝利，是評測最容易出現的自欺。"""
+        """DoD ②「hybrid 優於純向量」要有**事先講好的**指標。事後挑一個有進步的指標來
+        宣布勝利，是評測最容易出現的自欺。
+
+        **`recall@10` 不能當主指標**（2026-08-23 依 2B-0 的 baseline 實測改）：DRCD 在
+        純向量下 recall@5 起就是 1.000，那個指標只有退步空間、沒有進步空間，拿它證明
+        「hybrid 比較好」在數學上不可能成立。
+        """
         baseline, candidate = self._pair(runner, tiny_dataset)
 
         comparison = runner.compare_reports(baseline, candidate)
 
-        assert comparison.primary == "recall@10"
+        assert comparison.primary == "recall@1"
+        assert comparison.secondary == "mrr"
         assert isinstance(comparison.improved, bool)
+
+    def test_a_gain_paid_for_by_a_worse_mrr_is_not_an_improvement(
+        self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
+    ) -> None:
+        """主指標上升、次指標下降 → **不算進步**。
+
+        那種形狀的意思是「第一名多對了幾題，其餘題目整體往後掉」——分數被挪到看得見
+        的地方而已。只看 recall@1 的話這種交換會被記成勝利，而使用者感受到的是「有時
+        候第一筆很準，有時候整段答非所問」。
+        """
+        # 三題從第二名升到第一名（recall@1 +0.2、rr 各 +0.5），兩題從第一名掉到第六名
+        # （recall@1 −0.2、rr 各 −0.833）：recall@1 淨升、mrr 淨降。
+        far = ("p9", "p8", "p7", "p6", "p5")
+        before = [
+            QuestionOutcome("q1", ("p9", "p1"), frozenset({"p1"})),
+            QuestionOutcome("q2", ("p9", "p2"), frozenset({"p2"})),
+            QuestionOutcome("q3", ("p9", "p3"), frozenset({"p3"})),
+            QuestionOutcome("q4", ("p4",), frozenset({"p4"})),
+            QuestionOutcome("q5", ("p5x",), frozenset({"p5x"})),
+        ]
+        after = [
+            QuestionOutcome("q1", ("p1",), frozenset({"p1"})),
+            QuestionOutcome("q2", ("p2",), frozenset({"p2"})),
+            QuestionOutcome("q3", ("p3",), frozenset({"p3"})),
+            QuestionOutcome("q4", (*far, "p4"), frozenset({"p4"})),
+            QuestionOutcome("q5", (*far, "p5x"), frozenset({"p5x"})),
+        ]
+        baseline = _report(runner, tiny_dataset, outcomes=before)
+        candidate = _report(runner, tiny_dataset, outcomes=after)
+
+        comparison = runner.compare_reports(baseline, candidate)
+
+        assert comparison.candidate > comparison.baseline, "主指標應該是上升的"
+        assert comparison.secondary_candidate < comparison.secondary_baseline
+        assert comparison.improved is False
 
     def test_a_worse_candidate_is_not_marked_improved(
         self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
