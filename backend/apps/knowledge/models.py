@@ -129,8 +129,11 @@ class Document(TimestampedModel):
 class Chunk(TimestampedModel):
     """切塊後的片段——檢索實際讀的那張表。
 
-    ``content_tsv``（pgroonga 全文檢索索引，05 §5.3）不在 1B-1：先寫 query pattern
-    再開 index（05 §4 原則），而查詢要到 1C 檢索才存在。
+    **全文檢索索引於 2B-1 落地**（`0006_chunk_fts_index`）：pgroonga 直接建在
+    ``content`` 上，不需要 05 §5.3 原本寫的 ``content_tsv`` generated 欄位——那等於把
+    同一份文字存兩次，且每次 re-ingest 都要重算。索引是多欄位
+    ``(tenant_id, kb_id, content)`` 且 partial（``superseded = false``），理由見該
+    migration 的 docstring。
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

@@ -23,6 +23,7 @@ policy 窄 → 使用者看不到本來該看到的資料）。
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -208,6 +209,94 @@ class DocumentRepository(SoftDeletableRepository[Document]):
         )
 
 
+# 全文檢索的查詢（06 §3.1、05 §5.3）。**四個地方錯了都不會報錯**，見 `search_fts`。
+#
+# 公開（不加底線）是為了讓 `tests/integration/test_fts_retrieval.py` 拿**真正跑的這一句**
+# 去 EXPLAIN：測試自己另寫一句形狀相近的 SQL 的話，兩邊漂掉時測試照樣綠，而正式路徑
+# 已經在用一個 planner 選不到 pgroonga 索引的查詢。
+#
+# **`AS MATERIALIZED` 不是效能微調，是正確性的一部分**（2B-1 實作時實測）：把檔名的
+# join 寫在同一層的話，planner 會選一條由 join 驅動的 btree 路徑（`ix_chunk_tenant_doc_seq`
+# 或 `ix_chunk_tenant_kb_active`）去掃 chunk，再把 `content &@* '...'` 當成 runtime
+# filter——而 `&@*`（similar search）**只在 index scan 下可用**，PGroonga 會直接拋
+# `similar search available only in index scan`，也就是每一次全文檢索都 500。
+# MATERIALIZED 擋掉 pushdown：CTE 內只剩「三個等值條件 + 全文」，多欄位 pgroonga 索引
+# 是唯一的路；檔名的 join 於是只發生在**已經裁到 top_k 之後**的那幾列上。
+FTS_SQL = """
+    WITH matched AS MATERIALIZED (
+        SELECT
+            id,
+            document_id,
+            doc_version,
+            content,
+            meta,
+            pgroonga_score(tableoid, ctid) AS score
+        FROM knowledge_chunk
+        WHERE tenant_id = %s
+          AND kb_id = %s
+          AND superseded = false
+          AND content &@* %s
+        ORDER BY score DESC, id
+        LIMIT %s
+    )
+    SELECT
+        matched.id,
+        matched.document_id,
+        document.filename,
+        matched.doc_version,
+        matched.content,
+        matched.meta,
+        matched.score
+    FROM matched
+    JOIN knowledge_document AS document ON document.id = matched.document_id
+    ORDER BY matched.score DESC, matched.id
+"""
+
+
+def _decode_meta(value: object) -> dict[str, Any]:
+    """`chunk.meta` 從 **raw SQL** 回來時是字串，從 ORM 回來時是 dict。
+
+    差別在誰做解碼：Django 的 `JSONField.from_db_value` 只在 ORM 那條路上跑，raw SQL
+    拿到的是 psycopg 給的原始 jsonb 文字。兩條路都會餵進 `rag/retrievers/vector.py` 的
+    `to_retrieved`，而它直接對 meta 呼叫 `.get()`——不解碼的話，症狀是 FTS 命中的
+    `page` 與 `heading_path` 全部變成空的（引用面板說不出「第幾頁」），而向量那一路
+    完全正常。
+    """
+    if isinstance(value, dict):
+        return {str(key): item for key, item in value.items()}
+    if isinstance(value, str) and value:
+        loaded = json.loads(value)
+        return loaded if isinstance(loaded, dict) else {}
+    return {}
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkHit:
+    """檢索命中的一筆——**這是 repository 唯一允許外流的形狀**。
+
+    不回傳 `Embedding` 或 `Chunk` 物件：那會讓上層拿到一個綁著 ORM 的東西，而
+    `rag/` 依鐵則 2 不得碰 ORM。``meta`` 保持原始 dict，page 與 heading_path 的解讀
+    留給知道 1D 需要什麼的那一層。
+
+    **向量與全文兩路共用這個形狀**（2B-1 起）：`EmbeddingRepository.search` 與
+    `ChunkRepository.search_fts` 回的是同一種東西，差別只在 ``score`` 怎麼算出來的
+    （餘弦相似度 vs pgroonga 分數，**兩者的尺度不可互相比較**）。2B-2 的 RRF 因此
+    只吃**名次**不吃分數；形狀若不一致，融合那一層就得為每一路各寫一次「這筆是從哪
+    來的」。
+    """
+
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    # 檔名與版本在同一趟 SQL 裡撈回來（1D-5 的引用要用）：事後補查等於每則回答多 N
+    # 次查詢，而引用面板是讀路徑上最頻繁的東西。join 的成本是零——`chunk__document`
+    # 本來就在查詢裡。
+    document_name: str
+    doc_version: int
+    content: str
+    meta: dict[str, Any]
+    score: float
+
+
 class ChunkRepository(TenantScopedRepository[Chunk]):
     model = Chunk
 
@@ -231,6 +320,83 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
         文件預覽語意錯亂、相鄰 chunk 拼接時接錯段落。
         """
         return list(self.get_queryset().filter(document_id=document_id).order_by("seq"))
+
+    def search_fts(self, query: str, *, kb_id: uuid.UUID, top_k: int) -> list[ChunkHit]:
+        """全文檢索：字面比對命中的 chunk 與 pgroonga 分數（06 §3.1 的 FTS 一路、2B-1）。
+
+        **它補的是向量檢索的盲區**：向量擅長「換句話說」，對專有名詞、型號、法條編號
+        卻很鈍——問「第 14 條」會回一段語氣很像但編號不對的文字，而那看起來完全像個
+        答案。兩路在 2B-2 以 RRF 融合。
+
+        四件事在這條查詢裡定案，錯了**都不會報錯**（前三個是 2B-1 開工前 spike 實測）：
+
+        1. **運算子是 ``&@*``（similar search）**，送進去的是整句問句。``&@`` 與 ``&@~``
+           會把整句斷成 bigram 後全部 AND，一段話不可能同時包含問句的每一個字組——
+           實測回 0 筆；而 ``&@~`` 還會把 ``(``、``-``、``"`` 當成查詢語法的運算子，
+           問句裡一個括號就讓結果變空。理由詳見 `rag/retrievers/keyword.py`。
+        2. **``superseded = false`` 必須寫在 SQL 裡**。索引是 partial 的
+           （``ix_chunk_content_fts_active``），查詢少了同一個條件，planner 就用不到它
+           ——退化成整表掃描，而結果完全正確。
+        3. **``pgroonga_score()`` 在沒走索引時回 0.0**：不是 NULL、不是錯誤，是一個合法
+           的分數。於是 2B-2 的 RRF 會拿到一組「全部同分」的候選，排序完全由 tie-break
+           決定。第 2 點失效時的症狀就是這個，`tests/integration/test_fts_retrieval.py`
+           以「分數 > 0」把兩者一起釘住。
+        4. **過濾條件一個都不能少**：租戶、KB、``superseded``。少任何一個，回來的 chunk
+           都「確實存在且看起來合理」——包括別的租戶的。
+
+        ``score`` 與向量那一路的相似度**不是同一個尺度**（pgroonga 的分數沒有上界），
+        兩邊的數字不可互相比較；RRF 只吃名次正是為此。
+
+        排序帶 ``chunk.id`` 當第二鍵：同分時沒有它，兩次查詢排出來的順序可以不同，而那
+        會讓引用編號在重跑時對不上（同 `rag/pipeline.py` 的 merge_candidates）。
+        """
+        text = query.strip()
+        if not text:
+            # 空查詢在 PGroonga 那裡回空集合，而那與「這個知識庫真的沒有相關內容」在
+            # 結果上一模一樣——兩者對上層的處置完全不同。前處理見
+            # `rag/retrievers/keyword.py` 的 `normalise_fts_query`。
+            raise ValueError("全文檢索的查詢不得為空")
+
+        if not connection.in_atomic_block:
+            # RLS 讀的是交易區域參數 ``app.tenant_id``（由 `unit_of_work` 以 SET LOCAL
+            # 設定）。交易外那個值不存在，policy 於是擋掉每一列——回傳空清單、沒有錯誤，
+            # 而症狀是「全文檢索永遠查不到東西」。同 `EmbeddingRepository.search` 的守門。
+            raise RuntimeError("ChunkRepository.search_fts 必須在交易內呼叫（RLS 的前提）")
+
+        tenant_id = get_current_tenant_id(operation="ChunkRepository.search_fts")
+        with connection.cursor() as cursor:
+            # **`&@*` 只在 index scan 下可用**——PGroonga 對 seq scan 直接拋
+            # `pgroonga: [similar][text] similar search available only in index scan`。
+            # 而 planner 在**小表**上一定選 seq scan（成本比較低），於是「剛建好、只有
+            # 幾段內容的知識庫」第一次查詢就會 500，資料長大之後又自己好掉——最難查的
+            # 那一種。`SET LOCAL` 把成本模型壓過去，交易結束即失效（不會外溢到連線池
+            # 裡的下一個使用者，同 `EmbeddingRepository.search` 的 ef_search）。
+            #
+            # 索引若不存在或處於 INVALID（`CONCURRENTLY` 失敗留下的狀態），planner 仍
+            # 然只能走 seq scan，於是這裡會**大聲失敗**而不是安靜地回一組 0 分的結果。
+            # 那是刻意的：後者會讓 2B-2 的 RRF 拿到一組全部同分的候選。
+            cursor.execute("SET LOCAL enable_seqscan = off")
+            try:
+                cursor.execute(FTS_SQL, [str(tenant_id), str(kb_id), text, int(top_k)])
+                rows = cursor.fetchall()
+            finally:
+                # 只讓上面那一句吃到這個設定：同一個交易裡後面還可能有別的查詢（呼叫端
+                # 的 `unit_of_work` 範圍不由這裡決定），而對它們來說關掉 seq scan 只會
+                # 讓 planner 選到更差的計畫。
+                cursor.execute("RESET enable_seqscan")
+
+        return [
+            ChunkHit(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                document_name=filename or "",
+                doc_version=int(doc_version),
+                content=content,
+                meta=_decode_meta(meta),
+                score=float(score),
+            )
+            for chunk_id, document_id, filename, doc_version, content, meta, score in rows
+        ]
 
     def for_retrieval(self, *, kb_id: uuid.UUID) -> list[Chunk]:
         """檢索候選集：該 KB 底下**未 superseded** 的 chunk。
@@ -321,27 +487,6 @@ class EmbeddingRow(TypedDict):
     vector: Sequence[float]
 
 
-@dataclass(frozen=True, slots=True)
-class VectorHit:
-    """檢索命中的一筆——**這是 repository 唯一允許外流的形狀**。
-
-    不回傳 `Embedding` 或 `Chunk` 物件：那會讓上層拿到一個綁著 ORM 的東西，而
-    `rag/` 依鐵則 2 不得碰 ORM。``meta`` 保持原始 dict，page 與 heading_path 的解讀
-    留給知道 1D 需要什麼的那一層。
-    """
-
-    chunk_id: uuid.UUID
-    document_id: uuid.UUID
-    # 檔名與版本在同一趟 SQL 裡撈回來（1D-5 的引用要用）：事後補查等於每則回答多 N
-    # 次查詢，而引用面板是讀路徑上最頻繁的東西。join 的成本是零——`chunk__document`
-    # 本來就在查詢裡。
-    document_name: str
-    doc_version: int
-    content: str
-    meta: dict[str, Any]
-    score: float
-
-
 class EmbeddingRepository(TenantScopedRepository[Embedding]):
     """向量的讀寫與檢索（05 §3.2、06 §3.1）。"""
 
@@ -404,7 +549,7 @@ class EmbeddingRepository(TenantScopedRepository[Embedding]):
         embedding_version: int,
         top_k: int,
         ef_search: int,
-    ) -> list[VectorHit]:
+    ) -> list[ChunkHit]:
         """向量檢索：回傳最相近的 chunk 與**相似度**（06 §3.1、05 §4）。
 
         三件事在這條查詢裡定案，錯了都不會報錯：
@@ -464,7 +609,7 @@ class EmbeddingRepository(TenantScopedRepository[Embedding]):
             )[:top_k]
         )
         return [
-            VectorHit(
+            ChunkHit(
                 chunk_id=chunk_id,
                 document_id=document_id,
                 document_name=filename or "",

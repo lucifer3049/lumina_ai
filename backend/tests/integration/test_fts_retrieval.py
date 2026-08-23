@@ -31,7 +31,7 @@ from django.db import connection
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from rag.retrievers.vector import to_retrieved
-from repositories.knowledge import ChunkRepository
+from repositories.knowledge import FTS_SQL, ChunkHit, ChunkRepository
 from tests.conftest import TENANT_A, TENANT_B
 from tests.factories.identity import make_tenant, tenant_scope
 from tests.factories.knowledge import make_chunk, make_document, make_knowledge_base
@@ -76,12 +76,29 @@ def _kb_with_chunks(
         return uuid.UUID(str(kb.id)), [uuid.UUID(str(chunk_id)) for chunk_id in chunk_ids]
 
 
-def _search(tenant_id: uuid.UUID, kb_id: uuid.UUID, query: str, *, top_k: int = 40) -> list:
+def _search(
+    tenant_id: uuid.UUID, kb_id: uuid.UUID, query: str, *, top_k: int = 40
+) -> list[ChunkHit]:
     with tenant_context(tenant_id), unit_of_work():
         return ChunkRepository().search_fts(query, kb_id=kb_id, top_k=top_k)
 
 
 class TestIndex:
+    def test_it_covers_tenant_and_kb_as_well_as_content(self, tenants: None) -> None:
+        """**多欄位索引，不是只有 `content`**（2B-1 實作時實測）。
+
+        只索引 `content` 的話，planner 會挑既有的 btree（服務 tenant + kb 的等值條件）
+        去掃，再把 `content &@* '...'` 當成 runtime filter——而 similar search 只在
+        index scan 下可用，PGroonga 直接拋錯。也就是說這個索引少兩個欄位的症狀不是
+        「變慢」，是**每一次全文檢索都 500**。
+        """
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT indexdef FROM pg_indexes WHERE indexname = %s", [INDEX_NAME])
+            row = cursor.fetchone()
+
+        assert row is not None
+        assert "tenant_id" in row[0] and "kb_id" in row[0], row[0]
+
     def test_the_pgroonga_index_exists_and_is_partial(self, tenants: None) -> None:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -104,15 +121,13 @@ class TestIndex:
         """
         kb_id, _ = _kb_with_chunks(TENANT_A)
 
-        with tenant_context(TENANT_A), unit_of_work():
-            ChunkRepository().search_fts("ES256", kb_id=kb_id, top_k=10)
-            with connection.cursor() as cursor:
-                cursor.execute("SET LOCAL enable_seqscan = off")
-                cursor.execute(
-                    "EXPLAIN SELECT id FROM knowledge_chunk "
-                    "WHERE superseded = false AND content &@* 'ES256'"
-                )
-                plan = "\n".join(row[0] for row in cursor.fetchall())
+        # **EXPLAIN 的是 repository 真正跑的那一句**，不是另寫一句形狀相近的：兩邊漂掉
+        # 時測試照樣綠，而正式路徑已經在用一個 planner 選不到 pgroonga 索引的查詢——
+        # 那個查詢不是變慢，是每次都 500（`&@*` 只在 index scan 下可用）。
+        with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
+            cursor.execute("SET LOCAL enable_seqscan = off")
+            cursor.execute("EXPLAIN " + FTS_SQL, [str(TENANT_A), str(kb_id), "ES256", 10])
+            plan = "\n".join(row[0] for row in cursor.fetchall())
 
         assert INDEX_NAME in plan, f"pgroonga 索引無法服務這個查詢：\n{plan}"
 

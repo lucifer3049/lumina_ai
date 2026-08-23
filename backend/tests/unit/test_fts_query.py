@@ -68,22 +68,34 @@ class TestNormalise:
         assert MAX_FTS_QUERY_CHARS >= 200
 
 
-class TestIndexMigration:
-    """索引宣告本身。**三個屬性錯了都不會有錯誤訊息**，只會讓檢索悄悄退化。"""
+@pytest.fixture(scope="module")
+def migration_source() -> str:
+    """建立這個索引的那一支 migration 的原始碼。
 
-    @pytest.fixture(scope="class")
-    def migration_source(self) -> str:
-        sources = [
-            path.read_text(encoding="utf-8")
-            for path in sorted(MIGRATIONS.glob("0*.py"))
-            if INDEX_NAME in path.read_text(encoding="utf-8")
-        ]
-        assert sources, f"沒有任何 migration 建立 {INDEX_NAME}"
-        assert len(sources) == 1, f"{INDEX_NAME} 出現在多個 migration 裡"
-        return sources[0]
+    以「內容含索引名」去找而不是寫死檔名：migration 的編號會隨其他工作包前進，而寫死
+    的檔名在那時只會讓這裡以「檔案不存在」失敗，訊息完全不指向真正的問題。
+    """
+    sources = [
+        path.read_text(encoding="utf-8")
+        for path in sorted(MIGRATIONS.glob("0*.py"))
+        if INDEX_NAME in path.read_text(encoding="utf-8")
+    ]
+    assert sources, f"沒有任何 migration 建立 {INDEX_NAME}"
+    assert len(sources) == 1, f"{INDEX_NAME} 出現在多個 migration 裡"
+    return sources[0]
+
+
+class TestIndexMigration:
+    """索引宣告本身。**四個屬性錯了都不會有錯誤訊息**，只會讓檢索悄悄退化或整條 500。"""
 
     def test_it_is_a_pgroonga_index(self, migration_source: str) -> None:
         assert "USING pgroonga" in migration_source
+
+    def test_it_indexes_tenant_and_kb_alongside_content(self, migration_source: str) -> None:
+        """索引少了那兩個欄位的症狀不是變慢，是**每次全文檢索都 500**：planner 會改用
+        既有的 btree 去掃，把 `&@*` 當成 runtime filter，而 similar search 只在 index
+        scan 下可用（2B-1 實作時實測）。"""
+        assert "(tenant_id, kb_id, content)" in migration_source
 
     def test_it_is_partial_on_active_chunks(self, migration_source: str) -> None:
         """`WHERE superseded = false`：少了它，索引會把每次 re-ingest 的歷史版本都收
