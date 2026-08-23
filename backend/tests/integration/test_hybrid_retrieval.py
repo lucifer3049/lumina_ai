@@ -96,7 +96,7 @@ class TestHybrid:
         而字面比對一找就到。純向量模式下這一段不會出現。"""
         kb_id = _kb(TENANT_A)
 
-        hits = _service().query(TENANT_A, kb_id=kb_id, query="ES256")
+        hits = _service().query(TENANT_A, kb_id=kb_id, query="ES256", mode="hybrid")
 
         assert _FTS_TARGET in [hit.content for hit in hits]
 
@@ -104,7 +104,7 @@ class TestHybrid:
         """hybrid 不能是「FTS 蓋過向量」：換句話說的問題仍然只有向量答得出來。"""
         kb_id = _kb(TENANT_A)
 
-        hits = _service().query(TENANT_A, kb_id=kb_id, query=_VECTOR_TARGET)
+        hits = _service().query(TENANT_A, kb_id=kb_id, query=_VECTOR_TARGET, mode="hybrid")
 
         assert hits[0].content == _VECTOR_TARGET
 
@@ -112,7 +112,7 @@ class TestHybrid:
         """重複的代價是兩份 token 換零份新資訊，而 hybrid 讓重複變成常態。"""
         kb_id = _kb(TENANT_A)
 
-        hits = _service().query(TENANT_A, kb_id=kb_id, query=_FTS_TARGET)
+        hits = _service().query(TENANT_A, kb_id=kb_id, query=_FTS_TARGET, mode="hybrid")
 
         chunk_ids = [hit.chunk_id for hit in hits]
         assert len(chunk_ids) == len(set(chunk_ids))
@@ -122,7 +122,7 @@ class TestHybrid:
         kb_a = _kb(TENANT_A)
         kb_b = _kb(TENANT_B)
 
-        hits = _service().query(TENANT_A, kb_id=kb_a, query="ES256")
+        hits = _service().query(TENANT_A, kb_id=kb_a, query="ES256", mode="hybrid")
 
         with tenant_scope(TENANT_B):
             other_ids = {chunk.id for chunk in ChunkRepository().for_retrieval(kb_id=kb_b)}
@@ -145,18 +145,33 @@ class TestMode:
         kb_id = _kb(TENANT_A, retrieval={"fts_top_k": 7})
         spy = _SpyChunks()
 
-        _service(spy).query(TENANT_A, kb_id=kb_id, query="ES256")
+        _service(spy).query(TENANT_A, kb_id=kb_id, query="ES256", mode="hybrid")
 
         assert [call["top_k"] for call in spy.calls] == [7]
 
-    def test_the_kb_can_opt_out_of_hybrid(self, tenants: None) -> None:
-        """KB 覆寫要真的生效——後台改了沒有反應是 15 §4.1 要防的那件事。"""
-        kb_id = _kb(TENANT_A, retrieval={"retrieval_mode": "vector"})
+    def test_the_default_stays_on_vector(self, tenants: None) -> None:
+        """**預設不打 FTS**（2026-08-23 裁決）：三種 FTS 策略在兩份 golden set 上都沒讓
+        hybrid 勝出，而 06 §3.1 的管線少了 rerank 這個裁判。數據見
+        `app_settings.rag_retrieval_mode`；2B-4 接上 reranker 後再用同一套評測決定。
+        """
+        kb_id = _kb(TENANT_A)
         spy = _SpyChunks()
 
         _service(spy).query(TENANT_A, kb_id=kb_id, query="ES256")
 
         assert spy.calls == []
+
+    def test_a_kb_can_opt_in_to_hybrid(self, tenants: None) -> None:
+        """KB 覆寫要真的生效——後台改了沒有反應是 15 §4.1 要防的那件事。
+
+        它同時是 2B-4 之前唯一能在**正式路徑**上試 hybrid 的方式（評測走 `--mode`）。
+        """
+        kb_id = _kb(TENANT_A, retrieval={"retrieval_mode": "hybrid"})
+        spy = _SpyChunks()
+
+        _service(spy).query(TENANT_A, kb_id=kb_id, query="ES256")
+
+        assert [call["query"] for call in spy.calls] == ['"ES256"']
 
 
 class TestDegradation:
@@ -169,7 +184,9 @@ class TestDegradation:
         """
         kb_id = _kb(TENANT_A)
 
-        hits = _service(_BrokenChunks()).query(TENANT_A, kb_id=kb_id, query=_VECTOR_TARGET)
+        hits = _service(_BrokenChunks()).query(
+            TENANT_A, kb_id=kb_id, query=_VECTOR_TARGET, mode="hybrid"
+        )
 
         assert hits and hits[0].content == _VECTOR_TARGET
 
@@ -184,7 +201,7 @@ class TestDegradation:
         """
         kb_id = _kb(TENANT_A)
 
-        _service(_BrokenChunks()).query(TENANT_A, kb_id=kb_id, query=_VECTOR_TARGET)
+        _service(_BrokenChunks()).query(TENANT_A, kb_id=kb_id, query=_VECTOR_TARGET, mode="hybrid")
 
         assert "rag_fts_degraded" in capsys.readouterr().out
 
@@ -195,7 +212,9 @@ class TestChatPath:
         症狀是「除錯 API 查得到、實際問答查不到」）。"""
         kb_id = _kb(TENANT_A, retrieval={"context_chunks": 2})
 
-        selected = _service().retrieve_for_chat(TENANT_A, kb_ids=[kb_id], query="ES256")
+        selected = _service().retrieve_for_chat(
+            TENANT_A, kb_ids=[kb_id], query="ES256", mode="hybrid"
+        )
 
         assert len(selected) <= 2
         assert _FTS_TARGET in [chunk.content for chunk in selected]

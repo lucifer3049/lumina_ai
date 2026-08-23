@@ -171,11 +171,23 @@ class AppSettings(BaseSettings):
     # 06 §3.1 的「RRF → 24」：融合後留幾筆進下一關。2B-4 的 rerank 吃的就是它，
     # 而 cross-encoder 的成本與這個數字成正比（11 §4 的 rerank < 800ms）。
     rag_hybrid_candidates: int = 24
-    # 檢索模式（2B-2）。**預設 hybrid**；`vector` 保留給兩件事：離線評測要量得出
-    # 「hybrid 比純向量好多少」，以及 FTS 出事時能手動退回（降級鏈之外的人工開關）。
-    # `hybrid+rerank` 等 2B-3／2B-4——提前接受它的話，設了之後什麼都不會發生，而
-    # 使用者會以為 rerank 已經在跑。
-    rag_retrieval_mode: Literal["vector", "hybrid"] = "hybrid"
+    # 檢索模式（2B-2）。**預設 `vector`，而 06 §3.1 的設計是 hybrid**——這個偏離有
+    # 數據支撐，2026-08-23 由使用者裁決：
+    #
+    # | 策略 | 手寫 24 題 recall@1／mrr | DRCD 120 題 |
+    # |------|--------------------------|-------------|
+    # | 純向量 | **0.4375** / 0.6046 | **0.9417** / 0.9653 |
+    # | hybrid（`&@*` 整句） | 0.3958 / 0.5650 | 0.9333 / 0.9628 |
+    # | hybrid（識別符才發言，2B-2b） | 0.4167 / **0.6209** | 0.9250 / 0.9544 |
+    #
+    # 三種 FTS 策略都沒讓 hybrid 整體勝出。判斷是**問題不在 RRF 也不在 pgroonga，而
+    # 在還沒有 rerank**：06 §3.1 的管線是 `RRF → rerank`，cross-encoder 的職責正是把
+    # 融合後的候選重新打分，FTS 投的雜訊票本來就該由它修正。現在等於沒有裁判就讓兩個
+    # 投票人吵架。程式與測試全部留著，**2B-4 接上 TEI reranker 後用同一套評測再決定**。
+    #
+    # `hybrid+rerank` 等 2B-3／2B-4——提前接受它的話，設了之後什麼都不會發生，而使用者
+    # 會以為 rerank 已經在跑。
+    rag_retrieval_mode: Literal["vector", "hybrid"] = "vector"
     # 06 §3.1 的 rerank top_n 6~8。Phase 1 沒有 rerank，這是「進 context 幾段」。
     rag_context_chunks: int = 8
     # 06 §3.2：RAG context 的 token 預算。與 chunker 用同一個估算器（`etl/tokens.py`），

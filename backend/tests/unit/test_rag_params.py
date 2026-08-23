@@ -42,8 +42,11 @@ class TestSystemDefaults:
         assert settings.rag_fts_top_k == 40
         assert settings.rag_rrf_k == 60
         assert settings.rag_hybrid_candidates == 24
-        # 2B-2 起 hybrid 是預設路徑；`vector` 保留給評測與「FTS 出事時手動退回」。
-        assert settings.rag_retrieval_mode == "hybrid"
+        # **預設是 `vector` 而不是 06 §3.1 設計的 hybrid**（2026-08-23 使用者裁決）：
+        # 三種 FTS 策略在兩份 golden set 上都沒讓 hybrid 勝出，而管線少了 rerank 這個
+        # 裁判。數據與理由見 `app_settings.rag_retrieval_mode` 的註解；2B-4 接上
+        # reranker 後用同一套評測再決定要不要翻回來。
+        assert settings.rag_retrieval_mode == "vector"
         assert settings.rag_context_chunks == 8
         assert settings.rag_context_token_budget == 4500
 
@@ -151,11 +154,11 @@ class TestHybridParams:
         """
         params = resolve_rag_params({"retrieval": {"retrieval_mode": "hybird"}})
 
-        assert params.retrieval_mode == "hybrid"
+        assert params.retrieval_mode == "vector"
 
     def test_rerank_mode_is_not_accepted_yet(self) -> None:
         """`hybrid+rerank` 要等 2B-3／2B-4。提前接受它的話，KB 設了之後**什麼都不會
         發生**——而使用者會以為 rerank 已經在跑了。"""
         params = resolve_rag_params({"retrieval": {"retrieval_mode": "hybrid+rerank"}})
 
-        assert params.retrieval_mode == "hybrid"
+        assert params.retrieval_mode == "vector"
