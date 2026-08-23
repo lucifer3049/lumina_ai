@@ -8,6 +8,11 @@
 是與 DB 的互動——斷詞由 PGroonga 做、隔離由 RLS 擋、分數由索引算。用假物件驗這一層等於
 什麼都沒驗。
 
+**2B-2b 換了查詢策略**（2026-08-23，依 2B-2 的評測數據）：不再把整句問句送進 `&@*`，
+改為「問句裡有識別符（`ES256`、`ef_search`、`第 14 條` 的 `14`）時才用 `&@~` 查那幾個
+詞，否則棄權」。理由與三個追因實測見 `rag/retrievers/keyword.py` 的模組 docstring。
+本檔因此有兩條測試的**前提反過來了**：純中文的概念問句現在**應該**回空。
+
 **四個陷阱，錯了都不會有錯誤訊息**（前兩個是 2B-1 開工前 spike 實測到的）：
 
 1. **查詢必須帶 `superseded = false`**。索引是 partial 的，查詢少了同一個條件，planner
@@ -30,6 +35,7 @@ from django.db import connection
 
 from core.tenant import tenant_context
 from core.uow import unit_of_work
+from rag.retrievers.keyword import build_fts_query
 from rag.retrievers.vector import to_retrieved
 from repositories.knowledge import FTS_SQL, ChunkHit, ChunkRepository
 from tests.conftest import TENANT_A, TENANT_B
@@ -77,10 +83,20 @@ def _kb_with_chunks(
 
 
 def _search(
-    tenant_id: uuid.UUID, kb_id: uuid.UUID, query: str, *, top_k: int = 40
+    tenant_id: uuid.UUID, kb_id: uuid.UUID, question: str, *, top_k: int = 40
 ) -> list[ChunkHit]:
+    """問句 → 運算式 → repository，**與 `RetrievalService` 走的是同一組合**。
+
+    分工刻意如此：查詢建構是領域邏輯（`rag/`），repository 只認 `&@~` 的運算式。把
+    建構塞進 repository 會讓資料層開始認識「什麼詞算識別符」，而那是會隨評測數據改的
+    東西（2B-2b 就改過一次）。
+    """
+    expression = build_fts_query(question)
+    if not expression:
+        # 棄權：呼叫端連 DB 都不打（見 `services/rag/retrieval.py` 的 `_search_fts`）。
+        return []
     with tenant_context(tenant_id), unit_of_work():
-        return ChunkRepository().search_fts(query, kb_id=kb_id, top_k=top_k)
+        return ChunkRepository().search_fts(expression, kb_id=kb_id, top_k=top_k)
 
 
 class TestIndex:
@@ -126,7 +142,7 @@ class TestIndex:
         # 那個查詢不是變慢，是每次都 500（`&@*` 只在 index scan 下可用）。
         with tenant_context(TENANT_A), unit_of_work(), connection.cursor() as cursor:
             cursor.execute("SET LOCAL enable_seqscan = off")
-            cursor.execute("EXPLAIN " + FTS_SQL, [str(TENANT_A), str(kb_id), "ES256", 10])
+            cursor.execute("EXPLAIN " + FTS_SQL, [str(TENANT_A), str(kb_id), '"ES256"', 10])
             plan = "\n".join(row[0] for row in cursor.fetchall())
 
         assert INDEX_NAME in plan, f"pgroonga 索引無法服務這個查詢：\n{plan}"
@@ -141,14 +157,24 @@ class TestSearch:
 
         assert [hit.chunk_id for hit in hits][:1] == [chunk_ids[0]]
 
-    def test_a_natural_language_question_finds_the_right_chunk(self, tenants: None) -> None:
-        """整句問句直接送進去（見 `test_fts_query.py` 的 spike 記錄：`&@` 與 `&@~` 對
-        整句中文會回 0 筆）。"""
+    def test_an_identifier_inside_a_question_still_finds_it(self, tenants: None) -> None:
+        """問句包著識別符時，字面比對要挑得出那個詞（2B-2b 的全部價值）。"""
         kb_id, chunk_ids = _kb_with_chunks(TENANT_A)
 
-        hits = _search(TENANT_A, kb_id, "出差的旅費要怎麼報銷？需要附什麼單據？")
+        hits = _search(TENANT_A, kb_id, "簽章演算法用的 ES256 是什麼？跟 HS256 差在哪？")
 
-        assert hits and hits[0].chunk_id == chunk_ids[1]
+        assert hits and hits[0].chunk_id == chunk_ids[0]
+
+    def test_a_conceptual_question_abstains(self, tenants: None) -> None:
+        """**前提在 2B-2b 反過來了**：純中文的概念問句裡沒有字面比對幫得上忙的東西，
+        正確的行為是棄權（連 DB 都不打），而不是投一張模糊票。
+
+        2B-2 的評測實測：投票的版本讓手寫題組 recall@1 從 0.4375 掉到 0.3958——正確
+        答案被 FTS 的模糊票擠下 1~2 名，7 題退步、1 題進步。
+        """
+        kb_id, _ = _kb_with_chunks(TENANT_A)
+
+        assert _search(TENANT_A, kb_id, "出差的旅費要怎麼報銷？需要附什麼單據？") == []
 
     def test_scores_are_positive_and_descending(self, tenants: None) -> None:
         """分數 > 0 是「索引真的被用到」的間接證據（見模組 docstring 第 2 點）。
@@ -158,7 +184,7 @@ class TestSearch:
         """
         kb_id, _ = _kb_with_chunks(TENANT_A)
 
-        hits = _search(TENANT_A, kb_id, "統一發票 報銷 核准")
+        hits = _search(TENANT_A, kb_id, "ES256 與 ix_chunk_tenant_kb_active")
 
         assert hits, "沒有任何命中"
         assert all(hit.score > 0 for hit in hits), f"分數為 0：{[h.score for h in hits]}"
@@ -175,18 +201,19 @@ class TestSearch:
         """空查詢在 PGroonga 那裡回空集合，而那與「真的沒有相關內容」長得一模一樣。"""
         kb_id, _ = _kb_with_chunks(TENANT_A)
 
-        with pytest.raises(ValueError):
-            _search(TENANT_A, kb_id, "   ")
+        with tenant_context(TENANT_A), unit_of_work(), pytest.raises(ValueError):
+            ChunkRepository().search_fts("   ", kb_id=kb_id, top_k=10)
 
     def test_top_k_limits_the_result(self, tenants: None) -> None:
         kb_id, _ = _kb_with_chunks(TENANT_A)
 
-        assert len(_search(TENANT_A, kb_id, "檢索 報銷 權杖 發票 索引", top_k=1)) <= 1
+        assert len(_search(TENANT_A, kb_id, "ES256 ix_chunk_tenant_kb_active", top_k=1)) <= 1
 
     def test_an_english_question_does_not_match_chinese_text(self, tenants: None) -> None:
         """**跨語言時 FTS 天然失效**（06 §3.1）——這條是把那個已知限制釘住，不是缺陷。
 
-        字面比對沒有共同的詞可比，所以跨語言的召回全靠向量那一路撐（RRF 天然容忍單路
+        純小寫的英文問句連識別符都沒有，因此在 2B-2b 之後是**棄權**；即使有識別符，
+        中文段落裡也沒有共同的詞可比。跨語言的召回全靠向量那一路撐（RRF 天然容忍單路
         弱訊號，無需特判）。哪天有人「修好」了這條讓它有命中，那多半是斷詞器被換成了
         會把中文切成單字的設定——那會讓所有中文查詢的精確度一起崩掉。
         """

@@ -1,23 +1,20 @@
-"""驗收：全文檢索的查詢前處理與索引宣告（13 §4 工作包 2B-1；06 §3.1 的 FTS 一路）。
+"""驗收：全文檢索的查詢建構與索引宣告（13 §4 工作包 2B-1／2B-2b；06 §3.1 的 FTS 一路）。
 
-**這一層決定「問句怎麼變成 PGroonga 看得懂的東西」**，而 2B-1 的實測（開工前 spike，
-2026-08-23）已經把可行的路縮到一條：
+**2B-2b 換掉了 2B-1 的查詢策略，理由是評測數據。** 2B-1 把整句問句送進 `&@*`
+（similar search），2B-2 的評測顯示那樣比純向量更差（手寫題 recall@1 0.4375 → 0.3958、
+DRCD 0.9417 → 0.9333）。追因的三個實測：
 
-- `content &@ '<整句中文問句>'` → **0 筆**：PGroonga 把整句斷成 bigram 後**全部
-  AND**，而一段話不可能同時包含問句的每一個字組。
-- `content &@~ '<整句>'` → 同樣 0 筆，而且 `(`、`-`、`"` 是查詢語法的運算子：一個
-  括號就讓結果變空，**且不報錯**。
-- `content &@~ '密碼 OR 鎖住'` → 有效，但要我們自己把中文斷成詞；這個 build 沒有
-  `pgroonga_tokenize`，Python 這側也沒有斷詞器。
-- `content &@* '<整句>'` → **正中**；短詞、英文問句、含語法字元的問句都正常，不相關
-  的查詢與空白回空。
+- `ef_search` 單獨查 → 正解在前三名；同一個詞放進
+  `「向量索引的 ef_search 建議從多少開始調？」` → **0 筆**（中文 bigram 稀釋掉它）。
+- 改成把整句切成 bigram 再 OR → 更糟：pgroonga 的分數沒有 IDF，比的是命中次數，
+  長段落靠字數贏，正解掉出前五名。
+- `fts_top_k` 從 40 降到 5 → 分數**一模一樣**：傷害來自前五名，不是候選數。
 
-因此 FTS 用 **`&@*`（similar search）**：它自己從查詢文字裡挑代表性的詞，不需要我們斷詞，
-也**不需要跳脫**——那些字元對它是普通文字而不是語法。本檔的斷言因此刻意寫成「不做跳脫」，
-免得日後有人「順手補上」escape 而讓查詢字面上多出反斜線。
+因此現在的規則是「**識別符才發言**」：問句裡有 `ef_search`、`ES256`、`pgBackRest`、
+`PITR`、`第 14 條` 的 `14` 這種詞時才查，否則那一路棄權（回空字串，連 DB 都不打）。
+沒有話講的時候閉嘴，比投一張模糊票好——後者會把向量找對的答案擠下去。
 
-`&@~`（查詢語法）沒有被刪掉的理由：2B-2 之後若要支援「必須包含某詞」的進階查詢，那條路
-才走得通。現在不做。
+本檔驗兩件事：那條規則（純函式），以及索引宣告本身（讀 migration 原始碼）。
 """
 
 from __future__ import annotations
@@ -26,46 +23,77 @@ from pathlib import Path
 
 import pytest
 
-from rag.retrievers.keyword import MAX_FTS_QUERY_CHARS, normalise_fts_query
+from rag.retrievers.keyword import MAX_FTS_QUERY_CHARS, MAX_FTS_TERMS, build_fts_query
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = BACKEND_ROOT / "apps" / "knowledge" / "migrations"
 INDEX_NAME = "ix_chunk_content_fts_active"
 
 
-class TestNormalise:
-    def test_it_trims_but_keeps_the_sentence_intact(self) -> None:
-        """整句原樣送進 `&@*`——它要的就是一段自然語言，不是關鍵字清單。"""
-        assert normalise_fts_query("  密碼連續打錯幾次會被鎖住？  ") == "密碼連續打錯幾次會被鎖住？"
+class TestTermExtraction:
+    """規則刻意保守：**寧可棄權也不要亂投**。"""
 
-    def test_query_syntax_characters_are_not_escaped(self) -> None:
-        """**不跳脫**（見模組 docstring）：`&@*` 把它們當普通文字。
+    def test_an_identifier_inside_a_chinese_question_is_found(self) -> None:
+        """2B-2 追因的那一題：`&@*` 對整句回 0 筆，而這裡把詞挑出來單獨查。"""
+        assert build_fts_query("向量索引的 ef_search 建議從多少開始調？") == '"ef_search"'
 
-        補上 escape 的話，查詢字串裡會多出字面上的反斜線，而那些反斜線會被當成要比對的
-        字元——結果是「問句裡有括號的那幾題突然都查不到」，而且沒有任何錯誤。
+    @pytest.mark.parametrize(
+        "text",
+        ["ES256 是什麼", "用 pgBackRest 備份", "RPO 是多少", "勞基法第 14 條", "版本 v1.2 有什麼"],
+    )
+    def test_the_shapes_that_count_as_distinctive(self, text: str) -> None:
+        """含數字、含 `_`/`.`/`-`、全大寫、或第一個字元之後還有大寫——這四種都是
+        「向量最弱、字面最強」的詞。"""
+        assert build_fts_query(text) != ""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "租戶隔離是怎麼做的？",
+            "Why is document extraction run inside a subprocess?",
+            "The quick brown fox",
+            "請假要提前幾天申請",
+        ],
+    )
+    def test_a_question_without_identifiers_abstains(self, text: str) -> None:
+        """**棄權是正確答案，不是失敗**。純中文的概念問句與純小寫的英文問句裡沒有字面
+        比對幫得上忙的東西；投票的代價是把向量找對的答案擠下去（2B-2 實測 −0.04）。
+
+        句首大寫的普通英文單字（`Why`、`The`）也不算——不然每個英文問句都會投票。
         """
-        text = '(密碼) -鎖住 "引號"'
+        assert build_fts_query(text) == ""
 
-        assert normalise_fts_query(text) == text
+    def test_terms_are_joined_with_or_in_original_order(self) -> None:
+        """OR 而不是 AND：一句話裡的識別符不一定出現在同一段（`RPO` 與 `PITR` 可能
+        分屬兩段），AND 會讓那種問句一筆都查不到。"""
+        assert build_fts_query("What is the RPO and which tool provides PITR?") == (
+            '"RPO" OR "PITR"'
+        )
 
-    def test_a_blank_query_becomes_empty(self) -> None:
-        """空查詢由呼叫端擋掉，不准往下走：PGroonga 對空字串回空集合，而那與「真的沒有
-        相關內容」在結果上一模一樣。"""
+    def test_duplicates_collapse(self) -> None:
+        assert build_fts_query("ES256 ES256 ES256") == '"ES256"'
+
+    def test_every_term_is_quoted(self) -> None:
+        """每個詞用雙引號包住：`-` 之類的字元在 `&@~` 的語法裡是運算子，包起來之後
+        才是字面。詞本身只由 `[A-Za-z0-9_.-]` 組成，所以引號內不可能再有引號。"""
+        assert build_fts_query("查 v1.2-beta 的說明") == '"v1.2-beta"'
+
+    def test_a_blank_query_abstains(self) -> None:
         for text in ("", "   ", "\n\t"):
-            assert normalise_fts_query(text) == ""
+            assert build_fts_query(text) == ""
 
-    def test_an_overlong_query_is_truncated(self) -> None:
-        """similar search 的成本隨查詢長度上升，而查詢字串的來源是使用者輸入
-        （`MessageCreateIn.content` 上限 4,000 字）。截在這裡，DB 那側才有上界。
-        """
-        long_text = "字" * (MAX_FTS_QUERY_CHARS + 500)
+    def test_it_stops_at_the_term_cap(self) -> None:
+        """貼一整段設定檔進來提問時，不該組出上百個 OR——每個都要掃一次倒排索引。"""
+        text = " ".join(f"TOKEN{i}" for i in range(MAX_FTS_TERMS * 3))
 
-        assert len(normalise_fts_query(long_text)) == MAX_FTS_QUERY_CHARS
+        assert build_fts_query(text).count(" OR ") == MAX_FTS_TERMS - 1
 
-    def test_the_cap_is_not_a_secret_number(self) -> None:
-        """上限是保護 DB 的硬上限，與 `MAX_TOP_K` 同一類（15 §4.1 的例外條款）：住在
-        程式碼裡、不進可調參數區，但要有名字，否則它會以字面常數散進兩三個地方。"""
-        assert MAX_FTS_QUERY_CHARS >= 200
+    def test_an_overlong_question_is_truncated_before_scanning(self) -> None:
+        """上限與 `MAX_TOP_K` 同一類（15 §4.1 的例外條款）：保護 DB 的硬上限，住在
+        程式碼裡但要有名字，否則它會以字面常數散進兩三個地方。"""
+        text = "字" * MAX_FTS_QUERY_CHARS + " ES256"
+
+        assert build_fts_query(text) == ""
 
 
 @pytest.fixture(scope="module")

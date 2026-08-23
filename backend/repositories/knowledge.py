@@ -235,7 +235,7 @@ FTS_SQL = """
         WHERE tenant_id = %s
           AND kb_id = %s
           AND superseded = false
-          AND content &@* %s
+          AND content &@~ %s
         ORDER BY score DESC, id
         LIMIT %s
     )
@@ -330,10 +330,11 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
 
         四件事在這條查詢裡定案，錯了**都不會報錯**（前三個是 2B-1 開工前 spike 實測）：
 
-        1. **運算子是 ``&@*``（similar search）**，送進去的是整句問句。``&@`` 與 ``&@~``
-           會把整句斷成 bigram 後全部 AND，一段話不可能同時包含問句的每一個字組——
-           實測回 0 筆；而 ``&@~`` 還會把 ``(``、``-``、``"`` 當成查詢語法的運算子，
-           問句裡一個括號就讓結果變空。理由詳見 `rag/retrievers/keyword.py`。
+        1. **運算子是 ``&@~``（查詢語法），送進來的是識別符的 OR 運算式**，不是整句
+           問句（2B-2b 改）。2B-1 原本用 ``&@*``（similar search）送整句，而 2B-2 的
+           評測顯示那樣更差：稀有詞單獨查得到、放進整句回 0 筆，於是 FTS 在該幫忙時
+           交白卷、不該說話時投模糊票。查詢的建構與「什麼詞才算識別符」見
+           `rag/retrievers/keyword.py`。
         2. **``superseded = false`` 必須寫在 SQL 裡**。索引是 partial 的
            （``ix_chunk_content_fts_active``），查詢少了同一個條件，planner 就用不到它
            ——退化成整表掃描，而結果完全正確。
@@ -365,16 +366,16 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
 
         tenant_id = get_current_tenant_id(operation="ChunkRepository.search_fts")
         with connection.cursor() as cursor:
-            # **`&@*` 只在 index scan 下可用**——PGroonga 對 seq scan 直接拋
-            # `pgroonga: [similar][text] similar search available only in index scan`。
-            # 而 planner 在**小表**上一定選 seq scan（成本比較低），於是「剛建好、只有
-            # 幾段內容的知識庫」第一次查詢就會 500，資料長大之後又自己好掉——最難查的
-            # 那一種。`SET LOCAL` 把成本模型壓過去，交易結束即失效（不會外溢到連線池
-            # 裡的下一個使用者，同 `EmbeddingRepository.search` 的 ef_search）。
+            # **走不到索引時 `pgroonga_score()` 會安靜地回 0.0**：不是 NULL、不是錯誤，
+            # 是一個合法的分數，而 RRF 只吃名次——一組全部同分的候選，排序完全由
+            # tie-break 決定。planner 在**小表**上一定選 seq scan（成本比較低），於是
+            # 「剛建好、只有幾段內容的知識庫」會安靜地退化。`SET LOCAL` 把成本模型壓
+            # 過去，交易結束即失效（不會外溢到連線池裡的下一個使用者，同
+            # `EmbeddingRepository.search` 的 ef_search）。
             #
-            # 索引若不存在或處於 INVALID（`CONCURRENTLY` 失敗留下的狀態），planner 仍
-            # 然只能走 seq scan，於是這裡會**大聲失敗**而不是安靜地回一組 0 分的結果。
-            # 那是刻意的：後者會讓 2B-2 的 RRF 拿到一組全部同分的候選。
+            # 2B-1 時這一行還有第二個作用：`&@*` 在 seq scan 下直接拋
+            # NotSupportedError。2B-2b 換成 `&@~` 之後那個例外不會再出現，而「安靜的
+            # 0 分」比例外更難查——所以這一行留著。
             cursor.execute("SET LOCAL enable_seqscan = off")
             try:
                 cursor.execute(FTS_SQL, [str(tenant_id), str(kb_id), text, int(top_k)])
