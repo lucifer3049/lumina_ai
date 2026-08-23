@@ -202,6 +202,10 @@ class TestUvicornLogConfig:
             "tests",
             "loadtest",
             "scripts",
+            # evaluation/ 是**資料目錄**（評測語料與題組，2B-0），不是套件：沒有
+            # __init__.py、不在伺服器的 import 圖裡。監看它只會讓「換一份語料」
+            # 重啟 API，而那與正在開發的東西無關。
+            "evaluation",
             ".venv",
             "__pycache__",
             ".ruff_cache",

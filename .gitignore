@@ -48,3 +48,12 @@ Thumbs.db
 
 # JWT 簽章金鑰（本機以 `make gen-jwt-keys` 產生；正式環境走 Secrets Manager）
 backend/.secrets/
+
+# ── 評測資料（2B-0）──
+# 原始資料集的下載快取：我們提交的是取樣後的子集（evaluation/corpus、goldenset），
+# 整份 2 MB 的來源檔進版控只是讓 clone 變慢，而它隨時可以由 make eval-sample 重抓。
+backend/evaluation/.cache/
+# 報告只提交 baseline：它是「改動之前的分數」，是之後每一次比較的對照組，必須進版控。
+# 其餘每次跑出來的報告是過程產物。
+backend/evaluation/reports/*
+!backend/evaluation/reports/baseline_*.json

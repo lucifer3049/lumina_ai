@@ -403,6 +403,14 @@ DATASET ?= drcd
 MODE ?= vector
 EVAL_TENANT ?= lumina-eval
 
+# 產生評測語料與題組（決定性取樣）。**平時不需要跑**：產物是凍結快照且已進版控，
+# 重跑會讓所有既有的 baseline 失效（報告帶語料與題組的 sha256）。理由見
+# backend/evaluation/README.md 的「什麼時候該重新取樣」。
+SOURCE ?= drcd
+
+eval-sample: ## 重新取樣評測資料（SOURCE=drcd|docs；會使既有 baseline 失效）
+	$(UV_RUN) python scripts/sample_corpus.py $(SOURCE) $(SAMPLE_ARGS)
+
 eval-retrieval: ## 離線檢索評測（DATASET=drcd|handwritten MODE=vector|hybrid|hybrid+rerank）
 	$(UV_RUN) python scripts/eval_retrieval.py --dataset $(DATASET) --mode $(MODE) \
 		--tenant $(EVAL_TENANT) $(EVAL_ARGS)
