@@ -275,6 +275,19 @@ class ProviderDimensionMismatchError(ProviderError):
     retryable = False
 
 
+class ProviderRequestRejectedError(ProviderError):
+    """→ 503。provider 退回了**我們送出去的東西**（413 batch 太大、422 tokenize 失敗）。
+
+    **不可重試**：送同一份東西再送三次，回來的是同一個 413。它與「provider 掛了」的
+    處置完全不同——後者是「等一下再試」，這個是「把 `rag_hybrid_candidates` 或 chunk
+    大小改小」，而混成同一個型別的話，rerank 的降級統計會把一個設定問題記成外部服務
+    不穩，然後沒有人去改設定（同 `ProviderDimensionMismatchError` 獨立成型的理由）。
+    """
+
+    code = ErrorCode.PROVIDER_UNAVAILABLE
+    retryable = False
+
+
 class ProviderAuthError(ProviderError):
     """→ 503。provider 拒絕我們的憑證（401／403）。
 

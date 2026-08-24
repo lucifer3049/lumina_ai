@@ -88,6 +88,71 @@ def test_published_ports_are_bound_to_loopback() -> None:
     assert not exposed, f"以下 port 未綁 127.0.0.1，等同對區域網路開放：{exposed}"
 
 
+def test_the_reranker_is_behind_a_profile() -> None:
+    """TEI 不得預設啟動（13 §4 的 2B 開工前定案）。
+
+    `make up` 會 `--wait`——沒有 profile 的話，一台沒有 GPU 的機器（CI、他機、只想跑
+    前端的人）會卡在一個永遠不健康的容器上，而錯誤訊息講的是 CUDA，看起來與「我只是
+    想起個資料庫」毫無關係。
+    """
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    tei = compose.get("services", {}).get("tei")
+
+    assert tei is not None, "compose 缺少 tei service（2B-4）"
+    assert tei.get("profiles"), "tei 沒有 profile——`make up` 會在沒有 GPU 的機器上卡住"
+
+
+def test_the_reranker_asks_for_a_gpu() -> None:
+    """要不到 GPU 的 TEI 會以 CPU 起來——它跑得動，只是每次查詢要好幾秒，而 1.2s 的
+    預算會把它全部跳過。症狀是「rerank 接上了但完全沒效果」，而容器是健康的。"""
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    tei = compose["services"]["tei"]
+    devices = tei.get("deploy", {}).get("resources", {}).get("reservations", {}).get("devices", [])
+
+    assert any("gpu" in (device.get("capabilities") or []) for device in devices), (
+        "tei 沒有保留 GPU——會安靜地退成 CPU 推論"
+    )
+
+
+def test_the_reranker_masks_the_bundled_cuda_compat_driver() -> None:
+    """WSL2 上少了這一行，TEI **拿得到 GPU 卻用不到**（2026-08-24 實測）。
+
+    `text-embeddings-router` 的 RPATH 指死 `/usr/local/cuda/compat`，排在 ld 快取之前，
+    於是它載到映像自帶的一般 Linux 使用者態驅動，而不是宿主注入的 WSL shim；那份驅動
+    找不到 `/dev/dxg` 背後的裝置，回 `CUDA_ERROR_NO_DEVICE`，TEI 安靜地退成 CPU。
+
+    **這個失敗看起來完全不像失敗**：容器健康、`nvidia-smi` 在容器內看得到卡、rerank
+    也真的有分數——只是每次幾秒，於是 1.2s 的預算把它全部跳過。上面那條「要得到 GPU」
+    的測試也照樣綠燈，因為 GPU 確實保留了。所以這一條得獨立存在。
+
+    註：原生 Linux 而驅動比映像的 compat（575）舊時，compat 才是有作用的東西，那台機器
+    要連同 compose 的註解一起重新裁決。
+    """
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    tei = compose["services"]["tei"]
+    mounts = tei.get("tmpfs") or []
+    rendered = [mounts] if isinstance(mounts, str) else list(mounts)
+
+    assert any("/usr/local/cuda/compat" in mount for mount in rendered), (
+        "tei 沒有蓋掉映像自帶的 CUDA compat 目錄——在 WSL2 上會安靜地退成 CPU 推論"
+    )
+
+
+def test_the_reranker_serves_the_model_the_settings_expect() -> None:
+    """06 §3.4 的硬性條件是**多語** cross-encoder：單語 reranker 會把跨語言的正確候選
+    打低分，比不 rerank 更糟。容器裡實際載入的是哪一個模型只寫在 compose 的 command 裡，
+    而 `AI_RERANK_MODEL` 只是我們自己記帳用的名字——兩邊漂掉的話，報告會誠實地記下一個
+    不是真的被用到的模型名。"""
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    tei = compose["services"]["tei"]
+    command = tei.get("command")
+    rendered = " ".join(command) if isinstance(command, list) else str(command or "")
+
+    assert "bge-reranker-v2-m3" in rendered, (
+        "tei 載入的不是 bge-reranker-v2-m3（06 §3.4 指名的多語 reranker）"
+    )
+
+
 def test_dotenv_is_gitignored() -> None:
     """真值檔不進版控；`.env.example` 必須例外放行。"""
     rules = [line.strip() for line in GITIGNORE.read_text(encoding="utf-8").splitlines()]

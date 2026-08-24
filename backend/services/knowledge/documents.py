@@ -284,10 +284,29 @@ class DocumentService:
         return found
 
     def delete(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> None:
-        """軟刪除（05 §5.4）。chunk 與 embedding 的硬刪由清理 worker 負責。"""
+        """軟刪除（05 §5.4）＋**同一交易內把 chunk 標成 superseded**。
+
+        少了第二步，刪除只擋得住「列表看得到」這一路：檢索讀的是 chunk 與 embedding
+        兩張表，而它們的過濾條件是租戶／KB／``superseded``／模型版本——**沒有一路
+        認得 ``deleted_at``**（軟刪除的可見性規則實作在 `DocumentRepository` 的
+        ``get_queryset``，chunk 不繼承它）。結果是使用者刪掉文件、API 回 204、文件從
+        列表消失、額度立刻釋放，然後那份文件的內容與檔名繼續出現在後續問答的 context
+        與 ``citations`` 裡，而點進去的引用是 404。
+
+        ``superseded`` 而不是硬刪，理由同 `ChunkRepository.supersede_for_document`：
+        它的語意本來就是「不再進檢索」，兩路的 partial index 逐字認得它，而硬刪要級聯
+        embedding、在請求路徑上會鎖表（05 §5.4）。真正的硬刪由每日的
+        `ChunkCleanupService`（ready 文件）與保留窗的 `DeletedKnowledgePurgeService`
+        （其餘狀態）接手。
+
+        **KB 級刪除不需要這一步**：檢索先經 `RetrievalService._find_kb`，走的是
+        `KnowledgeBaseRepository` 的軟刪除 queryset，已刪 KB 整個查不到。洩漏專屬於
+        文件級刪除。
+        """
         with tenant_context(tenant_id), unit_of_work():
             document = self._require(document_id)
             audit.describe(before={"filename": document.filename, "kb_id": str(document.kb_id)})
+            self._chunks.supersede_for_document(document_id)
             self._documents.soft_delete(document_id)
 
     def _require(self, document_id: uuid.UUID) -> Any:

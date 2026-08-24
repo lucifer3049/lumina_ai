@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 13 |
-| 版本 | v3.1 |
+| 版本 | v3.2 |
 | 日期 | 2026-08-23 |
 | 狀態 | Draft — 待審閱 |
 | 估算基準 | **1 位工程師 + AI（Claude Code）結對開發**；AI 加速 coding 與測試撰寫，但 review、整合、除錯與決策仍以人為瓶頸——時程按此重估；pw 數字保留作為工作量參考；不含需求變更緩衝（建議整體 +20%） |
-| 變更紀錄 | v1.1：估算基準改為 1 人 + AI；時程重估（27→29 週）；2C 裁切（Django Admin 頂替、自訂角色延後）；新增人機協作開發規則；R4 改寫。v1.2：§9.1 補非開發 lead time（F-10）。v1.3：人機協作規則重編為 §1.2（原誤植 §2.1，編號順序錯誤）。v1.4：新增 §3.1「1A 前置條件」（RLS 有三個漏做即靜默失效的前置項）與 §3.2「1A 同步改動：log 的租戶綁定」，兩者皆出自 Phase 0 結案程式審查（見 15 §8）；版本欄同步更正（原停在 v1.1 而變更紀錄已到 v1.3）。v1.5：Phase 0 DoD 的認證併發數改為「待分機環境判定」——單機量測法的絕對值跨 session 漂移 34–48%，無法裁決 150（08-05）與 100（08-07）孰為真（依據見 11 §1.4）。v1.6：§2 新增 Phase 0 結案紀錄（2026-08-07 通過閘門，含依據與三項不阻塞的未結項）。v1.7：§3.1 末段兩項處置在 1A-1 實作時被推翻並改寫——PgBouncer 佔位符不新增（owner 一律不經連線池）、不預先建立 bypass 角色（owner 受 FORCE RLS 管，跨租戶作業延到 2A）；兩項都有強制測試。v1.8：§2 Phase 0 未結項①（CI 真實跑一次）結案並記下它兌現的方式——CI 自 1A-3 起連三次全紅無人察覺，根因是 workflow 缺 `make gen-jwt-keys`；§3.2 補上 1A-3/1A-5 的落地結果。v1.9：§3 新增「1A 結案」小節（**暫行**——Phase 1 的 DoD 是整期的，1A 單獨驗不了，1B–1D 完成後回頭修訂），含子項、驗收依據、帶進 1B 的四個已知缺口，以及過程中發現的兩個非原訂範圍問題。v2.0：新增 §3.3「1B 的範圍偏離紀錄」（PDF 解析器改 pdfplumber、xlsx/Markdown 自 2D 提前、Markdown 的定位、1B-4~1B-6 的子項切分），並同步 §4 的 2D 內容。v2.1：§3 新增「1B 結案」小節（**暫行**，同 1A 的理由），含驗收依據、帶進 1C 的五個缺口，以及過程中發現並修掉的七個非原訂範圍問題。v2.2：新增 §3.4「1C-3 落地紀錄」——1C 尚未結案（1C-4／1C-5 未做），但 embedding worker 把文件的終點狀態從 `chunked` 改成 `ready`，那是 1D 的前提，因此先記；同步更新 1B 結案表的缺口①（已結）與④（部分處理：`acks_late` 本就涵蓋 worker 被砍，補上逐租戶的恢復指令，全域掃描仍排 2A）。v2.3：§3.5 新增「1D-5 的決定」——六項與 06／09 原文不同的定案（短引用編號、Phase 1 不套絕對門檻改用可選的相對門檻、免錢版 condense、`citations` 事件形狀與四個新欄位、幻覺引用只剔清單不改文字、檢索參數收進單一來源），每項標出待改的文件；另記 1D-5 不做的五個缺口。相關產品決定「統一參數管理畫面」記於 15 §4.1。v2.4：§3 新增「1D-5 結案」小節（**暫行**，同 1A／1B 的理由）——含六項開工前決定的落地與文件同步結果、帶進 1E 的六個缺口，以及過程中發現並修掉的五個非原訂範圍問題（其中兩個是 smoke 自 1C-5 起就在打真 API、且與 `make start` 搶同一個 Celery 工作籃）；§3.5 的「不做」清單同步修訂——`kb_ids` 驗證於實作時推翻，改為建立時擋。v2.5：§3 的 1D-5 結案「驗收依據」補齊 `make test`／`make smoke` 的實測數字（2026-08-19），該結案自此成立。v2.6：§2 的 Phase 0 未結項②（新人 30 分鐘上手計時）與對應的 DoD 條目作廢——單人開發，無新人可測；`14` §Maintainability 的同一條同步作廢。v2.7：§3 的 1D-5 結案表後新增「結案後記」——CI 自 5b25444 起連紅四次（run 57–60）無人察覺（ruff cache 假綠 + `sqlparse` CVE 漂移），結案數字不改但補上前提；防線三件（`lint-backend` 的 ruff `--no-cache`、`make ci-status`、CLAUDE.md push 後必盯 CI）；版本欄同步更正（原停在 v2.4 而變更紀錄已到 v2.6，同 v1.4 修過的漂移）。v2.8：§3 新增「1E 結案＋Phase 1 閘門認定」小節——Phase 1 **有條件通過閘門**（DoD ①「50 頁 PDF → 5 分鐘 ready → 問答 → 正確引用」實測 4.2 秒／③隔離矩陣綠燈；②TTFT p95 維持未結，量測前提不存在）；1A／1B／1D-5 三張結案表的「暫行」狀態同日解除（內容未被推翻，數字不改）；記 1D-5 六缺口的處置、Reka UI＋青綠山水設計系統的範圍追加（03 §8.5）、帶進 Phase 2 的六個缺口。v2.9：§4 新增「2A 結案」小節——六個子項全數落地、Phase 2 DoD 第一項（雙租戶下 quota 硬擋）達標；記下五項開工前核可的範圍偏離、§3.1 v1.7 未結項（跨租戶 bypass 角色）的裁決（**不建**，改以無 RLS 的 `identity_tenant_directory` 列舉 id ＋ 逐一進 `tenant_context`）、2A-5 後八個 commit 的全面審查產出，以及帶進 2B 的八個缺口；05→v1.5、09→v1.3 同步 2A-5 的三處欄位/回應。v3.0：§4 新增「2B 開工前定案：rerank 的落地方式」——rerank 走**自架 TEI + `bge-reranker-v2-m3`**（免費、多語、每次提問都要打的一段不適合按次計費），Ollama 因無 rerank 端點而**走不通**（非取捨），雲端 API 僅留 Jina 作第二個 adapter 的驗證對象；併記硬體前提（RTX 5060 8 GiB、TEI 的 Blackwell 映像為實驗性）、降級鏈只有「TEI → 跳過」兩層、以及 06/11/02/12 待同步的段落。v3.1：§4 新增「2B 子工作包切分」（2B-0…2B-6，人類核可）與「**2B-0 結案**」——golden set 與離線評測腳本落地、純向量 baseline 於任何檢索改動**之前**落檔；並記下一項實測推翻的計畫值：主指標由 `recall@10` 改為 `recall@1` + `mrr`（DRCD 在純向量下 recall@5 起即 1.000，原指標只有退步空間） |
+| 變更紀錄 | v1.1：估算基準改為 1 人 + AI；時程重估（27→29 週）；2C 裁切（Django Admin 頂替、自訂角色延後）；新增人機協作開發規則；R4 改寫。v1.2：§9.1 補非開發 lead time（F-10）。v1.3：人機協作規則重編為 §1.2（原誤植 §2.1，編號順序錯誤）。v1.4：新增 §3.1「1A 前置條件」（RLS 有三個漏做即靜默失效的前置項）與 §3.2「1A 同步改動：log 的租戶綁定」，兩者皆出自 Phase 0 結案程式審查（見 15 §8）；版本欄同步更正（原停在 v1.1 而變更紀錄已到 v1.3）。v1.5：Phase 0 DoD 的認證併發數改為「待分機環境判定」——單機量測法的絕對值跨 session 漂移 34–48%，無法裁決 150（08-05）與 100（08-07）孰為真（依據見 11 §1.4）。v1.6：§2 新增 Phase 0 結案紀錄（2026-08-07 通過閘門，含依據與三項不阻塞的未結項）。v1.7：§3.1 末段兩項處置在 1A-1 實作時被推翻並改寫——PgBouncer 佔位符不新增（owner 一律不經連線池）、不預先建立 bypass 角色（owner 受 FORCE RLS 管，跨租戶作業延到 2A）；兩項都有強制測試。v1.8：§2 Phase 0 未結項①（CI 真實跑一次）結案並記下它兌現的方式——CI 自 1A-3 起連三次全紅無人察覺，根因是 workflow 缺 `make gen-jwt-keys`；§3.2 補上 1A-3/1A-5 的落地結果。v1.9：§3 新增「1A 結案」小節（**暫行**——Phase 1 的 DoD 是整期的，1A 單獨驗不了，1B–1D 完成後回頭修訂），含子項、驗收依據、帶進 1B 的四個已知缺口，以及過程中發現的兩個非原訂範圍問題。v2.0：新增 §3.3「1B 的範圍偏離紀錄」（PDF 解析器改 pdfplumber、xlsx/Markdown 自 2D 提前、Markdown 的定位、1B-4~1B-6 的子項切分），並同步 §4 的 2D 內容。v2.1：§3 新增「1B 結案」小節（**暫行**，同 1A 的理由），含驗收依據、帶進 1C 的五個缺口，以及過程中發現並修掉的七個非原訂範圍問題。v2.2：新增 §3.4「1C-3 落地紀錄」——1C 尚未結案（1C-4／1C-5 未做），但 embedding worker 把文件的終點狀態從 `chunked` 改成 `ready`，那是 1D 的前提，因此先記；同步更新 1B 結案表的缺口①（已結）與④（部分處理：`acks_late` 本就涵蓋 worker 被砍，補上逐租戶的恢復指令，全域掃描仍排 2A）。v2.3：§3.5 新增「1D-5 的決定」——六項與 06／09 原文不同的定案（短引用編號、Phase 1 不套絕對門檻改用可選的相對門檻、免錢版 condense、`citations` 事件形狀與四個新欄位、幻覺引用只剔清單不改文字、檢索參數收進單一來源），每項標出待改的文件；另記 1D-5 不做的五個缺口。相關產品決定「統一參數管理畫面」記於 15 §4.1。v2.4：§3 新增「1D-5 結案」小節（**暫行**，同 1A／1B 的理由）——含六項開工前決定的落地與文件同步結果、帶進 1E 的六個缺口，以及過程中發現並修掉的五個非原訂範圍問題（其中兩個是 smoke 自 1C-5 起就在打真 API、且與 `make start` 搶同一個 Celery 工作籃）；§3.5 的「不做」清單同步修訂——`kb_ids` 驗證於實作時推翻，改為建立時擋。v2.5：§3 的 1D-5 結案「驗收依據」補齊 `make test`／`make smoke` 的實測數字（2026-08-19），該結案自此成立。v2.6：§2 的 Phase 0 未結項②（新人 30 分鐘上手計時）與對應的 DoD 條目作廢——單人開發，無新人可測；`14` §Maintainability 的同一條同步作廢。v2.7：§3 的 1D-5 結案表後新增「結案後記」——CI 自 5b25444 起連紅四次（run 57–60）無人察覺（ruff cache 假綠 + `sqlparse` CVE 漂移），結案數字不改但補上前提；防線三件（`lint-backend` 的 ruff `--no-cache`、`make ci-status`、CLAUDE.md push 後必盯 CI）；版本欄同步更正（原停在 v2.4 而變更紀錄已到 v2.6，同 v1.4 修過的漂移）。v2.8：§3 新增「1E 結案＋Phase 1 閘門認定」小節——Phase 1 **有條件通過閘門**（DoD ①「50 頁 PDF → 5 分鐘 ready → 問答 → 正確引用」實測 4.2 秒／③隔離矩陣綠燈；②TTFT p95 維持未結，量測前提不存在）；1A／1B／1D-5 三張結案表的「暫行」狀態同日解除（內容未被推翻，數字不改）；記 1D-5 六缺口的處置、Reka UI＋青綠山水設計系統的範圍追加（03 §8.5）、帶進 Phase 2 的六個缺口。v2.9：§4 新增「2A 結案」小節——六個子項全數落地、Phase 2 DoD 第一項（雙租戶下 quota 硬擋）達標；記下五項開工前核可的範圍偏離、§3.1 v1.7 未結項（跨租戶 bypass 角色）的裁決（**不建**，改以無 RLS 的 `identity_tenant_directory` 列舉 id ＋ 逐一進 `tenant_context`）、2A-5 後八個 commit 的全面審查產出，以及帶進 2B 的八個缺口；05→v1.5、09→v1.3 同步 2A-5 的三處欄位/回應。v3.0：§4 新增「2B 開工前定案：rerank 的落地方式」——rerank 走**自架 TEI + `bge-reranker-v2-m3`**（免費、多語、每次提問都要打的一段不適合按次計費），Ollama 因無 rerank 端點而**走不通**（非取捨），雲端 API 僅留 Jina 作第二個 adapter 的驗證對象；併記硬體前提（RTX 5060 8 GiB、TEI 的 Blackwell 映像為實驗性）、降級鏈只有「TEI → 跳過」兩層、以及 06/11/02/12 待同步的段落。v3.1：§4 新增「2B 子工作包切分」（2B-0…2B-6，人類核可）與「**2B-0 結案**」——golden set 與離線評測腳本落地、純向量 baseline 於任何檢索改動**之前**落檔；並記下一項實測推翻的計畫值：主指標由 `recall@10` 改為 `recall@1` + `mrr`（DRCD 在純向量下 recall@5 起即 1.000，原指標只有退步空間）。v3.2：§4 新增「**2B-4 結案**」——自架 TEI（`bge-reranker-v2-m3`）＋ Jina 兩個真 adapter 落地，第三次評測給出的結論是**贏的是 rerank 不是 hybrid**（手寫 recall@1 0.4375 → 0.7917、DRCD 0.9417 → 0.9917；而 `hybrid+rerank` 與 `vector+rerank` 在 144 題上逐題名次完全相同，hybrid 的邊際貢獻為零）。**DoD ② 的認定與預設值的去留留給人類裁決**（字面是「hybrid 優於純向量」，而勝出的是完整檢索鏈）；併記 WSL2 上 TEI 拿得到 GPU 卻退成 CPU 的實測定位與處置 |
 
 ---
 
@@ -267,7 +267,7 @@ stream_chat／1D-3b PromptBuilder／1D-4a 端點與生成／1D-4b resume 與 sto
 | 子項 | **2A-1** usage_logs 落地與計價（月分區、價目表、Beat）／**2A-2a** Quota 核心（五資源限額、Redis reserve/commit/release、429 硬擋、`/tenants/current/quota`）／**2A-2b** 日結對帳、`superseded` chunk 清理、per-tenant 公平佇列、Beat 納入一鍵啟停／**2A-3** Analytics（`usage_daily` 每小時 rollup、`/analytics/usage`、`/analytics/costs`）／**2A-4** 稽核（`audit_logs` 月分區 append-only、middleware 自動留痕、`/audit-logs`、到期分區摘除）／**2A-5** 通知（`notifications` 收件匣、事件接線、email 通道 + Mailpit） |
 | 驗收依據（2026-08-23 全套重跑） | `make lint` 全綠（ruff `--no-cache` + format + mypy strict + import-linter **9/9** ＋前端 eslint + vue-tsc）；`make test` **1455 passed**（unit + integration + api）；前端 vitest **168 passed（含 tests/types 的型別層，vue-tsc 無錯）**；`make smoke` **5 passed（五步全為實作）**；`make openapi-check` 無漂移。各子項的驗收測試先行、全紅→全綠：2A-1 46 條、2A-2a 32 條、2A-2b 34 條、2A-3 14 條、2A-4 48 條、2A-5 60 條 |
 | 對照工作包內容（§4 表列四項） | Quota（reserve/commit + Redis 計數 + 對帳）✅ 2A-2a/2b／usage_logs 分區 + Analytics 彙總與 Dashboard API ✅ 2A-1/2A-3／Audit middleware ✅ 2A-4／Notification（in-app + email）✅ 2A-5 |
-| **Phase 2 DoD 進度** | ① **雙租戶隔離下 quota 強制生效 ✅**（2A-2a 的 429 硬擋，雙租戶矩陣含在 `make test` 內）；② hybrid 檢索評測優於純向量 → 2B；③ 還原演練報告 → 基礎 HA（未排期） |
+| **Phase 2 DoD 進度** | ① **雙租戶隔離下 quota 強制生效 ✅**（2A-2a 的 429 硬擋，雙租戶矩陣含在 `make test` 內）；② hybrid 檢索評測優於純向量 → **2B-4 已量到數據，認定待人類裁決**（完整檢索鏈壓倒性勝出，但 hybrid 那一路的邊際貢獻為零——見下方「2B-4 結案」）；③ 還原演練報告 → 基礎 HA（未排期） |
 | 開工前定案的範圍偏離（人類核可） | ① **價目表暫住 `app_settings` 可調參數區**（05 §3.3 的 `model_configs` 與整個 Model 管理模組都還不存在），格式 `model:prompt/completion`，model_configs 落地時只搬儲存位置、介面不變；② **免費方案起始值**（token 1M/月、訊息 200/日、文件 100、儲存 1GiB、並發 2，全可調）、存量資源走 DB 聚合、embedding tokens 不計入 token/月、**超額只做硬擋**（降級/放行延後）；③ **報表讀彙總表不掃分區**（即時數字歸 `/tenants/current/quota`），彙總維度**缺 kb**（`usage_logs` 無 `kb_id`，chat 是跨 KB 對話）→ 3B 需要時補欄位；④ 稽核**寫入型請求預設全記＋明文豁免清單**（fail-safe 方向：新端點漏宣告仍會被記）、成功與失敗都記、403 帶被拒的 permission code；⑤ 到期分區**預設只 DETACH 不 DROP** |
 | §3.1 v1.7 未結項的裁決（跨租戶作業） | 1A 當時決定「bypass 角色等 2A 第一次真的需要跨租戶讀寫時再建」。**2A 的結論是不建**：維運 job 需要的只是「有哪些租戶」，而那份名單住在 `identity_tenant_directory`（登入前就要查、天生無 RLS、不含任何客戶資料）。因此 `TenantDirectoryRepository.active_tenant_ids()` 回傳 id 清單，job 拿到之後**仍逐一進 `tenant_context`** 工作；DDL（分區維護）走 owner 連線。整個 repo 至今**沒有任何 BYPASSRLS 角色**，在請求路徑上呼叫 `active_tenant_ids()` 視為設計錯誤（寫在 docstring，1B 的「只准 slug 換 id」約定就此有紀錄地放寬一格） |
 | 文件同步 | 05 → **v1.5**（§5.2 到期分區落地方式、`audit_logs` 三欄與兩項實作性質〔v1.4，2A-4〕；§3.2 `documents.uploaded_by`、§3.3 `notifications.dedupe_key`／`updated_at`〔v1.5，2A-5〕）；04 → **v1.2**（§8.3 Audit 的觸發面、三種 outcome、before/after 填法、登入的例外路徑）；09 → **v1.3**（§2.6 `/notifications` 回應含 `unread_count`）；15 → **v1.4**（§4 稽核 hash chain 維持選配，記下觸發條件） |
@@ -328,6 +328,56 @@ stream_chat／1D-3b PromptBuilder／1D-4a 端點與生成／1D-4b resume 與 sto
 | **實測推翻的計畫值：主指標** | 原定 `recall@10`。DRCD 在純向量下 recall@5 起即 **1.000**——該指標只有退步空間、沒有進步空間，用它證明 DoD ② 在數學上不可能成立。**改為主指標 `recall@1` + 次指標 `mrr`，判定規則是主指標上升且次指標不退步**（只看 recall@1 會把「第一名多對幾題、其餘整體往後掉」記成勝利）。連帶：**兩份題組分工不同**——手寫題組是量進步的尺，DRCD 已近天花板，實質上是**迴歸護欄**（2B-1 的中文斷詞若打壞原本答對的題目，會第一個在它身上出現） |
 | 落地方式的三個決定 | ① **語料一段 = 一個 chunk，不走 chunker**（切塊器會把正解段落切成數塊，recall 的分母與命中對不齊）；② 評測**走 `RetrievalService`**（問答用的同一條路），不另寫一份查詢；③ 報告帶題組與語料的 sha256，指紋或 embedding 模型不同即**拒絕比較** |
 | 帶進 2B-1 的缺口 | ① 手寫題僅 **24 題**，每題權重 4.2%，若要當主要依據應擴到 ~50 題（14 §2 的「golden set 初期規模小」已列為誠實清單第 4 項）；② baseline 報告 441 KB（每題記 40 個命中 chunk id，為租戶越界留證）；③ 評測租戶 `lumina-eval` 的 1,499 個 chunk 常駐開發庫，未納入任何清理流程；④ 承 2A 的八個缺口不變 |
+
+#### 2B-4 結案（2026-08-24）
+
+> 2B 唯一有失敗風險的一步（要 GPU，而 TEI 的 Blackwell 映像官方標為實驗性），也是
+> **DoD ② 第一次驗得到**的地方——前面三包做的是量尺、FTS 與形狀，判決要等真的
+> cross-encoder 上線。
+
+| 面向 | 內容 |
+|------|------|
+| 子項 | ① TEI 容器（compose 的 `gpu` profile、`make tei-up`／`tei-down`／`tei-logs`、模型權重掛 volume、healthcheck 等的是「模型載入完成」）；② **兩個真 adapter**（`ai/gateway/providers/rerank.py`：主線 TEI ＋ 第二家 Jina，共用 `_RerankClient` 的規則但**不併進 `openai_compatible`**）；③ Gateway 接線（`_rerank_provider`：TEI 免金鑰、Jina 缺金鑰即 Fail Fast）；④ `make verify-provider PROVIDER=tei CAPABILITY=rerank`（跨語言、0~1 尺度、單次耗時三件事，同時是 11 §1.1 的量測工具）；⑤ 評測**四模式全開通** ＋ `require_real_providers` 補上 rerank 那道 mock 守門 ＋ rerank 報告強制記 `rerank_provider`／`rerank_model`；⑥ 文件同步 06 §3.1／§3.4、11 §1.1／§4.2、12 §1、02 §3 |
+| 驗收依據（2026-08-24） | `make lint` 全綠（ruff + mypy strict + import-linter **9/9** + 前端 eslint／vue-tsc）；`make test` **1684 passed**（2B-3 結案時 1616，+68 全為 2B-4 的驗收測試）；`make smoke` **5 passed**；`make verify-provider PROVIDER=tei CAPABILITY=rerank` ✓——中文問句配英文正解排第一（0.9940，其餘三段 0.0000），單次 161ms（首次含暖機）／95ms（第二次），預算 800ms |
+| **第三次評測** | 見下表（同題組、同語料、同 embedding 模型，四個模式各跑一次） |
+| **實測的結論：贏的是 rerank，不是 hybrid** | 後兩列不是抄錯——144 題**逐題的正解名次完全相同**。FTS 確實換掉了候選（手寫 5/24 題、DRCD 8/120 題的 24 段候選集合不同），只是換進來的那幾段從來沒有擠掉正解，cross-encoder 把它們打回去了。也就是說在這兩份題組上，hybrid 的邊際貢獻是**零**（2B-2 沒有裁判時是**負**）。`vector+rerank` 那一格因此不是多跑的：少了它，0.7917 會被記成 hybrid 的功勞，而它一分也沒出 |
+| **DoD ② 的認定：待人類裁決** | DoD ② 的字面是「hybrid 檢索評測優於純向量」。實測把這句話拆成了兩半：**06 §3.1 的完整檢索鏈**（RRF → rerank）對純向量 baseline 是壓倒性的勝出（手寫 recall@1 0.4375 → 0.7917，MRR 0.6046 → 0.8941；DRCD 0.9417 → 0.9917），但**hybrid 這一路本身**在兩份題組上都沒有貢獻。依 CLAUDE.md「設計文件與實作衝突時停下並回報」，此處只記數據，不自行改寫 DoD 的句子 |
+| 預設值**維持不動**（待同一次裁決） | `rag_retrieval_mode` 仍是 `vector`、`ai_rerank_provider` 仍是 `mock`。理由：兩個 `+rerank` 模式若成為預設，漏設 provider 的人會拿**字元重疊比例**當 cross-encoder 用，而那比不 rerank 更糟；接上 rerank 因此是一個要用手做的決定（`make tei-up` ＋ `AI_RERANK_PROVIDER=tei` ＋ 模式）。hybrid 的程式與測試全部留著——「邊際貢獻為零」是**這兩份題組上**的結論，而識別符密集的語料（產品型號、錯誤碼）正是 FTS 該贏的地方 |
+| 實測踩到的兩件事 | ① **WSL2 上 TEI 拿得到 GPU 卻用不到**：`text-embeddings-router` 的 RPATH 指死 `/usr/local/cuda/compat`，載到映像自帶的一般 Linux 使用者態驅動，而 WSL2 的 CUDA 走的是宿主注入的 shim ＋ `/dev/dxg`——於是 `CUDA_ERROR_NO_DEVICE`，TEI **安靜地退成 CPU**（容器健康、分數也對，只是每次幾秒，全部撞上 1.2s 的預算被跳過）。處置是用空的 tmpfs 蓋掉那個目錄，並補一條獨立的 compose 測試（「有沒有保留 GPU」那條照樣綠燈，所以它擋不住這個）。② healthcheck 靠 `start_period: 60m` 而不是 `retries` 撐過第一次下載——權重 2.2 GiB，`retries` 用完的那一刻容器被標 unhealthy，`make tei-up --wait` 於是失敗，儘管下載還在正常進行 |
+| 帶進 2B-5 的缺口 | ① **絕對門檻 0.3 仍預設關閉**：條件已具備（分數回到 0~1 尺度），但報告不記 rerank 分數，因此沒有分布可裁決；驗證腳本上看到的分離度很大（0.9940 vs 0.0000），而那是 4 段的玩具樣本，不足以定門檻。② hybrid 的去留與 rerank 是否進預設，見上兩列。③ 手寫題仍只有 24 題（承 2B-0 缺口①）。④ 評測租戶 `lumina-eval` 的 1,499 個 chunk 仍常駐開發庫（承 2B-0 缺口③）。⑤ **Jina adapter 從未打過真的 API**（沒有金鑰）——它只有 `MockTransport` 的形狀測試，而形狀是照文件寫的。⑥ TEI 不進 CI 也不進 smoke（GPU 只在開發機上；且 rerank 失敗是降級，「TEI 沒開」在 smoke 的輸出裡與「rerank 正常」長得一模一樣）。⑦ 承 2A 的八個缺口不變 |
+
+**第三次評測（2026-08-24；`gemini-embedding-2`、`top_k=40`、RRF k=60 → 24、TEI 的
+`bge-reranker-v2-m3`）**
+
+| 模式 | 手寫 24 題 recall@1／MRR | DRCD 120 題 recall@1／MRR |
+|------|--------------------------|---------------------------|
+| `vector`（2B-0 baseline） | 0.4375／0.6046 | 0.9417／0.9653 |
+| `hybrid`（2B-2b） | 0.4167／0.6209 | 0.9250／0.9544 |
+| `vector+rerank` | **0.7917／0.8941** | **0.9917／0.9944** |
+| `hybrid+rerank` | **0.7917／0.8941** | **0.9917／0.9944** |
+
+### 4.1 二次架構審計的處置（2026-08-24）
+
+兩輪獨立的全系統架構審查（Opus 5 第一輪 12 項發現；Fable 5 第二輪逐項驗證 ＋ 脫離
+第一輪思路重查）在 `9e61072` 上完成。第二輪的判定：第一輪 12 項**0 誤判**，1 項嚴重度
+高估（F-05），並補上 1 項第一輪未發現的 High（H1）。兩輪的共同結論是**不需要重構**，
+需要的是補上少數缺口。
+
+**P0 三項於 2026-08-24 落地**（不對齊任何原訂工作包——它們是既有程式碼的缺口，不是
+新功能；依 §1.2 的規則，範圍與這一節的紀錄由人類核可後才動工）：
+
+| 項目 | 內容 | 落地 |
+|------|------|------|
+| **H1：已刪除文件的 chunk 仍會被檢索並引用** | 檢索的兩路（向量的 ORM 條件、FTS 的手寫 WHERE）都只認 `superseded`，**沒有一路認得 `deleted_at`**——而軟刪除的可見性規則實作在 `DocumentRepository.get_queryset`，chunk 不繼承它。症狀是使用者刪掉文件、API 回 204、列表消失、額度釋放，然後那份文件的內容與**檔名**繼續出現在後續問答的 context 與 `citations` 裡，點進去 404 | `DocumentService.delete()` 在同一交易內呼叫現成的 `supersede_for_document()`（兩路 partial index 逐字認得 `superseded`，標記即下架），既有的每日 `cleanup_chunks` 自動接手硬刪。新增 `tests/integration/test_deleted_document_visibility.py` 4 條 |
+| **F-02＋M1：軟刪除承諾了不存在的清理者** | 三處 docstring 都寫著「30 天後由清理 job 硬刪」，而那個 job 從 1B 起就不存在。**KB 級刪除是量最大也最容易漏的一種**：`KnowledgeBaseService.delete` 刻意不逐列標記底下的文件，所以它們連 `deleted_at` 都沒有 | 新增 `PURGE_DELETED_TASK`（`platform.purge_deleted`，maintenance 佇列，每日 04:30 排在 `cleanup_chunks` 之後）＋ `DeletedKnowledgePurgeService`／`DeletedConversationPurgeService` 兩支（分兩支是 bounded context，組合點在 worker 的 task）。順序：向量 → chunk → etl_job → 物件 → 文件 → KB（另一路 摘要／訊息 → 對話）。保留窗與批次上限收進 `retention_purge_after_days`／`retention_purge_batch_size`。新增 `tests/integration/test_retention_purge.py` 11 條 ＋ beat 註冊 1 條 |
+| **F-06：README 與程式碼狀態不符** | README 的狀態段停在「下一步為 1E」（實際已到 2B-4）；鐵則 2 引用不存在的 `core/interfaces/` | 狀態段改為一行摘要 ＋ **指向本檔為單一事實來源**（逐包流水帳在 README 漂了三個工作包沒人更新，而這種錯誤沒有測試擋得住）；鐵則 2 在 README 與 CLAUDE.md 同步改寫，並明記「沒有 `core/interfaces/` 抽象層」是刻意取捨；三處「30 天後清理」docstring 改為指名新的 service |
+
+**尚未處理（依審計的優先級排序，範圍與時機待人類裁決）**：
+
+- **P1**：F-03 配額 `limits()` 的 per-request memo（TTFT 量測前要先做，否則量到的是會變的數字）／F-04 `spawn()` 的行程級 semaphore ＋ 429／F-01 最小部署形狀（`compose.app.yml` ＋ `GET /healthz` ＋ drain 演練，含 L4 的 `DJANGO_SETTINGS_MODULE` 顯式化）／F-09 `ALLOWED_HOSTS` 走環境變數／F-05 `commit`/`release` 補 expire。
+- **P2**：F-07 ChatService 切出 TurnBudget／TurnComposer（3A 開工前）／F-11＋L3 rate limit middleware（含 per-IP 維度）／L1 串流結束後縮短緩衝 TTL／F-12 `make eval-clean`。
+- 兩輪都**明確不建議**的事：Microservices、CQRS、`core/interfaces/` 抽象層、platform 拆分。
+
 
 ## 5. Phase 3：AI 進階與治理（7 週，~16 pw）
 

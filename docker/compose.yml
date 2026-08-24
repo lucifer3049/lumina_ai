@@ -244,8 +244,80 @@ services:
       timeout: 3s
       retries: 30
 
+  # Rerank 服務（2B-4）：HuggingFace TEI 跑 `bge-reranker-v2-m3`（06 §3.4 指名的多語
+  # cross-encoder；單語 reranker 會把跨語言的正確候選打低分，比不 rerank 更糟）。
+  #
+  # **profile 之後，預設不啟動**（13 §4 的 2B 開工前定案）：`make up` 會 `--wait`，
+  # 沒有 profile 的話，一台沒有 GPU 的機器（CI、他機、只想跑前端的人）會卡在一個永遠
+  # 不健康的容器上，而錯誤訊息講的是 CUDA。要跑真 rerank 的人下 `make tei-up`。
+  #
+  # **模型是自架的理由是用量形狀**：rerank 與 embedding 不同，每一次提問都要打一次，
+  # 付費 API 的帳單隨查詢量線性長，而本專案不商業化（13 §4 的成本比較）。
+  #
+  # 映像的 `120` 標籤是 Blackwell（sm_120，RTX 50 系）專用且官方標為實驗性。起不來時
+  # 自 build：`docker build --build-arg CUDA_COMPUTE_CAP=120 ...`（見 13 的定案表）。
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:120-1.9
+    profiles: ["gpu"]
+    command:
+      - --model-id
+      - BAAI/bge-reranker-v2-m3
+      # 超過 512 token 的候選截斷而不是退回整批。adapter 每次請求也送 `truncate`
+      # （見 `ai/gateway/providers/rerank.py`），這裡是同一條規則的服務端保險——
+      # 漏掉的話，一段過長的 chunk 會讓整批 413/422，而降級是靜默的。
+      - --auto-truncate
+    # 沒有 GPU 就退成 CPU 推論——它跑得動，只是每次查詢要好幾秒，而 11 §4 的 1.2s
+    # 預算會把它全部跳過。症狀是「rerank 接上了但完全沒效果」，而容器是健康的。
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # **WSL2 必要的一行**（2026-08-24 實測定位）：把映像自帶的 CUDA forward-compat 驅動
+    # 目錄用一個空的 tmpfs 蓋掉，否則這個容器**拿得到 GPU 卻用不到**。
+    #
+    # 症狀是 `Could not find a compatible CUDA device`＋`Using CPU instead`，而容器一切
+    # 正常：`nvidia-smi` 在容器內看得到卡、`/dev/dxg` 在、注入的 libcuda 也在 ldconfig
+    # 快取裡指向宿主驅動（610.57.01）。真正的原因在載入順序：`text-embeddings-router`
+    # 的 RPATH 指死 `/usr/local/cuda/compat`，那條路徑排在 ld 快取之前，於是它載到的是
+    # 映像自帶的 `libcuda.so.575.57.08`——一份**一般 Linux 的**使用者態驅動。而 WSL2 的
+    # CUDA 不走 /dev/nvidia*，是由宿主注入的 shim libcuda 經 `/dev/dxg` 轉給 Windows
+    # 驅動；那份 compat 驅動找不到任何裝置，於是回 `CUDA_ERROR_NO_DEVICE`，TEI 就安靜
+    # 地退成 CPU（每次查詢數秒 → 11 §4 的 1.2s 預算會把 rerank 全部跳過，見上）。
+    #
+    # 蓋掉之後 loader 往下找到注入的 shim，模型起在 `Cuda(...)`（實測 24 段候選 62ms）。
+    # **compat 在這裡本來就沒有用**：它的存在是為了「新 CUDA 跑在舊驅動上」，而這台的
+    # 驅動（610）比 compat（575）新。**換到原生 Linux 而驅動較舊的機器要拿掉這一行**，
+    # 那裡 compat 才是有作用的東西。
+    tmpfs:
+      - /usr/local/cuda/compat
+    ports:
+      - "127.0.0.1:${TEI_PORT}:80"
+    volumes:
+      # 模型權重約 1.2 GiB。沒有 volume 的話每次重建容器都要重新下載，而那是幾分鐘
+      # 的沉默等待（TEI 在下載完之前不會回應任何請求）。
+      - teidata:/data
+    healthcheck:
+      # `--wait` 要等的是「模型載入完成」而不是「行程起來了」：TEI 起來到能回答之間
+      # 有數十秒的載入期（第一次還要先下載 1.2 GiB 權重），那段時間打過去會得到連線
+      # 成功但無回應。`/health` 只在模型真的可以推論之後才回 200，所以它問的正是
+      # 我們要的那個問題。
+      test: ["CMD", "curl", "-fsS", "http://localhost/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      # **靠 start_period 而不是靠 retries 撐過第一次下載**（2026-08-23 實測踩到）：
+      # 權重 2.2 GiB，在 1 MB/s 的線路上要 40 分鐘，而 `retries` 用完的那一刻容器就被
+      # 標成 unhealthy——`make tei-up --wait` 於是失敗，儘管下載一切正常還在跑。
+      # start_period 之內失敗不計次也不改狀態（容器維持 starting），正是這個情境要的。
+      # 穩態重啟只需數十秒，這個值不會讓真的故障被藏住。
+      start_period: 60m
+
 volumes:
   pgdata:
   redisdata:
   miniodata:
+  teidata:
   pgbouncer-config:

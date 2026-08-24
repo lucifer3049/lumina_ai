@@ -19,12 +19,15 @@ from core.tasks import (
     ANALYTICS_ROLLUP_TASK,
     CLEANUP_CHUNKS_TASK,
     MAINTAIN_PARTITIONS_TASK,
+    PURGE_DELETED_TASK,
     RECONCILE_QUOTA_TASK,
     RESCUE_STUCK_DOCUMENTS_TASK,
     RESCUE_STUCK_STREAMS_TASK,
 )
+from services.conversation.purge import DeletedConversationPurgeService
 from services.conversation.rescue import StuckStreamRescueService
 from services.knowledge.cleanup import ChunkCleanupService
+from services.knowledge.purge import DeletedKnowledgePurgeService
 from services.knowledge.rescue import StuckDocumentRescueService
 from services.platform.analytics import UsageRollupService
 from services.platform.maintenance import ensure_future_partitions, prune_expired_partitions
@@ -65,6 +68,24 @@ def cleanup_chunks() -> dict[str, Any]:
     purged = ChunkCleanupService().purge_all()
     logger.info("chunk_cleanup_done", purged=purged)
     return {"purged": purged}
+
+
+@shared_task(name=PURGE_DELETED_TASK)
+def purge_deleted() -> dict[str, Any]:
+    """軟刪除的保留窗硬刪（05 §5.4；二次架構審計 P0-2）。
+
+    **一個 task 打兩個 context 的 service**，這是 worker 該做的組合：knowledge 與
+    conversation 之間不得互相 import（ADR-006），而兩者的保留窗、批次上限與失敗處置
+    完全相同——拆成兩個排程只是多一條「排了卻沒有人做」的可能（同 `maintain_partitions`
+    一個任務做兩件事的理由）。
+
+    同樣不設 Celery 重試：明天的那一輪就是重試，而這批資料已經在保留窗外躺了 30 天。
+    """
+    knowledge = DeletedKnowledgePurgeService().purge_all()
+    conversations = DeletedConversationPurgeService().purge_all()
+    result = {**knowledge.as_dict(), **conversations.as_dict()}
+    logger.info("retention_purge_done", **result)
+    return result
 
 
 @shared_task(name=RESCUE_STUCK_DOCUMENTS_TASK)

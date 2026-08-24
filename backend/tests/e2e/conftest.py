@@ -78,6 +78,13 @@ _MOCK_AI_ENV = {
     "AI_CHAT_MODEL": "mock-chat",
     "AI_CHAT_API_KEY": "",
     "AI_CHAT_FALLBACK_MODELS": "",
+    # 2B-4 之後 `.env` 會指向真的 TEI 或帶著 Jina 的金鑰。釘死它的理由與上面兩條相同，
+    # 只是後果更難查：**rerank 失敗是降級而不是報錯**，所以 TEI 沒開的 smoke 仍然全綠
+    # ——綠的是「降級鏈有效」，而不是「rerank 正常」，兩者在 smoke 的輸出裡長得一模
+    # 一樣。反過來 TEI 有開時，smoke 會安靜地把一台 GPU 拉進 E2E 的必要條件裡。
+    "AI_RERANK_PROVIDER": "mock",
+    "AI_RERANK_MODEL": "mock-rerank",
+    "AI_RERANK_API_KEY": "",
 }
 
 

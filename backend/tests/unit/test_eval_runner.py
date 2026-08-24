@@ -184,22 +184,120 @@ class TestModes:
         # 歸因問題因此不是假想的。
         assert tuple(runner.MODES) == ("vector", "vector+rerank", "hybrid", "hybrid+rerank")
 
-    def test_hybrid_became_available_in_2b2(self, runner: ModuleType) -> None:
-        """兩個 rerank 模式仍未開通（2B-4）：2B-3 只有 MockProvider，而 mock 的分數
-        沒有語意——拿它跑評測量到的是亂數。每開通一個模式就改這裡一次，清單是「評測
-        現在量得出什麼」的唯一聲明。"""
-        assert tuple(runner.IMPLEMENTED_MODES) == ("vector", "hybrid")
+    def test_every_mode_is_implemented_after_2b4(self, runner: ModuleType) -> None:
+        """兩個 rerank 模式在 2B-4 開通（真 TEI + `bge-reranker-v2-m3`）。每開通一個
+        模式就改這裡一次——這份清單是「評測現在量得出什麼」的唯一聲明。"""
+        assert tuple(runner.IMPLEMENTED_MODES) == tuple(runner.MODES)
 
-    def test_a_declared_but_unimplemented_mode_refuses_to_run(self, runner: ModuleType) -> None:
-        """**不得偷偷跑成純向量**：那會產生一份標著 hybrid 而其實是向量的報告，而它
-        與真的 hybrid 報告長得一模一樣。"""
-        for mode in ("vector+rerank", "hybrid+rerank"):
-            with pytest.raises(NotImplementedError):
-                runner.validate_mode(mode)
+    def test_a_mode_that_is_declared_but_missing_still_refuses_to_run(
+        self, runner: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """**不得偷偷跑成純向量**：那會產生一份標著 hybrid+rerank 而其實沒 rerank 的
+        報告，而它與真的長得一模一樣。守門留著，下一個新模式進來時仍然生效。"""
+        monkeypatch.setattr(runner, "IMPLEMENTED_MODES", ("vector",))
+
+        with pytest.raises(NotImplementedError):
+            runner.validate_mode("hybrid+rerank")
 
     def test_an_unknown_mode_is_a_plain_error(self, runner: ModuleType) -> None:
         with pytest.raises(ValueError):
             runner.validate_mode("magic")
+
+
+class TestMockRerankerIsRefused:
+    """`--allow-mock` 的第二半：**embedding 是真的、reranker 是 mock** 也量不出品質。
+
+    `MockRerankProvider` 的分數是查詢與段落的字元重疊比例——它驗得了「rerank 有沒有被
+    呼叫」，量不了「排得好不好」。拿它跑一份 `hybrid+rerank` 報告，數字看起來完全正常
+    （0~1、有排序、有進步或退步），而它衡量的是中文字元的交集大小。那份報告會被拿去
+    回答 DoD ②「hybrid 檢索評測優於純向量」。
+    """
+
+    def test_a_rerank_mode_needs_a_real_reranker(self, runner: ModuleType) -> None:
+        with pytest.raises(runner.EvaluationError):
+            runner.require_real_providers(
+                "hybrid+rerank",
+                embedding_provider="gemini",
+                rerank_provider="mock",
+                allow_mock=False,
+            )
+
+    def test_the_escape_hatch_is_explicit(self, runner: ModuleType) -> None:
+        """管線本身（模式接得上、報告寫得出來）仍然要驗得動，所以旗標留著——但它要
+        用手打出來，而不是預設。"""
+        runner.require_real_providers(
+            "hybrid+rerank",
+            embedding_provider="mock",
+            rerank_provider="mock",
+            allow_mock=True,
+        )
+
+    def test_a_non_rerank_mode_does_not_care_about_the_reranker(self, runner: ModuleType) -> None:
+        """純向量與 hybrid 根本不呼叫 reranker——在那裡要求真 provider 只會擋住
+        重跑 baseline 的人，而擋的理由不存在。"""
+        runner.require_real_providers(
+            "hybrid",
+            embedding_provider="gemini",
+            rerank_provider="mock",
+            allow_mock=False,
+        )
+
+    def test_a_mock_embedding_is_still_refused(self, runner: ModuleType) -> None:
+        """2B-0 的那一半不變。"""
+        with pytest.raises(runner.EvaluationError):
+            runner.require_real_providers(
+                "vector",
+                embedding_provider="mock",
+                rerank_provider="tei",
+                allow_mock=False,
+            )
+
+
+class TestRerankAttribution:
+    """一份 rerank 報告要說得出**是誰排的**。
+
+    半年後桌上有兩份 `hybrid+rerank` 報告、分數差 0.08，而其中一份是 TEI 本機跑的、
+    另一份是 Jina 雲端跑的——沒有記下來的話，那個差距會被當成別的改動的功勞。
+    """
+
+    def _rerank_report(
+        self, runner: ModuleType, tiny_dataset: tuple[Any, Any], **extra: Any
+    ) -> dict[str, Any]:
+        retrieval = {
+            "embedding_provider": "gemini",
+            "embedding_model": "text-embedding-004",
+            "top_k": 20,
+            "params": {"min_score_ratio": 0.0},
+        }
+        retrieval.update(extra)
+        return _report(runner, tiny_dataset, mode="hybrid+rerank", retrieval=retrieval)
+
+    def test_a_rerank_report_records_the_reranker(
+        self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
+    ) -> None:
+        report = self._rerank_report(
+            runner, tiny_dataset, rerank_provider="tei", rerank_model="BAAI/bge-reranker-v2-m3"
+        )
+
+        assert report["retrieval"]["rerank_provider"] == "tei"
+        assert report["retrieval"]["rerank_model"] == "BAAI/bge-reranker-v2-m3"
+
+    def test_a_rerank_report_without_a_reranker_is_refused(
+        self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
+    ) -> None:
+        """漏填不是小事：那份報告之後仍然可以與別的報告比對（比對只看題組與 embedding
+        模型），而它的分數會被歸給錯的東西。"""
+        with pytest.raises(runner.EvaluationError):
+            self._rerank_report(runner, tiny_dataset)
+
+    def test_a_vector_report_stays_clean(
+        self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
+    ) -> None:
+        """沒跑 rerank 的報告不該有 `rerank_model: null` 這種欄位——它讀起來像
+        「跑了但沒記」，而那正是上一條要擋的情況。"""
+        report = _report(runner, tiny_dataset)
+
+        assert "rerank_provider" not in report["retrieval"]
 
 
 class TestCompare:
@@ -320,6 +418,55 @@ class TestCompare:
                 "embedding_model": "text-embedding-3-small",
                 "top_k": 20,
                 "params": {},
+            },
+        )
+
+        with pytest.raises(runner.IncomparableReportsError):
+            runner.compare_reports(baseline, candidate)
+
+
+class TestRerankReportsRemainComparable:
+    """2B-4 的每一次比較都是「純向量 baseline vs 加了 rerank 的候選」。
+
+    比對的門檻只有題組與 embedding 模型（`_require_comparable`）——**刻意不含 rerank
+    provider**：把它加進去的話，DoD ② 要問的那個問題（rerank 有沒有讓檢索變好）就永遠
+    比不出來，因為 baseline 依定義沒有 reranker。
+    """
+
+    def test_a_vector_baseline_compares_against_a_rerank_candidate(
+        self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
+    ) -> None:
+        baseline = _report(runner, tiny_dataset)
+        candidate = _report(
+            runner,
+            tiny_dataset,
+            mode="hybrid+rerank",
+            retrieval={
+                "embedding_provider": "gemini",
+                "embedding_model": "text-embedding-004",
+                "top_k": 20,
+                "params": {"min_score_ratio": 0.0},
+                "rerank_provider": "tei",
+                "rerank_model": "BAAI/bge-reranker-v2-m3",
+            },
+        )
+
+        comparison = runner.compare_reports(baseline, candidate)
+
+        assert comparison.primary == "recall@1"
+
+    def test_a_different_embedding_model_is_still_refused(
+        self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
+    ) -> None:
+        baseline = _report(runner, tiny_dataset)
+        candidate = _report(
+            runner,
+            tiny_dataset,
+            retrieval={
+                "embedding_provider": "gemini",
+                "embedding_model": "text-embedding-005",
+                "top_k": 20,
+                "params": {"min_score_ratio": 0.0},
             },
         )
 

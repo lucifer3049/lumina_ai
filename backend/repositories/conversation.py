@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, cast
 
 from django.db.models import F, Q
@@ -96,6 +98,26 @@ class ConversationRepository(SoftDeletableRepository[Conversation]):
         """部分更新——只寫呼叫端明確給的欄位（理由同 KnowledgeBaseRepository.update）。"""
         return self.get_queryset().filter(id=conversation_id).update(**fields)
 
+    # ── 保留窗的硬刪（05 §5.4，二次架構審計 P0-2）──────────────
+
+    def deleted_before(self, cutoff: datetime, *, limit: int) -> list[uuid.UUID]:
+        """保留窗已過的已刪對話，最舊的先。從 ``including_deleted()`` 出發是刻意的
+        ——這是少數該看見已刪列的地方，而那個意圖要在呼叫端顯式可見。"""
+        rows = (
+            self.including_deleted()
+            .filter(deleted_at__lt=cutoff)
+            .order_by("deleted_at")
+            .values_list("id", flat=True)[:limit]
+        )
+        return [uuid.UUID(str(row)) for row in rows]
+
+    def hard_delete(self, conversation_ids: Sequence[uuid.UUID]) -> int:
+        """真的刪掉；回傳刪掉的列數。訊息與摘要必須先清（都是 PROTECT）。"""
+        if not conversation_ids:
+            return 0
+        deleted, _ = self.including_deleted().filter(id__in=list(conversation_ids)).delete()
+        return int(deleted)
+
 
 class MessageRepository(TenantScopedRepository[Message]):
     """訊息。**分區表**（05 §5.2）——順序與寫入點見模組 docstring。"""
@@ -115,6 +137,17 @@ class MessageRepository(TenantScopedRepository[Message]):
             return list(queryset.order_by("created_at", "id"))
         newest = list(queryset.order_by("-created_at", "-id")[:limit])
         return sorted(newest, key=lambda message: (message.created_at, str(message.id)))
+
+    def purge_for_conversations(self, conversation_ids: Sequence[uuid.UUID]) -> int:
+        """硬刪一批對話的全部訊息；回傳刪掉的列數（保留窗清理用）。
+
+        訊息是**分區表**：DELETE 走的是 `conversation_id` 的索引，不會退化成掃遍所有
+        分區。量的上限由呼叫端的批次大小控制（見 `retention_purge_batch_size`）。
+        """
+        if not conversation_ids:
+            return 0
+        deleted, _ = self.get_queryset().filter(conversation_id__in=list(conversation_ids)).delete()
+        return int(deleted)
 
     def stuck_streaming(self, *, started_before: Any) -> list[Message]:
         """還停在 ``streaming``、而且已經開始很久的訊息（補償掃描用，見
@@ -214,6 +247,13 @@ class MessageRepository(TenantScopedRepository[Message]):
 
 class MemorySnapshotRepository(TenantScopedRepository[MemorySnapshot]):
     model = MemorySnapshot
+
+    def purge_for_conversations(self, conversation_ids: Sequence[uuid.UUID]) -> int:
+        """硬刪一批對話的全部摘要；回傳刪掉的列數（保留窗清理用）。"""
+        if not conversation_ids:
+            return 0
+        deleted, _ = self.get_queryset().filter(conversation_id__in=list(conversation_ids)).delete()
+        return int(deleted)
 
     def latest_for(self, conversation_id: uuid.UUID) -> MemorySnapshot | None:
         """版本最大的那一份；沒有摘要**不是錯誤**（新對話本來就沒有）。"""

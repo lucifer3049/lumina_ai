@@ -204,3 +204,57 @@ class TestObservability:
 
         for service in SERVICES:
             assert f"log_file {service}" in tail_line
+
+
+class TestTeiStaysOptional:
+    """TEI 容器（2B-4）：**開發機上的一個選配服務**，不是這個 repo 的相依。
+
+    13 §4 的定案寫得很直白——沒有 GPU 的機器（CI、他機）不得因為 `make up` 起不了 TEI
+    而卡住。守的是三件事：它不預設啟動、自動化套件不碰它、CI 不知道它存在。
+    """
+
+    def test_it_has_its_own_target(self) -> None:
+        """`make tei-up`：要跑真 rerank 的人有一個明確的動作，而不是「改 compose 再
+        自己下 docker compose」——後者的參數（profile、GPU、port）每個人都寫得不一樣。"""
+        assert "tei-up:" in _MAKEFILE
+
+    @pytest.mark.parametrize("target", ["up", "test", "lint", "smoke"])
+    def test_the_everyday_targets_do_not_need_a_gpu(self, target: str) -> None:
+        import re
+
+        match = re.search(rf"^{target}:.*(?:\n\t.*)*", _MAKEFILE, re.MULTILINE)
+
+        assert match is not None, f"找不到 {target} 目標"
+        assert "tei" not in match.group(0), f"{target} 依賴了 TEI——沒有 GPU 的機器會卡住"
+
+    def test_ci_does_not_start_it(self) -> None:
+        for path in (_REPO_ROOT / ".github" / "workflows").glob("*.yml"):
+            assert "tei-up" not in path.read_text(encoding="utf-8"), (
+                f"{path.name} 想在 CI 上起 TEI——CI runner 沒有 GPU"
+            )
+
+    def test_the_manual_verification_covers_rerank(self) -> None:
+        """`make verify-provider CAPABILITY=rerank`：adapter 的驗收全走 MockTransport，
+        驗得了「我們送出去的長什麼樣」，驗不了「TEI 真的收不收」。base_url 差一個字、
+        欄位名拼錯、分數尺度不是 0~1——這幾類都要真的打一次才知道。"""
+        script = (_REPO_ROOT / "backend" / "scripts" / "verify_provider.py").read_text(
+            encoding="utf-8"
+        )
+
+        assert '"rerank"' in script, "verify_provider 還不認得 rerank capability"
+
+    def test_smoke_subprocesses_are_forced_onto_the_mock_reranker(self) -> None:
+        """smoke 的兩個子行程讀的是 repo 根的 `.env`（見上一個 class 的說明），而 2B-4
+        之後那份檔案會指向真的 TEI 或帶著 Jina 的金鑰。
+
+        釘死它的理由與 embedding／chat 那兩條一樣，只是後果更難查：rerank 失敗會**降級**
+        而不是報錯，所以 TEI 沒開的 smoke 仍然全綠——綠的是「降級鏈有效」，而不是
+        「rerank 正常」，兩者在 smoke 的輸出裡長得一模一樣。
+        """
+        conftest = (_REPO_ROOT / "backend" / "tests" / "e2e" / "conftest.py").read_text(
+            encoding="utf-8"
+        )
+        forced = conftest.split("_MOCK_AI_ENV", 1)[1].split("}", 1)[0]
+
+        assert '"AI_RERANK_PROVIDER": "mock"' in forced, "smoke 沒有把 rerank 釘成 mock"
+        assert '"AI_RERANK_API_KEY": ""' in forced, "smoke 沒有清掉 rerank 金鑰"

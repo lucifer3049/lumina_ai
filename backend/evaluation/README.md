@@ -81,6 +81,26 @@ set ≥100 題）」。
 **已知限制**：手寫題只有 24 題，每題值 4.2%，兩題翻盤就能造出看起來顯著的差異。若之後
 要用它當主要依據，題數應擴到 50 題左右。
 
+## 四個模式的實測（2B-4，2026-08-24）
+
+真的 reranker（本機 TEI + `BAAI/bge-reranker-v2-m3`）接上後的第三次評測。同一份題組、
+同一份語料、同一個 embedding 模型，四個模式各跑一次：
+
+| 模式 | 手寫 recall@1 / MRR | DRCD recall@1 / MRR |
+|------|---------------------|---------------------|
+| `vector`（baseline） | 0.4375 / 0.6046 | 0.9417 / 0.9653 |
+| `hybrid` | 0.4167 / 0.6209 | 0.9250 / 0.9544 |
+| `vector+rerank` | **0.7917 / 0.8941** | **0.9917 / 0.9944** |
+| `hybrid+rerank` | **0.7917 / 0.8941** | **0.9917 / 0.9944** |
+
+**贏的是 rerank，不是 hybrid。** 後兩列不是抄錯：144 題**逐題的正解名次完全相同**。
+FTS 確實換掉了候選（手寫 5/24 題、DRCD 8/120 題的 24 段候選集合不同），只是換進來的那
+幾段從來沒有擠掉正解——cross-encoder 把它們打回去了。也就是說在這兩份題組上 hybrid 的
+邊際貢獻是**零**（而不是 2B-2 沒有裁判時的**負**）。
+
+`vector+rerank` 這一格因此不是多跑的：少了它，`hybrid+rerank` 的 0.7917 會被記成
+hybrid 的功勞，而它一分也沒出。
+
 ## 怎麼用
 
 ```bash
@@ -94,7 +114,23 @@ make demo-tenant DEMO_SLUG=lumina-eval
 # 3) 跑評測（會打真的 embedding API；mock 量不出品質，會被擋下）
 make eval-retrieval DATASET=drcd
 make eval-retrieval DATASET=drcd EVAL_ARGS="--baseline evaluation/reports/baseline_vector_drcd.json"
+
+# 4) 帶 rerank 的兩個模式（2B-4）：需要真的 reranker 在跑
+make tei-up                                    # 本機 TEI + bge-reranker-v2-m3（需 GPU）
+#    .env: AI_RERANK_PROVIDER=tei / AI_RERANK_MODEL=BAAI/bge-reranker-v2-m3
+make eval-retrieval DATASET=handwritten MODE=vector+rerank
+make eval-retrieval DATASET=handwritten MODE=hybrid+rerank
 ```
+
+**四個模式的分工**：`vector` 是基準線，`hybrid` 加 FTS，`vector+rerank` 是**歸因用的**
+——少了它，`hybrid+rerank` 贏了也分不出是 rerank 的功勞還是 hybrid 的（而 2B-2 的數據
+顯示 hybrid 在沒有裁判時是負貢獻）。
+
+**兩道 mock 守門**（`require_real_providers`）：embedding 是 mock 時擋下（向量沒有語意
+相似性），rerank 模式而 `AI_RERANK_PROVIDER=mock` 時也擋下——假分數是查詢與段落的字元
+重疊比例，跑得完、報告長得完全正常，而它衡量的是中文字元的交集大小。只驗管線時才加
+`--allow-mock`。rerank 報告會記下 `rerank_provider` / `rerank_model`（漏記直接拒絕產出：
+半年後兩份 `hybrid+rerank` 差 0.08，一份 TEI、一份 Jina，沒記就看不出來）。
 
 第一次跑出來的報告要**改名為 `baseline_vector_<dataset>.json` 並提交**——那是 2B 之後
 每一次比較的對照組。

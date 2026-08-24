@@ -34,6 +34,10 @@ RESCUE_STUCK_DOCUMENTS_TASK = "knowledge.rescue_stuck_documents"
 # 卡在 streaming 的訊息的補償掃描。與上面那支分開：文件的處置是「補送回佇列」，
 # 訊息的處置是「就地標成中斷」——生成不是 task，沒有佇列可以補送。
 RESCUE_STUCK_STREAMS_TASK = "conversation.rescue_stuck_streams"
+# 二次架構審計 P0-2：軟刪除的保留窗硬刪（KB／文件／對話三種實體一起）。
+# **一個 task 而不是三個**：三者的保留窗、批次上限與失敗處置完全相同，拆開只是多兩條
+# 「排了卻沒有人做」的可能（2A-2b 的教訓，見 `maintain_partitions` 的註解）。
+PURGE_DELETED_TASK = "platform.purge_deleted"
 # 2A-5：通知的 email 派送。**不是 Beat 任務**（沒有排程），而是事件觸發——
 # 寄信離開請求路徑靠的就是它。
 SEND_NOTIFICATION_EMAIL_TASK = "platform.send_notification_email"

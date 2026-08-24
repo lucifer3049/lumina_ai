@@ -19,7 +19,7 @@
 | 一般 API Response | < 300ms | CRUD / 列表 |
 | Chat TTFT（首 token） | < 3.5s | 含 RAG 全鏈路；純聊天（無 RAG）< 1.5s |
 | RAG 檢索段（vector+FTS+RRF） | < 400ms | 不含 rerank |
-| Rerank | < 800ms | 外部模型呼叫，最脆弱段 |
+| Rerank | < 800ms | 讀路徑最脆弱段。**2B-4 起量測對象是本機 TEI**（`bge-reranker-v2-m3`，24 段候選，GPU 推論）而非雲端 API——換機器、換 batch 大小都要重量一次，量法見 `make verify-provider CAPABILITY=rerank`（它會印單次耗時並在超過 800ms 時警告；首次呼叫含模型載入與暖機，不算穩態） |
 | Embedding 吞吐 | > 500 chunks/min/worker | batch=64 |
 | ETL：50 頁 PDF → ready | < 5min | SLO 為分鐘級（08 §7） |
 | 文件上傳（100MB） | 直傳 MinIO，API 不經手 | 09 §3.1 |
@@ -216,6 +216,7 @@ API / worker 全部無狀態（session 在 JWT+Redis、上傳直傳 MinIO、SSE 
 | **AI API Timeout** | TTFT 前：fallback 鏈換模型重試（使用者無感，僅 metadata 記錄）；串流中：不換模型（拼接不一致），SSE `error(retryable)` + partial 持久化，使用者按重生成 |
 | **Embedding 失敗** | 批次中單筆失敗 → 記錄續走；整批失敗 → stage 重試（退避）；provider 持續故障 → circuit open、job 暫停、恢復後自動續跑（狀態機斷點）；**絕不寫入部分維度或零向量** |
 | **ETL 失敗** | 08 §6：stage 級重試、毒檔不重試、DLQ + 通知、斷點續跑；document 永遠處於明確狀態（不會卡 processing——stale job 巡檢器（Beat）將逾時 job 標 failed） |
+| **Rerank 失敗／過慢** | **降級鏈只有兩層：TEI → 跳過 rerank**（退回 RRF 融合後的順序），逾 1.2s 或任何錯誤即跳過，結果打 `degraded` 標記一路走到 `usage.rag.degraded`。**不重試**（重試一次就是 2.4s，而使用者等的是那個，不是更好的排序）；**刻意不做「本機掛了自動改打雲端」**——rerank 是可跳過的增強，跳過比讓使用者等一個外部服務更符合設計，也避免在無人察覺時開始花錢。連帶：跳過時**絕對門檻不套用**（手上是 RRF 分數，尺度不同），見 06 §3.1 |
 | **Tool 失敗** | 07 執行鏈：retry（冪等）→ circuit breaker → 結構化錯誤回 LLM（LLM 可解釋或改道）→ 對話不中斷；工具連續失敗告警 |
 
 ### 4.3 一致性與交易

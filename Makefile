@@ -109,6 +109,7 @@ DEMO_PASSWORD ?= demo-password-1234
 .PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys migrate \
         dev api api-pinned start stop restart status demo-tenant app-logs \
         test test-unit test-integration test-api smoke verify-infra verify-provider \
+        tei-up tei-down tei-logs \
         image lock-check lint lint-backend ci-status \
         fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
         loadtest-report clean
@@ -132,6 +133,22 @@ down: ## 停止基礎設施（保留資料卷）
 
 logs: ## 追蹤基礎設施日誌
 	$(COMPOSE) logs -f
+
+# ── Rerank 服務（2B-4）──────────────────────────────────────────────
+# **與 `make up` 分開的三個目標**，因為 TEI 是這台機器的選配而不是專案的相依：
+# 它要 GPU，而 CI runner、他機、只想跑前端的人都沒有。混進 `make up` 的話（那個
+# 目標會 `--wait`），沒有 GPU 的機器連資料庫都起不來，而錯誤訊息講的是 CUDA。
+#
+# 第一次啟動要下載約 1.2 GiB 的模型權重，期間 TEI 不回應任何請求——volume 存著，
+# 之後重建容器不必重來。接上它還要把 .env 的 AI_RERANK_PROVIDER 改成 tei。
+tei-up: ## 啟動本機 rerank 服務（TEI + bge-reranker-v2-m3；需 NVIDIA GPU）
+	$(COMPOSE) --profile gpu up -d --wait tei
+
+tei-down: ## 停止本機 rerank 服務（保留模型快取）
+	$(COMPOSE) --profile gpu stop tei
+
+tei-logs: ## 追蹤 rerank 服務日誌（模型載入進度看這裡）
+	$(COMPOSE) --profile gpu logs -f tei
 
 # 兩個 psql 入口，因為「用哪個角色連進去」會改變你看到的東西：superuser 豁免
 # RLS 與所有權限檢查，用它查資料會看到 policy 之外的全貌——排查隔離問題時

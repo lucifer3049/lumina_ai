@@ -166,7 +166,10 @@ class AppSettings(BaseSettings):
     # 不同，而共用一組會讓「換 rerank」變成「連 embedding 一起換」——那是重嵌入。
     #
     # 預設 `mock`：漏設環境變數時要得到的是假分數，而不是一筆真帳單或一個起不來的
-    # 服務（同 1C-1）。真 adapter（自架 TEI + `bge-reranker-v2-m3`）屬 2B-4。
+    # 服務（同 1C-1）。**2B-4 之後兩個真 adapter 都在**（`ai/gateway/providers/rerank.py`）：
+    # `tei` 是自架的主線（`make tei-up` 起容器，模型 `BAAI/bge-reranker-v2-m3`，位址預設
+    # `http://127.0.0.1:8080`），`jina` 是雲端第二家（需 `AI_RERANK_API_KEY`）——
+    # **預設仍然不動**，接上真服務是一個要用手做的決定。
     ai_rerank_provider: Literal["mock", "tei", "jina"] = "mock"
     ai_rerank_api_key: SecretStr | None = None
     ai_rerank_base_url: str = ""
@@ -201,13 +204,33 @@ class AppSettings(BaseSettings):
     # | hybrid（`&@*` 整句） | 0.3958 / 0.5650 | 0.9333 / 0.9628 |
     # | hybrid（識別符才發言，2B-2b） | 0.4167 / **0.6209** | 0.9250 / 0.9544 |
     #
-    # 三種 FTS 策略都沒讓 hybrid 整體勝出。判斷是**問題不在 RRF 也不在 pgroonga，而
-    # 在還沒有 rerank**：06 §3.1 的管線是 `RRF → rerank`，cross-encoder 的職責正是把
-    # 融合後的候選重新打分，FTS 投的雜訊票本來就該由它修正。現在等於沒有裁判就讓兩個
-    # 投票人吵架。程式與測試全部留著，**2B-4 接上 TEI reranker 後用同一套評測再決定**。
+    # 三種 FTS 策略都沒讓 hybrid 整體勝出。當時的判斷是**問題不在 RRF 也不在 pgroonga，
+    # 而在還沒有 rerank**：06 §3.1 的管線是 `RRF → rerank`，cross-encoder 的職責正是把
+    # 融合後的候選重新打分，FTS 投的雜訊票本來就該由它修正。
     #
-    # `hybrid+rerank` 等 2B-3／2B-4——提前接受它的話，設了之後什麼都不會發生，而使用者
-    # 會以為 rerank 已經在跑。
+    # **2B-4 接上真的 reranker（本機 TEI + `bge-reranker-v2-m3`）之後重量，答案是：
+    # 贏的是 rerank，不是 hybrid。**
+    #
+    # | 模式 | 手寫 24 題 recall@1／mrr | DRCD 120 題 |
+    # |------|--------------------------|-------------|
+    # | `vector`（baseline） | 0.4375 / 0.6046 | 0.9417 / 0.9653 |
+    # | `hybrid` | 0.4167 / 0.6209 | 0.9250 / 0.9544 |
+    # | `vector+rerank` | **0.7917 / 0.8941** | **0.9917 / 0.9944** |
+    # | `hybrid+rerank` | **0.7917 / 0.8941** | **0.9917 / 0.9944** |
+    #
+    # 後兩列不是抄錯：144 題**逐題的正解名次完全相同**。FTS 確實有換掉候選（手寫 5/24、
+    # DRCD 8/120 題的 24 段候選集合不同），只是換進來的那幾段從來沒有擠掉正解——
+    # cross-encoder 把它們打回去了。也就是說在這兩份題組上，**hybrid 的邊際貢獻是零，
+    # 而不是負的**（那是 2B-2 沒有裁判時的情況）。
+    #
+    # 因此預設**維持 `vector`**：同樣的分數下，多一路 FTS 是多一次 DB 查詢與多一段
+    # 融合。程式與測試全部留著——邊際貢獻為零是「這兩份題組上」的結論，而識別符密集的
+    # 語料（產品型號、錯誤碼）正是 FTS 該贏的地方，KB 層的 `retrieval_mode` 覆寫開得起。
+    #
+    # **兩個 `+rerank` 模式不設為預設值**，理由與 `ai_rerank_provider` 預設 `mock` 是
+    # 同一條：漏設 provider 的人會拿字元重疊比例當 cross-encoder 用，而那比不 rerank
+    # 更糟。接上 rerank 是一個要用手做的決定（`make tei-up` + `AI_RERANK_PROVIDER=tei`
+    # + 這一格）。
     rag_retrieval_mode: Literal["vector", "vector+rerank", "hybrid", "hybrid+rerank"] = "vector"
     # 06 §3.1 的 rerank top_n 6~8。Phase 1 沒有 rerank，這是「進 context 幾段」。
     rag_context_chunks: int = 8
@@ -277,6 +300,22 @@ class AppSettings(BaseSettings):
     # 而重跑會建立第二個寫同一份文件的 job。訊息還在飛的時候放行，兩個 job 的 chunk
     # 會互相清掉——結果是內容隨機少一半，兩邊都不報錯。所以寧可讓使用者多等一小時。
     etl_in_progress_stale_seconds: int = 3600
+    # ── 軟刪除的保留窗（05 §5.4；二次架構審計 P0-2）────────────
+    #
+    # 軟刪除的承諾一直是「30 天後由清理 job 硬刪」（`repositories/knowledge.py`、
+    # `conversations.py`、`knowledge_bases.py` 三處 docstring 都這麼寫），而那個 job
+    # 到 2B 為止都不存在——KB／文件／對話刪掉之後，chunk、向量、物件、訊息全部留著，
+    # 而且只增不減。這裡是它的參數。
+    #
+    # 30 天是「使用者可能後悔」的窗（05 §5.4 的原文）。**調小要小心**：這是整套維運
+    # 任務裡第二個不可逆的動作（第一個是分區 DROP），設成 0 等於刪除即硬刪，那時
+    # 「刪錯了」沒有任何救回的辦法。
+    retention_purge_after_days: int = 30
+    # 每個租戶每輪最多處理幾份文件／幾個對話。分批的理由與 `AddIndexConcurrently`
+    # 同一個：一個累積了半年的租戶會讓單一交易刪掉數十萬列 chunk 與向量，那條交易
+    # 期間 HNSW 索引在抖、其他查詢在等。沒清完的下一輪繼續——job 每天都跑。
+    retention_purge_batch_size: int = 500
+
     # 訊息卡在 `streaming` 多久算生成已死（補償掃描標成 interrupted）。
     # 生成本身有 120 秒的牆鐘上限（06 §4），超過這個門檻代表產生它的行程已經不在了
     # ——OOM、被 kill -9、機器沒了。優雅關機有自己的收尾路徑（chat.py 的 shield）。

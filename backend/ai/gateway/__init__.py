@@ -538,16 +538,38 @@ def _fallback_models(raw: str) -> tuple[str, ...]:
 
 
 def _rerank_provider(name: str) -> RerankProvider:
-    """名稱 → rerank adapter（2B-3）。
+    """名稱 → rerank adapter（2B-3 立形狀，2B-4 接上真的兩家）。
 
     **未知的名稱明確失敗，不退回 mock**（同 chat 的理由）：退回的話 rerank 會安靜地
     變成「字元重疊比例」，而排序看起來仍然合理——沒有任何地方會顯示它其實沒在工作。
-    真 adapter（TEI／Jina）屬 2B-4。
+
+    **兩家的金鑰要求相反**，而那不是巧合：TEI 是自架的（沒有金鑰概念，硬性要求會讓
+    主線那條路走不通），Jina 是雲端的（缺金鑰要在服務起來的當下就炸，而不是等第一個
+    使用者提問——那時它只會變成一次靜默的降級，看起來像「rerank 沒什麼效果」）。
     """
     if name == "mock":
         from ai.gateway.providers.mock import MockRerankProvider
 
         return MockRerankProvider()
+
+    settings = get_app_settings()
+    # 空字串等同沒設（`AI_RERANK_BASE_URL=` 是最常見的設定失誤之一，理由見
+    # `_embedding_provider` 對金鑰的同一條）。
+    base_url = settings.ai_rerank_base_url or None
+
+    if name == "tei":
+        from ai.gateway.providers.rerank import TeiRerankProvider
+
+        return TeiRerankProvider(base_url=base_url)
+
+    if name == "jina":
+        from ai.gateway.providers.rerank import JinaRerankProvider
+
+        key = settings.ai_rerank_api_key
+        if not (key and key.get_secret_value()):
+            raise ProviderUnavailableError("jina 需要金鑰，請設定 AI_RERANK_API_KEY")
+        return JinaRerankProvider(api_key=key.get_secret_value(), base_url=base_url)
+
     raise ProviderUnavailableError(f"未知或尚未實作的 rerank provider：{name}")
 
 

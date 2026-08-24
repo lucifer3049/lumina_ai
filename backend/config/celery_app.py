@@ -37,6 +37,7 @@ from core.tasks import (  # noqa: E402
     EMBED_DOCUMENT_TASK,
     INGEST_DOCUMENT_TASK,
     MAINTAIN_PARTITIONS_TASK,
+    PURGE_DELETED_TASK,
     RECONCILE_QUOTA_TASK,
     RESCUE_STUCK_DOCUMENTS_TASK,
     RESCUE_STUCK_STREAMS_TASK,
@@ -69,6 +70,7 @@ celery_app.conf.update(
         RESCUE_STUCK_DOCUMENTS_TASK: {"queue": "maintenance"},
         RESCUE_STUCK_STREAMS_TASK: {"queue": "maintenance"},
         ANALYTICS_ROLLUP_TASK: {"queue": "maintenance"},
+        PURGE_DELETED_TASK: {"queue": "maintenance"},
         # 寄信（2A-5）也走 maintenance：它與維運任務一樣是「慢、可以等、不該
         # 擠在使用者的 ETL 前面」的那一類。
         SEND_NOTIFICATION_EMAIL_TASK: {"queue": "maintenance"},
@@ -131,6 +133,13 @@ celery_app.conf.update(
         "rescue-stuck-streams": {
             "task": RESCUE_STUCK_STREAMS_TASK,
             "schedule": crontab(minute="*/15"),
+        },
+        # 保留窗硬刪每日，**排在 chunk 清理之後**（04:30）：兩支都會刪 chunk，而
+        # 前一支的條件（ready 文件的 superseded）是後一支的子集。先清小的，這裡要
+        # 處理的量就少一些；反過來也不會錯，只是白做。
+        "purge-deleted-daily": {
+            "task": PURGE_DELETED_TASK,
+            "schedule": crontab(minute=30, hour=4),
         },
         # usage 彙總每小時（2A-3）：Dashboard 的「今天」最多晚一小時。錯開整點
         # （xx:20）避開 rescue 的 */15 與其他整點工作疊在同一秒。

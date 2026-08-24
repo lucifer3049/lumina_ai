@@ -93,7 +93,7 @@ flowchart TB
 | Vector search | top_k=40, cosine | `ef_search` 調校見 11_NFR |
 | FTS | top_k=40 | pgroonga 中文斷詞 |
 | Hybrid | RRF k=60 → 24 | 免調權重、對分數尺度不敏感，勝過線性加權 |
-| Rerank | top_n=6~8, threshold=0.3 | 全數低於門檻 → 回「知識庫無相關內容」而非硬答（hallucination 防線一）。**門檻在 Phase 1 不生效**（2026-08-17，1D-5）：0.3 是 cross-encoder 的分數尺度，而 1C-4 只有餘弦相似度——套上去不是品質變好，是每次都回「找不到」。Phase 1 改用可選的**相對門檻**（只留分數 ≥ 第一名 × ratio 的候選，`min_score_ratio` 預設 0＝關閉），它不吃尺度因此換打分方式也不失效。絕對門檻等 2B 接上 rerank 後才有意義；`top_n` 在 Phase 1 即為「進 context 幾段」（`context_chunks`，預設 8） |
+| Rerank | top_n=6~8, threshold=0.3 | 全數低於門檻 → 回「知識庫無相關內容」而非硬答（hallucination 防線一）。**門檻在 Phase 1 不生效**（2026-08-17，1D-5）：0.3 是 cross-encoder 的分數尺度，而 1C-4 只有餘弦相似度——套上去不是品質變好，是每次都回「找不到」。Phase 1 改用可選的**相對門檻**（只留分數 ≥ 第一名 × ratio 的候選，`min_score_ratio` 預設 0＝關閉），它不吃尺度因此換打分方式也不失效。**2B-4 起絕對門檻具備生效條件**（2026-08-23）：真的 cross-encoder 接上後分數回到 0~1 尺度，`rag_rerank_threshold` 只在 rerank **真的跑完**時才套用（降級跳過 rerank 之後手上是 RRF 的融合分數，第一名 1/61 ≈ 0.016，套 0.3 會把候選全砍光——強制位置在 `services/rag/retrieval.py`）。兩種門檻可同時存在；開不開仍由資料決定 |
 | Compression | budget 內 extractive | 相鄰 chunk 合併、重疊去除；LLM 摘要壓縮為選配（延遲+成本，預設關）。Phase 1 僅實作 §3.2 的預算硬上限（低分端先裁） |
 | Generation | 依 model_config | system prompt 強制：僅依據 context 回答、引用標記 `[c:編號]`、無據回答需聲明。**編號是「本輪第幾段」（1、2、3…）而不是 `chunk_id`**（2026-08-17，1D-5）：一個 UUID 約 20 token，而模型每引用一次抄一遍、輸出 token 又比輸入貴數倍；且叫模型一字不差抄 36 個十六進位字元它會抄錯，而抄錯就被驗證當成幻覺剔掉——畫面上少一個**本來是真的**來源。編號只在該輪有效（比對的就是該輪清單），落地與回傳的仍是真 `chunk_id`，歷史無歧義。實作見 `rag/citation.py` |
 
@@ -123,7 +123,7 @@ flowchart TB
 | 決策點 | 定案 |
 |--------|------|
 | Embedding 模型硬性條件 | **必須是多語模型**（中英共享向量空間），跨語言召回主要靠這一層。候選：OpenAI `text-embedding-3-large`（API）／`bge-m3`（Ollama 自建，中文表現佳）；模型選型於 Phase 2 golden set 上實測定案，golden set **必含跨語言題組**（中問英答、英問中答各 ≥15 題） |
-| Rerank 模型硬性條件 | 同樣必須多語（如 `bge-reranker-v2-m3`）；單語 reranker 會把跨語言的正確候選打低分，比沒有 rerank 更糟 |
+| Rerank 模型硬性條件 | 同樣必須多語；單語 reranker 會把跨語言的正確候選打低分，比沒有 rerank 更糟。**2B-4 落地（2026-08-23）**：自架 HuggingFace TEI 跑 `BAAI/bge-reranker-v2-m3`（MIT、568M、多語 cross-encoder），容器置於 compose 的 `gpu` profile 之後、預設不啟動（`make tei-up`）；第二個 adapter 是 Jina（證明 Gateway 沒綁死一家，且沒有 GPU 的機器有東西可用）。**不走 Ollama**——它至今沒有 rerank 端點，reranker 模型只能經 `/api/embed`，取不到 cross-encoder 分類頭的分數。選型理由與成本比較見 13 §4「2B 開工前定案」；跨語言驗證做在 `make verify-provider CAPABILITY=rerank`（中文問句、英文正解） |
 | FTS 側的跨語言縮限 | pgroonga 是詞面比對，跨語言天然失效——**hybrid 融合在跨語言配對時自動退化為以 vector 為主**（RRF 天然容忍單路弱訊號，無需特判） |
 | Query 翻譯增強（選配） | KB 設定 `cross_lingual_boost: true` 時，condense 階段順帶產生文件主要語言的翻譯問句、FTS 用翻譯句查（多一次小模型呼叫）；**預設關**，僅在評測證明該 KB 跨語言召回不足時開 |
 | 語言偵測資料流 | 文件語言：ETL 寫入 `doc_meta.language`（08）；查詢語言：condense 階段偵測；兩者不一致即為跨語言配對，記入 rag_trace（觀測跨語言查詢佔比與品質） |

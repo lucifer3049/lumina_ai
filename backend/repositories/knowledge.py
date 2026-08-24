@@ -17,8 +17,13 @@ policy 窄 → 使用者看不到本來該看到的資料）。
    舊內容、狀態卻是 ready。
 3. **軟刪除的實體預設不可見**（1B-2）：`KnowledgeBase` 與 `Document` 的
    ``get_queryset`` 排除 ``deleted_at IS NOT NULL``。05 §5.4 的軟刪除是為了「使用者
-   可能後悔」（30 天後由清理 job 硬刪），不是為了讓資料繼續出現——只寫 ``deleted_at``
+   可能後悔」（保留窗過後由 `DeletedKnowledgePurgeService` 硬刪，窗長見
+   ``retention_purge_after_days``），不是為了讓資料繼續出現——只寫 ``deleted_at``
    卻沒從查詢排除的話，使用者會看到自己剛刪掉的東西還在列表上，而刪除 API 回了 204。
+
+   **但這條規則只蓋得住「這一張表的查詢」。** 檢索讀的是 chunk 與 embedding，它們
+   不繼承這個 queryset——文件刪除因此要另外把 chunk 標成 ``superseded``（見
+   `DocumentService.delete`），否則已刪文件的內容會繼續出現在回答的引用裡。
 """
 
 from __future__ import annotations
@@ -67,6 +72,32 @@ class KnowledgeBaseRepository(SoftDeletableRepository[KnowledgeBase]):
         """
         return self.get_queryset().filter(id=kb_id).update(**fields)
 
+    # ── 保留窗的硬刪（05 §5.4，二次架構審計 P0-2）──────────────
+    #
+    # 兩個方法都從 ``including_deleted()`` 出發——這是全 repo 少數**故意要看見已刪
+    # 列**的地方，而 `SoftDeletableRepository` 要求這個意圖在呼叫端顯式可見。
+
+    def deleted_before(self, cutoff: datetime, *, limit: int) -> list[uuid.UUID]:
+        """保留窗已過的已刪 KB，最舊的先。"""
+        rows = (
+            self.including_deleted()
+            .filter(deleted_at__lt=cutoff)
+            .order_by("deleted_at")
+            .values_list("id", flat=True)[:limit]
+        )
+        return [uuid.UUID(str(row)) for row in rows]
+
+    def hard_delete(self, kb_ids: Sequence[uuid.UUID]) -> int:
+        """真的刪掉；回傳刪掉的列數。
+
+        **底下的文件必須先清乾淨**：`Document.kb` 是 PROTECT，還有文件時這裡會被 DB
+        擋下（那個擋是對的——它保證這裡永遠不會刪出一批查不到 KB 的孤兒文件）。
+        """
+        if not kb_ids:
+            return 0
+        deleted, _ = self.including_deleted().filter(id__in=list(kb_ids)).delete()
+        return int(deleted)
+
 
 class DocumentRepository(SoftDeletableRepository[Document]):
     model = Document
@@ -91,6 +122,37 @@ class DocumentRepository(SoftDeletableRepository[Document]):
     def count_for_kb(self, kb_id: uuid.UUID) -> int:
         return self.get_queryset().filter(kb_id=kb_id).count()
 
+    # ── 保留窗的硬刪（05 §5.4，二次架構審計 P0-2）──────────────
+
+    def purgeable(self, cutoff: datetime, *, limit: int) -> list[tuple[uuid.UUID, str]]:
+        """保留窗已過、該被硬刪的文件；回傳 (id, storage_key)。
+
+        **兩種來源，缺一不可**：使用者刪掉的文件（``deleted_at``），以及**沒有自己的
+        ``deleted_at``、但 KB 已刪**的那些——`KnowledgeBaseService.delete` 刻意不逐列
+        標記底下的文件（那會讓刪除變成長交易），所以「刪掉一整個 KB」在文件表上不留
+        任何痕跡。只認第一種的話，KB 級刪除的資料會永遠留著，而那正是量最大的一種。
+
+        ``storage_key`` 一起撈回來：物件要跟著刪，而列刪掉之後就沒有人知道它在哪了。
+        """
+        rows = (
+            self.including_deleted()
+            .filter(models.Q(deleted_at__lt=cutoff) | models.Q(kb__deleted_at__lt=cutoff))
+            .order_by("created_at")
+            .values_list("id", "storage_key")[:limit]
+        )
+        return [(uuid.UUID(str(row[0])), str(row[1])) for row in rows]
+
+    def count_all_in_kb(self, kb_id: uuid.UUID) -> int:
+        """KB 底下**含已刪除**的文件數——KB 能不能硬刪就看它是不是 0。"""
+        return self.including_deleted().filter(kb_id=kb_id).count()
+
+    def hard_delete(self, document_ids: Sequence[uuid.UUID]) -> int:
+        """真的刪掉；回傳刪掉的列數。chunk 與 etl_job 必須先清（都是 PROTECT）。"""
+        if not document_ids:
+            return 0
+        deleted, _ = self.including_deleted().filter(id__in=list(document_ids)).delete()
+        return int(deleted)
+
     # ── 配額的存量聚合（04 §8.1，2A-2a）────────────────────────
     #
     # 文件數與儲存量的額度依據就是這兩個查詢——**不是 Redis 計數器**：存量必須活得
@@ -98,8 +160,9 @@ class DocumentRepository(SoftDeletableRepository[Document]):
     # 者能控制的邏輯容量；物件儲存的實體位元組等清理 job）。
     #
     # **KB 被軟刪時，它底下的文件不會跟著標記**（`KnowledgeBaseService.delete` 刻意
-    # 不做逐列標記，那會讓刪除變成長交易），級聯清理是 worker 的職責而那個 worker
-    # 還不存在。少了下面這個 join 條件，「刪掉整個 KB」就完全不釋放額度——使用者撞到
+    # 不做逐列標記，那會讓刪除變成長交易），級聯清理是 worker 的職責
+    # （`DeletedKnowledgePurgeService`，保留窗過後才動）。額度不能等那麼久：少了下面
+    # 這個 join 條件，「刪掉整個 KB」就完全不釋放額度——使用者撞到
     # documents:100 之後刪掉 KB、再上傳依然 429，而他已經看不到那些文件，沒有任何
     # 辦法自救。額度看的是「使用者還能不能控制的容量」，已刪 KB 底下的不算。
 
@@ -311,6 +374,20 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
         Embedding.objects.filter(chunk__in=chunks).delete()
         deleted, _ = chunks.delete()
         return deleted
+
+    def purge_for_documents(self, document_ids: Sequence[uuid.UUID]) -> int:
+        """硬刪一批文件的**全部** chunk 與向量；回傳刪掉的 chunk 數（保留窗清理用）。
+
+        與 `purge_superseded_of_ready` 的差別是「條件」而不是「動作」：那一支挑的是
+        舊版本（文件還活著），這一支的前提是**整份文件即將消失**，所以現行版也要刪。
+        順序同樣是先向量後 chunk（`Embedding.chunk` 是 PROTECT）。
+        """
+        if not document_ids:
+            return 0
+        chunks = self.get_queryset().filter(document_id__in=list(document_ids))
+        Embedding.objects.filter(chunk__in=chunks).delete()
+        deleted, _ = chunks.delete()
+        return int(deleted)
 
     def for_document(self, document_id: uuid.UUID) -> list[Chunk]:
         """一份文件的全部 chunk，**按 ``seq`` 排序**。
@@ -718,3 +795,14 @@ class EtlJobRepository(TenantScopedRepository[EtlJob]):
                 finished_at=timezone.now(),
             )
         )
+
+    def purge_for_documents(self, document_ids: Sequence[uuid.UUID]) -> int:
+        """硬刪一批文件的 job 紀錄；回傳刪掉的列數（保留窗清理用）。
+
+        `EtlJob.document` 是 PROTECT，不先清這裡的話文件刪不掉——而症狀是清理 job
+        每天都跑、每天都在同一批文件上被 DB 擋下，表繼續長。
+        """
+        if not document_ids:
+            return 0
+        deleted, _ = self.get_queryset().filter(document_id__in=list(document_ids)).delete()
+        return int(deleted)

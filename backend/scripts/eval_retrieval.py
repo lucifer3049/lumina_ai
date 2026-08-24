@@ -102,17 +102,19 @@ DATASETS: dict[str, tuple[Path, Path]] = {
 
 # 四個模式先宣告，實作逐包開通（06 §3.1 的檢索鏈）。
 #
-# **兩個 rerank 模式在 2B-3 仍不開通**：那一包只有 MockProvider，而 mock 的分數是字元
-# 重疊比例、沒有語意——拿它跑評測量到的是亂數，而報告看起來完全正常。真 TEI 屬 2B-4。
+# **2B-4 全部開通**：真的 reranker（自架 TEI 的 `bge-reranker-v2-m3`）接上之後，
+# 兩個 rerank 模式才量得出品質——2B-3 的 `MockRerankProvider` 打的是字元重疊比例，
+# 拿它跑評測量到的是亂數，而報告看起來完全正常（守門改由 `require_real_providers`
+# 負責，見下）。
 #
 # `vector+rerank` 這一格的存在理由是**歸因**：少了它，`hybrid+rerank` 贏了也分不出是
-# rerank 的功勞還是 hybrid 的，而 2B-2 的數據顯示 hybrid 目前是負貢獻。
+# rerank 的功勞還是 hybrid 的，而 2B-2 的數據顯示 hybrid 在沒有裁判時是負貢獻。
+#
+# 清單留著而不是刪掉：它是「評測現在量得出什麼」的唯一聲明，下一個新模式進來時
+# `validate_mode` 仍然擋得住「偷偷跑成純向量」。
 MODES = ("vector", "vector+rerank", "hybrid", "hybrid+rerank")
-IMPLEMENTED_MODES = ("vector", "hybrid")
-_MODE_OWNERS = {
-    "vector+rerank": "2B-4（TEI reranker）",
-    "hybrid+rerank": "2B-4（TEI reranker）",
-}
+IMPLEMENTED_MODES = MODES
+_MODE_OWNERS: dict[str, str] = {}
 
 SCHEMA_VERSION = 1
 # 報告要回答的是「前幾名裡有沒有」，而不同的 k 回答不同的問題：k=1 是「第一名就對」，
@@ -173,8 +175,42 @@ def validate_mode(mode: str) -> str:
     if mode not in MODES:
         raise ValueError(f"未知的模式 {mode!r}；可用的是 {', '.join(MODES)}")
     if mode not in IMPLEMENTED_MODES:
-        raise NotImplementedError(f"模式 {mode!r} 尚未實作，排在 {_MODE_OWNERS[mode]}")
+        owner = _MODE_OWNERS.get(mode, "尚未排定的工作包")
+        raise NotImplementedError(f"模式 {mode!r} 尚未實作，排在 {owner}")
     return mode
+
+
+def require_real_providers(
+    mode: str, *, embedding_provider: str, rerank_provider: str, allow_mock: bool
+) -> None:
+    """**mock 量不出品質**——兩條路各擋一次。
+
+    embedding 那半是 2B-0 立的：MockProvider 的向量由 SHA-256 決定，有決定性也有相異
+    性，就是沒有語意相似性。
+
+    rerank 這半是 2B-4 補的，而它更容易漏：跑 `hybrid+rerank` 的人通常已經設好了真的
+    embedding 金鑰，於是第一道關卡放行，而 `AI_RERANK_PROVIDER` 還停在預設的 `mock`
+    ——那份報告會有排序、有分數、有進退步，衡量的卻是查詢與段落的中文字元交集大小。
+    然後它會被拿去回答 DoD ②「hybrid 檢索評測優於純向量」。
+
+    `--allow-mock` 留著是因為**管線本身**（模式接得上、報告寫得出來）仍然要驗得動，
+    但它要用手打出來。
+    """
+    if allow_mock:
+        return
+    if embedding_provider == "mock":
+        raise EvaluationError(
+            "AI_EMBEDDING_PROVIDER=mock 量不出檢索品質（向量沒有語意相似性）；"
+            "設定真 provider，或加 --allow-mock 只驗管線"
+        )
+    # 沒跑 rerank 的模式不呼叫 reranker——在那裡要求真 provider 只會擋住重跑 baseline
+    # 的人，而擋的理由不存在。
+    if mode.endswith("+rerank") and rerank_provider == "mock":
+        raise EvaluationError(
+            f"模式 {mode} 需要真的 reranker，但 AI_RERANK_PROVIDER=mock"
+            "（假分數是字元重疊比例，量不出排序品質）；"
+            "先 make tei-up 並設 AI_RERANK_PROVIDER=tei，或加 --allow-mock 只驗管線"
+        )
 
 
 # ── 報告 ────────────────────────────────────────────────────────
@@ -196,6 +232,12 @@ def build_report(
     沒有的欄位）；沒給時由 outcomes 直接產生，測試與離線分析都用得上。
     """
     validate_mode(mode)
+    if mode.endswith("+rerank") and not {"rerank_provider", "rerank_model"} <= set(retrieval):
+        # **漏填不是小事**：報告的比對門檻只看題組與 embedding 模型（`_require_comparable`
+        # 的理由見那裡），所以一份沒記 reranker 的 rerank 報告照樣比得動——它的分數
+        # 之後會被歸給錯的東西。半年後桌上兩份 `hybrid+rerank` 差 0.08，一份是本機 TEI
+        # 跑的、一份是 Jina 跑的，沒記下來就看不出來。
+        raise EvaluationError(f"模式 {mode} 的報告必須記下 rerank_provider 與 rerank_model")
     metrics = aggregate(outcomes, ks=KS).as_dict()
     return {
         "schema_version": SCHEMA_VERSION,
@@ -473,6 +515,16 @@ def run_evaluation(
             # 報告要記**實際生效**的模式，不是 KB 設定的那個（見上方 `mode=mode`）。
             "mode": mode,
             "params": dataclasses.asdict(params),
+            # 只有真的跑了 rerank 才記。純向量報告掛一個 `rerank_model: null` 讀起來
+            # 像「跑了但沒記」，而那正是 `build_report` 要擋的情況。
+            **(
+                {
+                    "rerank_provider": settings.ai_rerank_provider,
+                    "rerank_model": settings.ai_rerank_model,
+                }
+                if mode.endswith("+rerank")
+                else {}
+            ),
         },
         per_question=rows,
     )
@@ -505,13 +557,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         validate_mode(args.mode)
         settings = get_app_settings()
-        if settings.ai_embedding_provider == "mock" and not args.allow_mock:
-            # 擋在最前面：mock 跑得完、報告長得一模一樣，而分數是亂數。它會安靜地
-            # 成為之後每一次比較的起點。
-            raise EvaluationError(
-                "AI_EMBEDDING_PROVIDER=mock 量不出檢索品質（向量沒有語意相似性）；"
-                "設定真 provider，或加 --allow-mock 只驗管線"
-            )
+        # 擋在最前面：mock 跑得完、報告長得一模一樣，而分數是亂數。它會安靜地
+        # 成為之後每一次比較的起點。
+        require_real_providers(
+            args.mode,
+            embedding_provider=settings.ai_embedding_provider,
+            rerank_provider=settings.ai_rerank_provider,
+            allow_mock=args.allow_mock,
+        )
 
         corpus_path, questions_path = DATASETS[args.dataset]
         corpus = load_corpus(corpus_path)

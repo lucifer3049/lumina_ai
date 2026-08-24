@@ -91,8 +91,10 @@ class KnowledgeBaseService:
         """軟刪除（05 §5.4）。文件與 chunk 的硬刪由清理 worker 分批處理。
 
         **文件不在這裡連帶標記**：KB 已經查不到，而文件的可見性也走 KB 這條路
-        （列表端點先要 KB 存在）。逐一標記數萬份文件會讓刪除變成長交易，那正是
-        05 §5.4 要避免的。真正的級聯清理是 worker 的職責（1B-6 之後）。
+        （列表端點先要 KB 存在，檢索則先經 `RetrievalService._find_kb`）。逐一標記
+        數萬份文件會讓刪除變成長交易，那正是 05 §5.4 要避免的。真正的級聯清理由
+        `DeletedKnowledgePurgeService` 在保留窗過後分批做——它認得「KB 已刪但文件
+        自己沒有 ``deleted_at``」這種形狀，那是這個取捨的必要配套。
         """
         with tenant_context(tenant_id), unit_of_work():
             kb = self._require(kb_id)

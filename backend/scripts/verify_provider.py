@@ -11,8 +11,10 @@ HTTP 層（CLAUDE.md），那驗得了「我們送出去的請求長什麼樣」
 
 用法：
 
-    make verify-provider PROVIDER=gemini                  # embedding（預設）
-    make verify-provider PROVIDER=gemini CAPABILITY=chat   # 串流對話（1D-3a）
+    make verify-provider PROVIDER=gemini                    # embedding（預設）
+    make verify-provider PROVIDER=gemini CAPABILITY=chat    # 串流對話（1D-3a）
+    make verify-provider PROVIDER=tei CAPABILITY=rerank     # 本機 TEI（2B-4；先 make tei-up）
+    make verify-provider PROVIDER=jina CAPABILITY=rerank    # 雲端 rerank（需金鑰）
 
 金鑰取自 `AI_EMBEDDING_API_KEY` / `AI_CHAT_API_KEY`（Ollama 不需要）。它只印出維度、
 用量與耗時，**不印金鑰、也不印向量內容**。
@@ -42,11 +44,16 @@ if str(BACKEND_ROOT) not in sys.path:
 # 這支腳本在 Django 之外執行（它不碰 DB），但 AppSettings 要讀 .env。
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.dev")
 
+from ai.gateway.providers import RerankProvider  # noqa: E402
 from ai.gateway.providers.openai_compatible import (  # noqa: E402
     VENDORS,
     OpenAICompatibleProvider,
 )
 from core.exceptions import ProviderError  # noqa: E402
+
+# rerank 的兩家不在 `VENDORS` 裡——那張表是 OpenAI 相容端點的清單，而 rerank 沒有
+# 共通形狀（13 §4 的定案，見 ai/gateway/providers/rerank.py）。
+RERANK_PROVIDERS = ("tei", "jina")
 
 _SAMPLES = [
     "員工請假應於三日前提出申請。",
@@ -56,8 +63,10 @@ _SAMPLES = [
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="打一次真的 API，確認 adapter 能用")
-    parser.add_argument("--provider", required=True, choices=sorted(VENDORS))
-    parser.add_argument("--capability", default="embedding", choices=("embedding", "chat"))
+    parser.add_argument("--provider", required=True, choices=sorted({*VENDORS, *RERANK_PROVIDERS}))
+    parser.add_argument(
+        "--capability", default="embedding", choices=("embedding", "chat", "rerank")
+    )
     parser.add_argument("--model", default=None, help="預設取 AI_EMBEDDING_MODEL／AI_CHAT_MODEL")
     parser.add_argument("--dimensions", type=int, default=None, help="預設取設定值（embedding）")
     parser.add_argument(
@@ -70,6 +79,19 @@ def main() -> int:
         "--json", action="store_true", help="chat：試送 response_format=json_object"
     )
     args = parser.parse_args()
+
+    if args.capability == "rerank":
+        if args.provider not in RERANK_PROVIDERS:
+            print(
+                f"✗ {args.provider} 不是 rerank provider（可用：{', '.join(RERANK_PROVIDERS)}）",
+                file=sys.stderr,
+            )
+            return 2
+        return _verify_rerank(vendor=args.provider, model=args.model)
+
+    if args.provider not in VENDORS:
+        print(f"✗ {args.provider} 只支援 CAPABILITY=rerank", file=sys.stderr)
+        return 2
 
     if args.capability == "chat":
         return asyncio.run(
@@ -130,6 +152,87 @@ def main() -> int:
 
     norm = sum(value * value for value in result.vectors[0]) ** 0.5
     print(f"  單位長度={norm:.6f}（應為 1.0）")
+    print("✓ 通過")
+    return 0
+
+
+def _verify_rerank(*, vendor: str, model: str | None) -> int:
+    """打一次真的 rerank（2B-4）。**這支腳本是 11 §4「rerank < 800ms」的量測工具。**
+
+    驗三件事，而三件事在假的 HTTP 層之下全部是我們自己寫的預期值：
+
+    1. **分數尺度真的是 0~1**。06 §3.1 的絕對門檻 0.3 靠它。TEI 的 `raw_scores` 旗標
+       送錯就會拿到 logits，而排序看起來完全正常——只有門檻會安靜地砍錯東西。
+    2. **模型真的是多語的**（06 §3.4 的硬性條件）。題目是中文、正解是英文段落：單語
+       reranker 會把它打低分，比不 rerank 更糟。這是這支腳本最主要的用途。
+    3. **耗時**。1.2s 逾時即跳過（11 §4），而那個預算是照著本機 TEI 訂的——換一台
+       機器、換一個 batch 大小都要重量一次。
+    """
+    from config.settings.app_settings import get_app_settings
+
+    settings = get_app_settings()
+    rerank_model = model or settings.ai_rerank_model
+    base_url = settings.ai_rerank_base_url or None
+
+    provider: RerankProvider
+    if vendor == "tei":
+        from ai.gateway.providers.rerank import TeiRerankProvider
+
+        provider = TeiRerankProvider(base_url=base_url)
+    else:
+        from ai.gateway.providers.rerank import JinaRerankProvider
+
+        key = settings.ai_rerank_api_key
+        if not (key and key.get_secret_value()):
+            print(f"✗ {vendor} 需要金鑰：請設定 AI_RERANK_API_KEY", file=sys.stderr)
+            return 2
+        provider = JinaRerankProvider(api_key=key.get_secret_value(), base_url=base_url)
+
+    query = "員工請假要提前幾天申請？"
+    # 索引 2 是正解，而且**是英文的**——跨語言那一條就是這樣驗的。
+    documents = [
+        "年度考核於每年十二月進行，由直屬主管填寫評核表。",
+        "出差旅費以實報實銷為原則，需檢附發票正本。",
+        "Employees must submit leave requests at least three days in advance.",
+        "公司午餐時間為十二點至十三點。",
+    ]
+    expected = 2
+
+    print(f"provider={vendor}  model={rerank_model}  候選={len(documents)} 段")
+    started = time.monotonic()
+    try:
+        result = provider.rerank(
+            query,
+            documents,
+            model=rerank_model,
+            timeout_seconds=max(settings.ai_rerank_timeout_seconds, 30.0),
+        )
+    except ProviderError as exc:
+        # 只印我們自己的訊息——provider 的原文可能夾著金鑰。
+        print(f"✗ {exc}  (retryable={exc.retryable})", file=sys.stderr)
+        return 1
+
+    elapsed = time.monotonic() - started
+    print(f"  回報模型={result.model}")
+    print(f"  耗時={elapsed * 1000:.0f}ms（11 §4 的預算：< 800ms，逾 1.2s 跳過）")
+    for rank, document in enumerate(result.results, start=1):
+        marker = " ←正解" if document.index == expected else ""
+        print(f"  #{rank} index={document.index} score={document.score:.4f}{marker}")
+
+    failures = []
+    if not all(0.0 <= document.score <= 1.0 for document in result.results):
+        failures.append("分數不在 0~1（TEI 的 raw_scores 送錯了？絕對門檻會失效）")
+    if not result.results or result.results[0].index != expected:
+        failures.append("跨語言的正解沒有排第一——這個模型可能不是多語的（06 §3.4）")
+    # **逾時只警告不失敗**：第一次呼叫含模型載入與 CUDA graph 暖機，那不是穩態延遲。
+    if elapsed > 0.8:
+        print("  ⚠ 超過 11 §4 的 800ms 預算（首次呼叫含暖機，請再跑一次確認）")
+
+    if failures:
+        for failure in failures:
+            print(f"✗ {failure}", file=sys.stderr)
+        return 1
+
     print("✓ 通過")
     return 0
 

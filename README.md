@@ -4,26 +4,19 @@ Multi-tenant SaaS 的 Enterprise AI Knowledge Platform。核心能力：LLM Chat
 
 架構風格：**Modular Monolith + Clean Architecture + DDD**，保留未來拆分 Microservices 的能力。
 
-> **目前狀態：Phase 0 已結案（2026-08-07）；Phase 1 的 1A～1D 已完成（1D-5 於 2026-08-18 結案，暫行紀錄），下一步為 1E（前端 MVP）。**
-> Phase 0：ADR-001 橋接驗證（Django ORM 在 FastAPI async context 下的共存方式）、
-> 開發環境基礎設施全套、CI 全管線（2026-08-09 首次四個 job 全綠）、結構化日誌與請求追蹤、
-> 前端 Vite 骨架與 OpenAPI codegen 管線。
-> 1A（2026-08-09 結案）：DB 角色拆分（RLS 的前提）、Identity 資料層與 RLS、JWT 登入與
-> refresh rotation、權限判定與使用者管理、spike 面移除（ADR-002 結案）與 E2E smoke 骨架。
-> 1B（2026-08-14 結案）：KB/Document CRUD、單請求上傳與物件儲存、五種 loader（PDF／docx／
-> txt／xlsx／Markdown）、Clean 與 recursive chunker、ETL 狀態機 + Celery + 冪等 + DLQ + re-ingest。
-> 1C（1C-1~1C-5 已完成，**結案紀錄未補**）：AI Gateway、embeddings 資料層與 pgvector HNSW、
-> embedding worker（文件終點狀態推到 `ready`）、純向量檢索與 `/rag/query`、五家 provider 的 adapter。
-> 1D（1D-5 於 2026-08-18 結案）：Conversation/Message、SSE 全協定（串流／`Last-Event-ID` 續傳／
-> stop／graceful shutdown）、PromptBuilder（draft/published）、記憶視窗，以及 RAG 編排與引用
-> （檢索 → context → `[c:編號]` 驗證 → `citations` 事件與落地）。
-> **後端的價值迴路已接齊，但還沒有可用的介面**——目前的端點是 `/api/v1/auth`、`/users`、
-> `/tenants`、`/knowledge-bases`、`/documents`、`/conversations`（含 SSE）、`/rag/query`；
-> 前端只有 Vite 骨架與 OpenAPI client，登入／KB 管理／Chat UI 都在 1E。
-> 1D-5 的結案紀錄標為**暫行**：Phase 1 的 DoD 是整期的（上傳 → ready → 問答 → 引用，另加
-> TTFT p95 < 3.5s），要等 1E 與真 provider 的量測才認定得了。
-> 完整設計見 [`docs/plan/`](docs/plan/)（00–15），開發順序與各工作包的 DoD 見
-> [`13_開發Roadmap.md`](docs/plan/13_開發Roadmap.md)（§2 Phase 0 結案、§3 Phase 1 與 1A／1B／1D-5 結案）。
+> **目前狀態：Phase 1 已通過閘門（2026-08-21，有條件）；Phase 2 進行中——2A 已結案、
+> 2B 做到 2B-4（rerank 落地）。**
+>
+> **狀態的單一事實來源是 [`13_開發Roadmap.md`](docs/plan/13_開發Roadmap.md)**：每個工作包的
+> 範圍、DoD、結案紀錄與帶進下一包的缺口都在那裡（§2 Phase 0、§3 Phase 1 與 1A／1B／1D-5／1E
+> 的結案表、§4 Phase 2 與 2A／2B-0／2B-4 的結案表）。這一段刻意只留一行摘要——1D 時代的
+> 逐包流水帳在這裡漂了三個工作包沒有人更新，而「README 說下一步是 1E」這種錯誤沒有任何
+> 測試擋得住。
+>
+> 能力範圍（截至 2B-4）：登入與 refresh rotation、User／Tenant 管理、KB 與文件上傳、
+> 五種 loader 的 ETL、embedding 與 pgvector 檢索、pgroonga 全文檢索與 RRF 融合、rerank
+> （自架 TEI／Jina）、SSE 問答與引用、Prompt 版本、配額與用量、通知，以及 Vue 3 的
+> 登入／KB／Chat 前端。完整設計見 [`docs/plan/`](docs/plan/)（00–15）。
 
 ---
 
@@ -42,16 +35,20 @@ Multi-tenant SaaS 的 Enterprise AI Knowledge Platform。核心能力：LLM Chat
 | 前端 | Vue 3 + TypeScript(strict) + Pinia + pnpm |
 | 部署 | Docker Compose |
 
-> compose 已含 PostgreSQL(pgvector + pgroonga，自建 image) / PgBouncer / Redis / MinIO；
-> Celery、應用容器（api / worker）與前端於後續工作包接入。
+> compose 目前只含**資料層**：PostgreSQL（pgvector + pgroonga，自建 image）/ PgBouncer /
+> Redis / MinIO / Mailpit。API、Celery worker 與前端都在本機跑（`make dev` / `make start` /
+> `make fe-dev`）——**應用自身的編排（compose.app.yml、healthz）尚未落地**，那是 Phase 4
+> 的範圍，二次架構審計把它列為 P1（見 13 §4.1）。
 
 ## 架構鐵則
 
 1. **FastAPI 是唯一 HTTP 入口**；Django ORM 是 sync，一律封裝在 `repositories/` 內經
    `sync_to_async` 呼叫，禁止在 async endpoint 直接呼叫 ORM。
-2. **分層依賴單向**（import-linter 強制）：
-   `api/` → `services/` → `core/interfaces/` ← `repositories/` / `ai/` / `rag/` / `etl/` / `tool/`。
+2. **分層依賴單向**（import-linter 強制，9 條 contract 在 `backend/pyproject.toml`）：
+   `api/` → `services/` → `repositories/` / `ai/` / `rag/` / `etl/` / `tool/`，`core/` 為各層共用。
    `api/` 不碰 ORM，`services/` 不 import `apps.*.models`，`common/` 不 import 任何其他層。
+   **沒有 `core/interfaces/` 抽象層**：service 依賴具體 repository 類別（建構子注入），
+   單一部署單元下是刻意取捨（見 [`15_計畫審查報告.md`](docs/plan/15_計畫審查報告.md)）。
 3. **Controller 三行原則**：解析請求 → 呼叫一個 Service 方法 → 回傳。
 4. **租戶隔離**：所有 Repository 繼承 `TenantScopedRepository`（自動注入 tenant filter）；
    TenantContext 缺失即 raise（Fail Fast）；Redis key 一律 `t:{tenant_id}:` 前綴；

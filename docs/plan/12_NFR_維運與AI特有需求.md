@@ -29,6 +29,17 @@ Correlation：`request_id`（對外可見）+ `trace_id`（內部關聯）雙軌
 **AI**：LLM TTFT/總延遲/錯誤率/fallback 觸發率（per provider+model）、token 用量與成本速率（per tenant）、embedding 吞吐、rerank 延遲/跳過率、RAG 檢索延遲/候選數/rerank 分數分布、citation 驗證失敗率、prompt cache 命中率、tool 成功率/時長/circuit 狀態、groundedness 抽測分數趨勢。
 **業務**：串流併發、對話數、文件 ready 延遲、quota 使用率 per tenant。
 
+**自架 rerank 服務（TEI，2B-4）**：本機容器，因此監控的東西與雲端 provider 不同——
+
+| 觀測點 | 怎麼看 | 為什麼 |
+|--------|--------|--------|
+| 容器健康 | compose healthcheck（`make tei-up` 會 `--wait`）；日誌看載入進度 `make tei-logs` | TEI 從行程起來到能回答之間有數十秒的模型載入期，那段時間打過去是連線成功但無回應 |
+| GPU 記憶體 | `nvidia-smi`（模型 fp16 約 1.2 GiB；開發機 RTX 5060 共 8 GiB、桌面已佔約 1.8 GiB） | 這張卡**不再兼放本地 LLM**（13 §4 的定案）。爆掉的症狀是 TEI 回 424（推論失敗），而那在應用側只會表現成「rerank 一直被跳過」 |
+| **rerank 跳過率** | `usage.rag.degraded` 含 `rerank` 的比例（1.2s 逾時或任何失敗即跳過） | **這是這一段最重要的指標**：rerank 失敗是降級不是報錯，服務全綠、答案照出、只有品質默默變差。跳過率長期偏高等於「rerank 其實沒有在跑」 |
+| 單次耗時 | `rerank_completed` 的 `elapsed_ms`（Gateway 記）；基準量測用 `make verify-provider CAPABILITY=rerank` | 11 §1.1 的 800ms 預算是照本機 TEI 訂的，換機器要重量 |
+
+**不進 CI、不進 smoke**：GPU 只在開發機上有，而 smoke 的子行程一律釘 `AI_RERANK_PROVIDER=mock`（理由見 `tests/e2e/conftest.py`）。
+
 ## 2. Monitoring Dashboards
 
 | Dashboard | 內容 | 受眾 |

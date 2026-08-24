@@ -21,6 +21,7 @@ from core.tasks import (
     ANALYTICS_ROLLUP_TASK,
     CLEANUP_CHUNKS_TASK,
     MAINTAIN_PARTITIONS_TASK,
+    PURGE_DELETED_TASK,
     RECONCILE_QUOTA_TASK,
     RESCUE_STUCK_DOCUMENTS_TASK,
 )
@@ -48,6 +49,20 @@ class TestBeatRegistration:
 
         assert schedule.day_of_month == set(range(1, 32))
 
+    def test_retention_purge_runs_daily_after_the_chunk_cleanup(self) -> None:
+        """保留窗硬刪每日跑，且**排在 chunk 清理之後**（二次架構審計 P0-2）。
+
+        每日：這是唯一「後果正在單調累積」的維運項目——KB／文件／對話刪掉之後，
+        chunk、向量、物件與訊息全部留著，晚一天就多留一天。
+        順序：兩支都會刪 chunk，而前一支的條件（ready 文件的 superseded）是後一支的
+        子集；先清小的，這裡要處理的量就少一些。
+        """
+        purge = _schedule_of(PURGE_DELETED_TASK)
+        cleanup = _schedule_of(CLEANUP_CHUNKS_TASK)
+
+        assert purge.day_of_month == set(range(1, 32)), "每天都要跑"
+        assert (min(purge.hour), min(purge.minute)) > (min(cleanup.hour), min(cleanup.minute))
+
     def test_stuck_document_rescue_runs_sub_hourly(self) -> None:
         """補償掃描（enqueue 是 best-effort，訊息會丟）。頻率要密於小時級：
         停滯的文件對使用者是「上傳完就沒下文」，等一天才救太久。"""
@@ -66,6 +81,7 @@ class TestBeatRegistration:
         import worker.maintenance_tasks  # noqa: F401
 
         assert RECONCILE_QUOTA_TASK in celery_app.tasks
+        assert PURGE_DELETED_TASK in celery_app.tasks
         assert CLEANUP_CHUNKS_TASK in celery_app.tasks
         assert RESCUE_STUCK_DOCUMENTS_TASK in celery_app.tasks
         assert ANALYTICS_ROLLUP_TASK in celery_app.tasks

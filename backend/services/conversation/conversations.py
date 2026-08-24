@@ -182,7 +182,8 @@ class ConversationService:
             return _conversation_view(refreshed)
 
     def delete(self, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID) -> None:
-        """軟刪除（05 §5.4）。硬刪由清理 job 在 30 天後做。"""
+        """軟刪除（05 §5.4）。硬刪由 `DeletedConversationPurgeService` 在保留窗過後做
+        （窗長見 `retention_purge_after_days`），訊息與記憶摘要一起走。"""
         with tenant_context(tenant_id), unit_of_work():
             self._require_own(user_id, conversation_id)
             self._conversations.soft_delete(conversation_id)
