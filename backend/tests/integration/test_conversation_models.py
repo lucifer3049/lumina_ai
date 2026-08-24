@@ -158,6 +158,139 @@ class TestPartitioning:
         ), f"落在 {partition}，與建立時間 {created_at:%Y-%m} 對不上"
 
 
+class TestFactoryRespectsThePartitionKey:
+    """`MessageFactory` **不得宣告 `created_at`**（`tests/factories/conversation.py`）。
+
+    這是一條寫在 factory docstring 裡、而**沒有任何東西擋著**的約定——直到本類別。
+    上面那條 `test_a_message_lands_in_the_partition_for_its_month` 擋不住它：它讀回
+    `message.created_at` 再比對分區，所以 factory 若把 `created_at` 釘成一個當月的
+    固定值，那條照樣綠。
+
+    宣告了會壞在三個時間點，一個比一個晚：
+
+    1. **固定值**（`datetime(2026, 1, 1)` 這種）→ 所有測試訊息擠進同一個分區。
+       寫入成功、查詢成功，分區完全沒作用，而症狀要等到有人真的去 DROP 一個分區
+       才出現（本來一次 metadata 操作，變成刪不掉任何東西）。
+    2. **隨機值**（`factory.Faker("date_time")`）→ 抽到 12 個月預建範圍外的月份時
+       INSERT 直接失敗，而那是**隨機紅燈**：同一份程式碼今天綠、明天紅，看起來像
+       flaky test，實際上是資料落在沒有分區的月份。
+    3. **相對值**（`now - 400 天`）→ 今天可能還在範圍內，過幾個月就不是了。
+
+    三種都不會在 factory 那一側報錯，因此守門只能建在這裡。
+    """
+
+    def test_the_factory_does_not_declare_created_at(self) -> None:
+        """宣告面：直接看 factory 的欄位表，不繞經任何一筆資料。
+
+        比對的是 factory **自己宣告**的屬性（`_meta.declarations`），不是 model 欄位
+        ——`created_at` 當然存在於 model 上，問題只在 factory 有沒有插手它。
+        """
+        from tests.factories.conversation import MessageFactory
+
+        declared = set(MessageFactory._meta.declarations)
+
+        assert "created_at" not in declared, (
+            "MessageFactory 宣告了 created_at——它是分區鍵，必須由 DB 的 auto_now_add "
+            "決定，資料才會落在「現在」所屬的分區（理由見本類別 docstring）"
+        )
+
+    def test_two_messages_created_now_land_in_the_current_partition(
+        self, tenants: dict[uuid.UUID, uuid.UUID]
+    ) -> None:
+        """行為面：不指定 `created_at` 時，資料落在**當月**的分區。
+
+        與上一條的分工：那條驗「factory 沒宣告」，這條驗「沒宣告的結果是對的」。
+        兩條都要——`auto_now_add` 若哪天被拿掉，宣告面照樣綠。
+        """
+        now = datetime.now(UTC)
+
+        with tenant_scope(TENANT_A), connection.cursor() as cursor:
+            conversation = make_conversation(tenant_id=TENANT_A, user_id=tenants[TENANT_A])
+            ids = [make_message(conversation=conversation).id for _ in range(2)]
+            cursor.execute(
+                "SELECT tableoid::regclass::text FROM conversation_message WHERE id = ANY(%s)",
+                [ids],
+            )
+            partitions = {row[0] for row in cursor.fetchall()}
+
+        assert partitions == {f"conversation_message_{now:%Y_%m}"}, (
+            f"落在 {partitions}，而現在是 {now:%Y-%m}"
+        )
+
+    def test_passing_created_at_to_the_factory_is_silently_ignored(
+        self, tenants: dict[uuid.UUID, uuid.UUID]
+    ) -> None:
+        """**這是陷阱本身**：`created_at` 是 `auto_now_add`，Django 在 INSERT 時一律
+        覆寫它——傳進去的值不會有任何錯誤、也不會生效。
+
+        factory docstring 一度寫著「要測跨月行為的話明確傳 `created_at`」，而照做的
+        測試會全部寫進當月然後通過：它們看起來在驗跨月，實際上一次都沒跨過。釘住這個
+        行為，是為了讓下一個想跨月的人在這裡就看到真正的做法（見下一條）。
+        """
+        target = (datetime.now(UTC).replace(day=1) + timedelta(days=40)).replace(day=15)
+
+        with tenant_scope(TENANT_A):
+            conversation = make_conversation(tenant_id=TENANT_A, user_id=tenants[TENANT_A])
+            message = make_message(conversation=conversation, created_at=target)
+
+        assert message.created_at.strftime("%Y-%m") != target.strftime("%Y-%m"), (
+            "傳進去的 created_at 竟然生效了——若 auto_now_add 被拿掉，本檔的分區斷言"
+            "就再也不是在驗 DB 的行為，而是在驗測試自己傳了什麼"
+        )
+
+    def test_moving_a_message_across_months_goes_through_update(
+        self, tenants: dict[uuid.UUID, uuid.UUID]
+    ) -> None:
+        """跨月的**正確做法**：建立之後用 `QuerySet.update()` 改 `created_at`。
+
+        兩件事一起成立才行得通，缺一不可：
+        1. `update()` 走的是 SQL UPDATE，不經過 model 的 `save()`，所以 `auto_now_add`
+           管不到它。
+        2. PostgreSQL ≥ 11 在 UPDATE 分區鍵時會**把列搬到正確的分區**（row movement）。
+           少了這一半，值改了而列還在原分區——那正是分區失效卻毫無症狀的樣子。
+
+        用**下個月**而不是上個月：預建是從當月往未來 12 個月，過去的月份一個分區都
+        沒有（第一次寫這條測試時用上個月，拿到的是 `no partition ... found for row`）。
+        """
+        target = (datetime.now(UTC).replace(day=1) + timedelta(days=40)).replace(day=15)
+
+        with tenant_scope(TENANT_A), connection.cursor() as cursor:
+            conversation = make_conversation(tenant_id=TENANT_A, user_id=tenants[TENANT_A])
+            message = make_message(conversation=conversation)
+            moved = Message.objects.filter(id=message.id).update(created_at=target)
+            cursor.execute(
+                "SELECT tableoid::regclass::text FROM conversation_message WHERE id = %s",
+                [message.id],
+            )
+            row = cursor.fetchone()
+
+        assert moved == 1
+        assert row is not None, "列不見了——UPDATE 把它搬去了一個查不到的地方"
+        assert row[0] == f"conversation_message_{target:%Y_%m}", (
+            f"值改成了 {target:%Y-%m}，列卻還在 {row[0]}——分區鍵的 row movement 沒有發生"
+        )
+
+    def test_a_month_without_a_partition_fails_loudly(
+        self, tenants: dict[uuid.UUID, uuid.UUID]
+    ) -> None:
+        """預建範圍外的月份**必須失敗**，不能默默落到別的地方。
+
+        這是「那個月份必須有分區存在」的另一半。日後若有人加了 DEFAULT partition 當
+        保險，這條會紅——那時要停下來想清楚：保險的代價是「該 DROP 的資料全都在那一
+        桶裡」，而分區的整個理由（刪除成本）就沒了。
+        """
+        from django.db.utils import IntegrityError
+
+        # 遠到 migration 的 12 個月預建與 Beat 的 3 個月前瞻都絕不可能蓋到。
+        far_future = datetime.now(UTC) + timedelta(days=365 * 5)
+
+        with tenant_scope(TENANT_A):
+            conversation = make_conversation(tenant_id=TENANT_A, user_id=tenants[TENANT_A])
+            message = make_message(conversation=conversation)
+            with pytest.raises(IntegrityError, match="partition"):
+                Message.objects.filter(id=message.id).update(created_at=far_future)
+
+
 class TestSchema:
     def test_citations_round_trip_as_jsonb(self, tenants: dict[uuid.UUID, uuid.UUID]) -> None:
         """引用存 jsonb 而不是關聯表（05 §3.4：讀多寫一、無獨立查詢需求）。

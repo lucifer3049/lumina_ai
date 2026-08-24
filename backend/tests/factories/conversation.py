@@ -7,8 +7,24 @@
 都有 RLS，`WITH CHECK` 讀的是交易區域參數 `app.tenant_id`。
 
 `Message` 的 `created_at` 是**分區鍵**，因此 factory 不指定它——讓 DB 的 `auto_now_add`
-決定，資料才會落在「現在」所屬的那個分區。要測跨月行為的話明確傳 `created_at`，
-但那個月份必須有分區存在（migration 預建 12 個月）。
+決定，資料才會落在「現在」所屬的那個分區。宣告一個固定值會讓所有測試訊息擠進同一個
+分區（分區形同虛設，而寫入與查詢照常成功）；宣告一個隨機值則會在抽到預建範圍外的
+月份時變成隨機紅燈。
+
+**要測跨月行為時不能傳 `created_at`**：它是 `auto_now_add`，Django 在 INSERT 時一律
+覆寫，傳進去的值不會生效、也不會報錯——照做的測試會全部寫進當月然後通過，看起來
+在驗跨月而一次都沒跨過。正確做法是建立之後走 `QuerySet.update()`（不經 `save()`，
+`auto_now_add` 管不到；PostgreSQL ≥ 11 會把列搬到正確的分區）：
+
+    message = make_message(conversation=conversation)
+    Message.objects.filter(id=message.id).update(created_at=下個月某天)
+
+目標月份必須有分區存在，而**預建只往未來**（migration 預建 12 個月，Beat 每月補到
+第 3 個月）——過去的月份一個分區都沒有，寫過去會拿到
+``no partition of relation "conversation_message" found for row``。
+
+以上四件事由 `tests/integration/test_conversation_models.py::TestFactoryRespectsThePartitionKey`
+釘住。
 """
 
 from __future__ import annotations
