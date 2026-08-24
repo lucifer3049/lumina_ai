@@ -15,6 +15,10 @@
 3. **timeout 一定要設**（11 §4.1：MinIO 30s）。沒有 timeout 時 MinIO 卡住會慢慢佔滿
    threadpool，症狀是「整個網站變慢」而不是「物件儲存有問題」。
 4. **刪除是冪等的**：清理流程會重跑，刪一個已經不存在的 key 不該炸。
+5. **測試資料的 key 形狀要跟著正式路徑走**（`TestFactoryKeysMatchProduction`）。
+   `DocumentFactory` 自己組 `storage_key`，而它一度停在 05 §3.2 的舊形狀
+   （`tenant-{slug}`）——於是任何拿 factory 文件去走物件儲存的測試都會撞
+   `CrossTenantObjectKeyError`，而錯誤看起來像被測程式碼有 bug。
 """
 
 from __future__ import annotations
@@ -182,3 +186,48 @@ def test_client_has_timeouts_configured() -> None:
 
     assert config.connect_timeout == settings.s3_timeout_seconds
     assert config.read_timeout == settings.s3_timeout_seconds
+
+
+@pytest.mark.django_db(transaction=True)
+class TestFactoryKeysMatchProduction:
+    """`DocumentFactory` 的 `storage_key` 必須與 `build_document_key` 逐字相同。
+
+    factory 自己組 key（它建的是 DB 列，不經過上傳路徑），所以兩邊是**兩份各自
+    寫死的字串**——而 1B-3 把正式路徑從 05 §3.2 的 `tenant-{slug}` 改成 tenant_id 時，
+    factory 沒有跟著改，那個偏差活到了 2B。
+
+    **偏差不會讓 factory 出錯，會讓別人出錯**：讀寫三兄弟每次都比對租戶前綴，
+    對不上就 `CrossTenantObjectKeyError`——而它冒出來的位置在被測的服務裡，看起來
+    像產品 bug。這條測試把兩份字串釘在一起，讓下一次改形狀時 factory 立刻紅。
+    """
+
+    def test_the_factory_key_is_exactly_what_production_would_build(self) -> None:
+        from tests.factories.identity import make_tenant, tenant_scope
+        from tests.factories.knowledge import make_document, make_knowledge_base
+
+        with tenant_scope(TENANT_A):
+            make_tenant(id=TENANT_A, slug="tenant-a")
+            kb = make_knowledge_base(tenant_id=TENANT_A)
+            document = make_document(kb=kb)
+            expected = build_document_key(
+                kb_id=uuid.UUID(str(kb.id)), document_id=uuid.UUID(str(document.id))
+            )
+
+        assert document.storage_key == expected
+
+    def test_a_factory_document_survives_the_prefix_guard(self) -> None:
+        """把它真的送進讀寫三兄弟——形狀對不對，這一關說了算。"""
+        from tests.factories.identity import make_tenant, tenant_scope
+        from tests.factories.knowledge import make_document, make_knowledge_base
+
+        with tenant_scope(TENANT_A):
+            make_tenant(id=TENANT_A, slug="tenant-a")
+            document = make_document(kb=make_knowledge_base(tenant_id=TENANT_A))
+
+        with tenant_context(TENANT_A):
+            key = str(document.storage_key)
+            put_object(key, CONTENT, content_type="application/pdf")
+            try:
+                assert get_object(key) == CONTENT
+            finally:
+                delete_object(key)

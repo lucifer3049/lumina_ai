@@ -48,13 +48,24 @@ class DocumentFactory(factory.django.DjangoModelFactory[Document]):
     kb = factory.SubFactory(KnowledgeBaseFactory)
     filename = factory.Sequence(lambda n: f"doc-{n}.pdf")
     mime_type = "application/pdf"
-    # storage_key 的形狀出自 05 §3.2：tenant-{slug}/kb/{kb_id}/{doc_id}。
-    # 這裡用 LazyAttribute 而非固定字串，才驗得到「兩份文件不會指向同一個物件」。
-    # 走 ``doc.kb.id`` 而非 ``doc.kb_id``：LazyAttribute 拿到的是 factory 的
-    # **建構中 stub**，上面只有宣告過的屬性；``kb_id`` 是 model 欄位、stub 上不存在
-    # （症狀是 AttributeError: The parameter 'kb_id' is unknown）。
+    # storage_key 的形狀**必須與 `core.object_storage.build_document_key` 逐字相同**：
+    # `tenant-{tenant_id}/kb/{kb_id}/{doc_id}`。05 §3.2 原本寫的是 `tenant-{slug}`，
+    # 而 1B-3 刻意偏離成 tenant_id（slug 可變、key 一旦寫進 DB 就不能變，理由見
+    # `core/object_storage.py` 的模組 docstring）——本 factory 一度停在舊形狀。
+    #
+    # **形狀不一致不會讓 factory 出錯，會讓「用到物件儲存的測試」出錯**：
+    # put/get/delete 每一次都比對 key 的租戶前綴（`_require_own_key`），對不上就
+    # `CrossTenantObjectKeyError`。症狀出現在被測的程式碼那一側，看起來像產品 bug。
+    # `tests/integration/test_object_storage.py::TestFactoryKeysMatchProduction`
+    # 把兩份字串釘在一起。
+    #
+    # LazyAttribute 而非固定字串，才驗得到「兩份文件不會指向同一個物件」。
+    # 走 ``doc.tenant.id`` / ``doc.kb.id`` 而非 ``doc.tenant_id`` / ``doc.kb_id``：
+    # LazyAttribute 拿到的是 factory 的**建構中 stub**，上面只有宣告過的屬性，
+    # model 欄位名在 stub 上不存在（症狀是 AttributeError: The parameter 'kb_id'
+    # is unknown）。
     storage_key = factory.LazyAttribute(
-        lambda doc: f"tenant-{doc.tenant.slug}/kb/{doc.kb.id}/{doc.id}"
+        lambda doc: f"tenant-{doc.tenant.id}/kb/{doc.kb.id}/{doc.id}"
     )
     # content_hash 跟著 filename 走：預設情況下每份文件的 hash 都不同（否則
     # UNIQUE(tenant_id, kb_id, content_hash) 會在無關的測試裡誤觸發），而要驗去重的

@@ -34,7 +34,7 @@ from django.utils import timezone
 from apps.conversation.models import Conversation, MemorySnapshot, Message
 from apps.knowledge.models import Chunk, Document, Embedding, EtlJob, KnowledgeBase
 from config.settings.app_settings import get_app_settings
-from core.object_storage import build_document_key, list_keys, put_object
+from core.object_storage import list_keys, put_object
 from services.conversation.purge import DeletedConversationPurgeService
 from services.knowledge.purge import DeletedKnowledgePurgeService
 from tests.conftest import TENANT_A, TENANT_B
@@ -91,15 +91,14 @@ def _mark_deleted(
 def _document_with_everything(tenant_id: uuid.UUID, *, kb: KnowledgeBase | None = None) -> Document:
     """一份文件 ＋ 兩個 chunk（各一份向量）＋ 一筆 etl_job ＋ 一個真的物件。
 
-    **物件的 key 走 `build_document_key`** 而不是 factory 的預設值：`delete_object`
-    每次都比對 `tenant-{tenant_id}/` 前綴（`_require_own_key`），形狀不同會被擋下，
-    而那個擋是對的——測試要用真的形狀才驗得到真的路徑。
+    物件用 factory 給的 `storage_key`：它與 `build_document_key` 逐字相同
+    （`test_object_storage.py::TestFactoryKeysMatchProduction` 釘住），而 `delete_object`
+    每次都比對 `tenant-{tenant_id}/` 前綴——形狀不同會被擋下，那個擋是對的。
     """
     with tenant_scope(tenant_id):
         kb = kb or make_knowledge_base(tenant_id=tenant_id)
-        document_id = uuid.uuid4()
-        key = build_document_key(kb_id=uuid.UUID(str(kb.id)), document_id=document_id)
-        document = make_document(id=document_id, kb=kb, status="ready", storage_key=key)
+        document = make_document(kb=kb, status="ready")
+        key = str(document.storage_key)
         for seq in range(2):
             make_embedding(chunk=make_chunk(document=document, seq=seq))
         make_etl_job(document=document, stage="parse", status="succeeded")
