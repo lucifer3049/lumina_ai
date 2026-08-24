@@ -372,10 +372,24 @@ stream_chat／1D-3b PromptBuilder／1D-4a 端點與生成／1D-4b resume 與 sto
 | **F-02＋M1：軟刪除承諾了不存在的清理者** | 三處 docstring 都寫著「30 天後由清理 job 硬刪」，而那個 job 從 1B 起就不存在。**KB 級刪除是量最大也最容易漏的一種**：`KnowledgeBaseService.delete` 刻意不逐列標記底下的文件，所以它們連 `deleted_at` 都沒有 | 新增 `PURGE_DELETED_TASK`（`platform.purge_deleted`，maintenance 佇列，每日 04:30 排在 `cleanup_chunks` 之後）＋ `DeletedKnowledgePurgeService`／`DeletedConversationPurgeService` 兩支（分兩支是 bounded context，組合點在 worker 的 task）。順序：向量 → chunk → etl_job → 物件 → 文件 → KB（另一路 摘要／訊息 → 對話）。保留窗與批次上限收進 `retention_purge_after_days`／`retention_purge_batch_size`。新增 `tests/integration/test_retention_purge.py` 11 條 ＋ beat 註冊 1 條 |
 | **F-06：README 與程式碼狀態不符** | README 的狀態段停在「下一步為 1E」（實際已到 2B-4）；鐵則 2 引用不存在的 `core/interfaces/` | 狀態段改為一行摘要 ＋ **指向本檔為單一事實來源**（逐包流水帳在 README 漂了三個工作包沒人更新，而這種錯誤沒有測試擋得住）；鐵則 2 在 README 與 CLAUDE.md 同步改寫，並明記「沒有 `core/interfaces/` 抽象層」是刻意取捨；三處「30 天後清理」docstring 改為指名新的 service |
 
-**尚未處理（依審計的優先級排序，範圍與時機待人類裁決）**：
+**P1 五項於 2026-08-25 落地**（同樣不對齊原訂工作包）：
 
-- **P1**：F-03 配額 `limits()` 的 per-request memo（TTFT 量測前要先做，否則量到的是會變的數字）／F-04 `spawn()` 的行程級 semaphore ＋ 429／F-01 最小部署形狀（`compose.app.yml` ＋ `GET /healthz` ＋ drain 演練，含 L4 的 `DJANGO_SETTINGS_MODULE` 顯式化）／F-09 `ALLOWED_HOSTS` 走環境變數／F-05 `commit`/`release` 補 expire。
+| 項目 | 內容 | 落地 |
+|------|------|------|
+| **F-03：配額熱路徑的重複交易** | `limits()` 每次呼叫都開一組 `tenant_context + unit_of_work`，而 `start_turn` 連呼三次 `check_and_reserve`、上傳路徑兩次——同一份限額表在同一個請求裡查三到四遍。**TTFT 量測前要先做**，否則量到的是一個會變的數字 | 新增 `core/request_cache.py`（請求級 memo，**不是快取層**：沒有 TTL、不跨請求；沒有請求邊界時一律不快取，Celery task 走的還是原路徑）。邊界由 `RequestContextMiddleware` 開。`limits()` 回傳副本，避免呼叫端就地修改污染後續查詢 |
+| **F-04：背景生成無全域上限** | 每租戶的 `streams` 額度是**公平性**機制，租戶數不設限，所以 N×2 沒有上界。超載的症狀不是有人被擋下，是全部一起變慢 | `api/background.ensure_capacity()` ＋ 新例外 `ServerBusyError`（**RATE_LIMITED 而非 QUOTA_EXCEEDED**：後者是「重試無用」，這裡原封不動重送就會成功）。**擋在建立回合之前**——擋在後面的話被拒的請求已經寫了兩則訊息、扣了三種額度。上限走設定（`api_max_concurrent_generations`，起始值 64 待壓測校正；≤0 = 不設限的退路） |
+| **F-01：部署形狀不存在** | compose 只有五個資料層服務、`prod.py` 僅一行、全 api/v1 無 healthz | `docker/compose.app.yml`（api/worker/beat 共用 image，顯式帶 `DJANGO_SETTINGS_MODULE`＝審計 L4）＋ `GET /healthz`／`/readyz`（11 §3.2 的兩支，**liveness 不碰依賴**：那會讓一次 DB 抖動把健康的容器輪流殺掉）＋ `make deploy-up/-migrate/-down/-logs/-shutdown-drill`。不變量由 `tests/unit/test_deployment_shape.py` 釘住，其中最要緊的是 **`stop_grace_period`（35s）> drain 上限（30s）**——兩個數字寫在兩個檔案裡，小於的話 drain 會被 SIGKILL 打斷 |
+| **F-09：`ALLOWED_HOSTS = ["*"]`** | 目前無讀者（Django 不對外服務 HTTP），但 2C 掛 Django Admin 的 PR 在 urls.py 上，不會有人來 review 這一行 | 走 `DJANGO_ALLOWED_HOSTS`（逗號分隔）；**production 缺值即拒絕啟動**，開發預設 `localhost,127.0.0.1`——不給「安全的預設」，因為漏設的那一刻正是這條防線唯一有用的時候 |
+| **F-05：commit/release 可能復活無 TTL 的 key** | `INCRBY`/`DECRBY` 會建立不存在的 key，而建出來的沒有 TTL | `_keep_expiry()` 以 **`EXPIRE ... NX`** 補（無條件 `EXPIRE` 會把每次收尾變成續命，月額度的 key 永遠不到期——比原問題更糟）。`QuotaReservation` 帶著預留當下的 TTL：收尾那一刻期別可能翻頁了，重算會得到新期別的值而 key 是舊的 |
+
+**過程中被既有守門抓到的兩件事**（都是真矛盾，不是誤報）：① `test_every_v1_router_is_mounted` 擋下把 health router 放進 `api/v1/` 卻不掛 `/api/v1` 的做法——已移到 `api/health.py`；② 容器內 `REPO_ROOT`（`parents[3]`）等於 `/`，JWT 金鑰路徑推導出 `/backend/.secrets/`，啟動即 Fail Fast——compose 顯式帶 `JWT_*_KEY_PATH`。這是「路徑推導假設了原始碼樹的形狀」，只有部署時才遇得到。
+
+**關機演練的涵蓋範圍要說清楚**：`make deploy-shutdown-drill` 驗到的是「SIGTERM 傳得到應用（看得到 lifespan 收尾）、容器在寬限期內自己退出」。**「drain 真的等了進行中的生成」不在其中**——那由 `tests/unit/test_background_drain.py` 涵蓋（等待、逾時、取消、上限值四條），而端到端把兩者串起來需要一個可控延遲的 provider，MockProvider 沒有這個旋鈕。
+
+**尚未處理**：
+
 - **P2**：F-07 ChatService 切出 TurnBudget／TurnComposer（3A 開工前）／F-11＋L3 rate limit middleware（含 per-IP 維度）／L1 串流結束後縮短緩衝 TTL／F-12 `make eval-clean`。
+- **F-01 的餘項**（本次刻意不做，屬 Phase 4）：反向代理／TLS、多 replica 與滾動更新、secrets manager、`api` 容器不該帶 owner 憑證（它只是因為 `base.py` 在 import 期 `_required_env("DB_ADMIN_PASSWORD")` 而必須帶著）。
 - 兩輪都**明確不建議**的事：Microservices、CQRS、`core/interfaces/` 抽象層、platform 拆分。
 
 

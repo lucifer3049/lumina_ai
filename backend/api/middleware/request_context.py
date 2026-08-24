@@ -16,6 +16,7 @@ from fastapi import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from config.logging import bind_request_context, clear_request_context, get_logger
+from core.request_cache import request_cache
 from core.tenant import clear_current_tenant_id
 
 logger = get_logger(__name__)
@@ -101,7 +102,11 @@ class RequestContextMiddleware:
             )
 
         try:
-            await self._app(scope, receive, send_with_request_id)
+            # 請求級 memo 的邊界（core/request_cache.py，二次架構審計 F-03）。
+            # **開在最外層**：它要蓋住 route 層的 Depends（認證）與整條 service
+            # 呼叫鏈，而那是這條 middleware 唯一涵蓋得到全程的地方。
+            with request_cache():
+                await self._app(scope, receive, send_with_request_id)
         except Exception:
             # 例外會往上冒到 ServerErrorMiddleware 才變成 500 回應，那已在本層之外。
             # 不在這裡補一筆就會出現「有錯誤 log、卻沒有對應的存取記錄」的缺口。

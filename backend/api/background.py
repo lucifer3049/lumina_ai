@@ -24,10 +24,18 @@ from collections.abc import Coroutine
 from typing import Any
 
 from config.logging import get_logger
+from config.settings.app_settings import get_app_settings
+from core.exceptions import ServerBusyError
 
 logger = get_logger(__name__)
 
-__all__ = ["SHUTDOWN_DRAIN_SECONDS", "drain", "pending_count", "spawn"]
+__all__ = [
+    "SHUTDOWN_DRAIN_SECONDS",
+    "drain",
+    "ensure_capacity",
+    "pending_count",
+    "spawn",
+]
 
 # 11 §196：等待 ≤30s。**要與部署的 `terminationGracePeriodSeconds` 對得上**——比它長
 # 的話，等待會在中途被 SIGKILL 打斷，這個上限就等於不存在。
@@ -36,8 +44,39 @@ SHUTDOWN_DRAIN_SECONDS = 30
 _running: set[asyncio.Task[None]] = set()
 
 
+def ensure_capacity() -> None:
+    """這個行程的背景生成還有名額嗎？沒有就 429（二次架構審計 F-04）。
+
+    **每租戶的 `streams` 額度擋不住這件事**：它是公平性機制（一個租戶最多同時開幾
+    條），而租戶數不設限——N 個租戶各開滿就是 N×2 條，沒有上界。`spawn()` 在此之前
+    是無條件 `create_task`，所以「一個行程能同時扛幾條生成」沒有答案。超載的症狀
+    不是有人被擋下，是**全部一起變慢**：每條生成吃一個 LLM 連線、一份 context、
+    一條 SSE 緩衝，而 11 §2 的 TTFT p95 在那個點之後不再有意義。
+
+    **擋在建立回合之前呼叫**（見 `api/v1/conversations.py`）：擋在後面的話，被拒的
+    請求已經寫了兩則訊息、扣了三種額度，而使用者拿到的是 429——那比不擋更糟。
+
+    **check-then-spawn 之間有一個微秒級的窗**，兩個請求可能同時看到最後一個名額。
+    這裡刻意不上鎖：這是一道粗粒度的過載保護，超收一兩條的代價遠小於在每次送訊息
+    的路徑上加一個同步原語。真正的精確擋線是租戶額度那一層。
+
+    設定值 ≤ 0 視為不設限——緊急時的退路（改一個環境變數就回到 2B 之前的行為）。
+    """
+    limit = get_app_settings().api_max_concurrent_generations
+    if limit <= 0 or len(_running) < limit:
+        return
+    retry_after = get_app_settings().api_busy_retry_after_seconds
+    logger.warning("generation_capacity_reached", running=len(_running), limit=limit)
+    raise ServerBusyError(retry_after_seconds=retry_after)
+
+
 def spawn(coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
-    """把一個生成丟到背景跑，並登記起來。"""
+    """把一個生成丟到背景跑，並登記起來。
+
+    容量檢查**不在這裡**（在 `ensure_capacity()`，由呼叫端在建立回合之前呼叫）：
+    這個函式已經拿到一個 coroutine，此時拒絕等於把它丟掉，而那個 coroutine 背後
+    是一個已經寫進 DB 的回合。
+    """
     task = asyncio.create_task(coro)
     _running.add(task)
     task.add_done_callback(_running.discard)

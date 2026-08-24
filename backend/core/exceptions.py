@@ -189,6 +189,26 @@ class PermissionDeniedError(DomainError):
         super().__init__("權限不足", details={"required_permission": required})
 
 
+class ServerBusyError(DomainError):
+    """→ 429。**這個行程**同時進行的背景生成已達上限（11 §2，二次架構審計 F-04）。
+
+    與 `QuotaExceededError` 是兩件不同的事，不可合併：那個說的是「你這一期的額度用完
+    了」（重試無用，要等期別翻頁或加量），這個說的是「現在太擠，等幾秒再來」——同一個
+    請求原封不動重送就會成功。兩者若共用一個碼，client 沒有辦法分辨該放棄還是該重試。
+
+    帶 `retry_after_seconds`：429 不附這個值等於叫 client 自己猜，而猜出來的多半是
+    「立刻重試」——那正好在系統最擠的時候再加一份負載。
+    """
+
+    code = ErrorCode.RATE_LIMITED
+
+    def __init__(self, *, retry_after_seconds: int) -> None:
+        super().__init__(
+            "伺服器忙碌中，請稍後再試",
+            details={"retry_after_seconds": retry_after_seconds},
+        )
+
+
 class ConflictError(DomainError):
     """→ 409。唯一性或狀態機衝突（例如同租戶內 email 重複）。
 

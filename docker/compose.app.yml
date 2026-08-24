@@ -1,0 +1,186 @@
+# 應用層編排 —— api / worker / beat 三個角色共用同一個 backend image（二次架構審計 F-01）。
+#
+# **與 compose.yml 分成兩檔**：那一份是資料層（PG / PgBouncer / Redis / MinIO / Mailpit），
+# 日常開發只需要它——`make dev` 跑的是本機的 uvicorn，改一行程式立刻生效，不必重建 image。
+# 這一份是「部署形狀」：驗證那個 image 真的跑得起來、三個角色的環境變數與依賴順序是對的、
+# 以及重啟時 drain 真的會等。兩者疊加使用：
+#
+#     docker compose --env-file .env -f docker/compose.yml -f docker/compose.app.yml up -d
+#
+# 或直接用 `make app-up` / `make app-down` / `make app-logs`。
+#
+# ⚠️ **這仍然不是 production 的部署設定**，它是「最小可運行的部署形狀」。缺的東西要說清楚，
+# 否則下一個人會以為照抄就能上線：
+#   - 沒有反向代理／TLS 終結（Phase 4）。API 直接對 127.0.0.1 開一個埠。
+#   - 沒有多 replica、沒有滾動更新。`deploy:` 區段在 compose 上多半是裝飾。
+#   - secrets 走 .env 檔（開發憑證）。production 要換成 secret manager。
+#   - migration 沒有自動跑（見下方 `migrate` 一次性服務的說明）。
+#
+# **三個角色一個 image** 是刻意的（backend/Dockerfile 檔頭的「一個 image 多角色」）：
+# 三份 image 會漂，而漂掉的那一份通常是 worker——它的症狀是「某些文件永遠停在 parsing」。
+
+name: lumina
+
+# 三個角色的共同設定。YAML anchor 而不是複製三遍：漏改一處的症狀是「其中一個角色
+# 用著舊設定」，而它不會有錯誤訊息（例如 worker 仍連著 dev settings）。
+x-app: &app
+  image: ${BACKEND_IMAGE:-lumina/backend:dev}
+  # **顯式指定 settings module**，即使 Dockerfile 已經有 ENV（審計 L4）：
+  # `config/celery_app.py` 用的是 `setdefault(..., "config.settings.dev")`，而 image
+  # 的 ENV 只在沒有人覆寫時生效。編排層寫死它，是為了讓「這個容器用哪一組設定」
+  # 在部署設定裡看得見，而不是要去讀 Dockerfile 才知道。
+  environment:
+    DJANGO_SETTINGS_MODULE: config.settings.prod
+    ENVIRONMENT: ${ENVIRONMENT:-development}
+    DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+    # production 缺這個會拒絕啟動（backend/config/settings/base.py）。
+    DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-}
+    LOG_FORMAT: ${LOG_FORMAT:-json}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # **容器內用服務名，不是 .env 裡的 127.0.0.1**：那些值是給宿主機上的行程用的
+    # （pytest、make dev）。照抄進容器會連到容器自己的 loopback，症狀是啟動即
+    # connection refused——而 .env 看起來完全正確。
+    DB_HOST: pgbouncer
+    DB_PORT: 5432
+    DB_NAME: ${DB_NAME}
+    DB_USER: ${DB_USER}
+    DB_PASSWORD: ${DB_PASSWORD}
+    # owner 連線（migration、分區 DDL）。**直連 PostgreSQL，不經 PgBouncer**：
+    # transaction pooling 之下 CREATE DATABASE 不可行，migration 的 advisory lock
+    # 與 CREATE INDEX CONCURRENTLY 語意也會壞掉（05 §5.5、13 §3.1）。
+    #
+    # **api 其實不需要 owner 權限**，它只是因為 `config/settings/base.py` 在 import
+    # 期就 `_required_env("DB_ADMIN_PASSWORD")` 而必須帶著。把特權憑證放進一個
+    # 對外服務的容器不是好形狀——拆開（讓 admin alias 變成可選、或分成兩份 settings）
+    # 屬 Phase 4，這裡先照實記下來，不假裝它不存在。
+    DB_ADMIN_USER: ${DB_ADMIN_USER}
+    DB_ADMIN_PASSWORD: ${DB_ADMIN_PASSWORD}
+    DB_DIRECT_HOST: postgres
+    DB_DIRECT_PORT: 5432
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    REDIS_PASSWORD: ${REDIS_PASSWORD}
+    S3_HOST: minio
+    S3_PORT: 9000
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+    S3_SECRET_KEY: ${S3_SECRET_KEY}
+    S3_BUCKET: ${S3_BUCKET}
+    SMTP_HOST: mailpit
+    SMTP_PORT: 1025
+    # **JWT 金鑰路徑要顯式指定。** 預設值是
+    # `REPO_ROOT / "backend" / ".secrets" / ...`，而 `REPO_ROOT` 是
+    # `Path(__file__).resolve().parents[3]`——在 repo 內那是專案根，在容器內
+    # （`/app/config/settings/app_settings.py`）那是 `/`，於是它去找
+    # `/backend/.secrets/jwt-es256.key` 並在啟動時 Fail Fast。
+    # 這是「路徑推導假設了原始碼樹的形狀」的典型症狀，只有部署時才會遇到。
+    JWT_PRIVATE_KEY_PATH: /app/.secrets/jwt-es256.key
+    JWT_PUBLIC_KEY_PATH: /app/.secrets/jwt-es256.pub
+  volumes:
+    # JWT 簽章金鑰（`make gen-jwt-keys` 產生，在 .gitignore 內）。唯讀掛載：
+    # 應用只需要讀，而私鑰的檔案權限是這條防線唯一的實施點。
+    # production 要換成 secret manager（鐵則 9：secrets 不進 image）。
+    - ../backend/.secrets:/app/.secrets:ro
+  depends_on:
+    pgbouncer:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *app
+    # `--workers` 不寫在 Dockerfile 的 CMD 裡（每 replica 的併發是部署決定，
+    # 01 附錄 A 註 1 的起始值是 2）。log 旗標必須跟著帶——那是日誌契約的一部分
+    # （12 §1.1），少了它 uvicorn 會另外輸出一份欄位不同的 access log。
+    command:
+      - uvicorn
+      - config.asgi:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --workers
+      - "${UVICORN_WORKERS:-2}"
+      - --log-config
+      - config/uvicorn_logging.json
+      - --no-access-log
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    healthcheck:
+      # **打 /readyz 而不是 /healthz**：compose 的 healthcheck 決定的是
+      # `depends_on: service_healthy`，那是就緒語意。liveness 在這裡沒有消費者
+      # （compose 不會因為它失敗而重啟容器）。
+      #
+      # 用 python 而不是 curl：image 是 slim base，沒有 curl 也沒有 wget，
+      # 而為了 healthcheck 裝一個等於在部署映像裡多一個攻擊面。
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).status==200 else 1)"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    # 11 §196 的關機契約：SIGTERM → 停收新請求 → 等進行中的生成 ≤30s。
+    # **必須 > SHUTDOWN_DRAIN_SECONDS**（api/background.py 的 30 秒），否則
+    # drain 會在中途被 SIGKILL 打斷，那個上限就等於不存在。留 5 秒餘裕給收尾。
+    stop_grace_period: 35s
+
+  worker:
+    <<: *app
+    # 佇列與 pool 必須與 Makefile 的 WORKER_CMD 一致（由
+    # tests/unit/test_dev_launcher.py 對帳）。**--pool threads 不是選項**：
+    # prefork 的 daemonic 行程不准開子行程，而 ETL 的抽取需要（forkserver 沙箱）。
+    command:
+      - python
+      - -m
+      - celery
+      - -A
+      - config.celery_app
+      - worker
+      - --queues
+      - etl,embedding,maintenance
+      - --pool
+      - threads
+      - --concurrency
+      - "${ETL_CONCURRENCY:-4}"
+      - --loglevel
+      - info
+    # Celery 的 warm shutdown：等手上的 task 做完再退。ETL 的一份大 PDF 可能要
+    # 幾分鐘，而 acks_late 之下被硬砍的 task 會回到佇列重跑——不是資料損失，
+    # 但是一次白花的解析成本。
+    stop_grace_period: 120s
+
+  beat:
+    <<: *app
+    # **單一 replica**：Beat 是排程的唯一發令者，跑兩份會讓每個排程任務被投遞兩次
+    # （冪等擋得住錯誤，擋不住浪費）。schedule 檔寫在容器內的可寫路徑。
+    command:
+      - python
+      - -m
+      - celery
+      - -A
+      - config.celery_app
+      - beat
+      - --schedule
+      - /tmp/celerybeat-schedule
+      - --loglevel
+      - info
+    # Beat 只發令、不做事，沒有需要等的東西。
+    stop_grace_period: 10s
+
+  # 一次性的 migration 執行器。**不放進 api 的啟動腳本**：多個 replica 同時起來時
+  # 會有多個行程同時跑 migrate，而 Django 的 migration 沒有跨行程鎖——症狀是
+  # 「其中一個容器起不來，錯誤訊息說某個索引已存在」。
+  #
+  # `profiles` 讓它不隨 `up` 自動跑；要跑時明示：
+  #     docker compose ... --profile migrate run --rm migrate
+  migrate:
+    <<: *app
+    profiles: ["migrate"]
+    restart: "no"
+    command: ["python", "manage.py", "migrate", "--noinput"]

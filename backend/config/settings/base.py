@@ -53,7 +53,33 @@ def _required_env(name: str) -> str:
 
 SECRET_KEY = _required_env("DJANGO_SECRET_KEY")
 DEBUG = False
-ALLOWED_HOSTS: list[str] = ["*"]
+
+
+# Django 的 Host 標頭白名單。**目前沒有讀者**——Django 不對外服務 HTTP（鐵則 1），
+# 沒有 ROOT_URLCONF、沒有 MIDDLEWARE，`CommonMiddleware` 的 Host 驗證因此從未執行。
+#
+# 那正是它危險的地方：2C 計畫掛上 Django Admin，而那個 PR 會在 urls.py 與
+# MIDDLEWARE 上，**不會有人想到來 review 這一行**——`["*"]` 於是安靜地生效，
+# Host 標頭偽造（快取污染、密碼重設信指向攻擊者的網域）就此打開。
+#
+# 逗號分隔，例：`DJANGO_ALLOWED_HOSTS=lumina.example.com,api.lumina.example.com`。
+# 開發與測試預設放行本機兩個名字（Django 對 `DEBUG=False` 一律要求非空清單，而
+# 本 repo 的 DEBUG 恆為 False，見 dev.py）。
+#
+# **production 缺值即拒絕啟動**（同 `_required_env` 的理由）：給一個「安全的預設」
+# 等於讓漏設的部署照常起來，而漏設的那一刻正是這條防線唯一有用的時候。
+def _allowed_hosts() -> list[str]:
+    raw = os.environ.get("DJANGO_ALLOWED_HOSTS", "").strip()
+    if raw:
+        return [host.strip() for host in raw.split(",") if host.strip()]
+    if os.environ.get("ENVIRONMENT", "production") == "production":
+        raise ImproperlyConfigured(
+            "缺少環境變數 DJANGO_ALLOWED_HOSTS——production 不接受萬用字元主機名"
+        )
+    return ["localhost", "127.0.0.1"]
+
+
+ALLOWED_HOSTS: list[str] = _allowed_hosts()
 
 INSTALLED_APPS = [
     "django.contrib.contenttypes",

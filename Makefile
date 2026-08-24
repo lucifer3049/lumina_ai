@@ -486,6 +486,45 @@ openapi-check: openapi gen-api ## 驗證契約與 generated client 未過期（C
 image: ## 建置 backend image（與 CI 同一份 Dockerfile）
 	docker build -t $(BACKEND_IMAGE) $(BACKEND)
 
+# ── 部署形狀（二次架構審計 F-01）────────────────────────────────
+#
+# 疊 compose.yml（資料層）+ compose.app.yml（api/worker/beat）。**與 make dev 是
+# 兩件不同的事**：dev 跑的是宿主機上的 uvicorn（改一行立刻生效），這裡跑的是
+# image——驗的是「那個 image 真的起得來、環境變數對得上、關機會等 drain」。
+COMPOSE_APP := $(COMPOSE) -f docker/compose.app.yml
+
+# 命名一律 `deploy-`：`app-logs` 已經被 `make start` 那組用掉了（追的是宿主機上
+# 的 API 與前端 log），而同名 target 在 make 裡是安靜地覆蓋前一個。
+deploy-up: image ## 用 image 起 api/worker/beat（部署形狀；需先 make up + migrate）
+	$(COMPOSE_APP) up -d --wait api worker beat
+	@echo "API: http://127.0.0.1:$${API_PORT:-8000}/healthz"
+
+deploy-migrate: image ## 在容器內跑 migration（一次性；多 replica 不可各自跑）
+	$(COMPOSE_APP) --profile migrate run --rm migrate
+
+deploy-down: ## 停掉應用容器（資料層不動）
+	$(COMPOSE_APP) stop api worker beat && $(COMPOSE_APP) rm -f api worker beat
+
+deploy-logs: ## 追應用容器的日誌
+	$(COMPOSE_APP) logs -f api worker beat
+
+# 關機演練（11 §196）。**單元測試看不到的只有兩件事**，這支就驗那兩件：
+#   ① SIGTERM 真的傳得到應用（不是被某層 init/shell 吃掉）——看得到 lifespan 的
+#      「Waiting for application shutdown」才算數；
+#   ② 容器在寬限期內自己退出，不是被 SIGKILL 砍的。
+# drain 本身「有沒有等、逾時後有沒有取消」由 tests/unit/test_background_drain.py
+# 涵蓋；compose 的 stop_grace_period 是否 ≥ drain 上限由
+# tests/unit/test_deployment_shape.py 釘住。
+deploy-shutdown-drill: ## 關機演練：對 api 送 SIGTERM，確認 lifespan 收尾有跑到
+	@echo "生成進行中：$$(curl -s http://127.0.0.1:$${API_PORT:-8000}/healthz | \
+		python3 -c 'import json,sys; print(json.load(sys.stdin)["generations_in_flight"])')"
+	@start=$$(date +%s); \
+	$(COMPOSE_APP) stop api >/dev/null 2>&1; \
+	echo "容器退出耗時 $$(( $$(date +%s) - start ))s（寬限期 35s；超過即代表被 SIGKILL）"
+	@$(COMPOSE_APP) logs api 2>&1 | grep -q "Application shutdown complete" \
+		&& echo "✓ lifespan 收尾有跑到（SIGTERM 傳得到應用）" \
+		|| { echo "✗ 沒看到 lifespan 收尾——SIGTERM 被吃掉了"; exit 1; }
+
 lock-check: ## 驗證 uv.lock 與 pyproject 一致（唯讀，不會改動 lock）
 	$(UV) lock --check
 

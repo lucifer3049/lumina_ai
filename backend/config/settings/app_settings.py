@@ -316,6 +316,23 @@ class AppSettings(BaseSettings):
     # 期間 HNSW 索引在抖、其他查詢在等。沒清完的下一輪繼續——job 每天都跑。
     retention_purge_batch_size: int = 500
 
+    # ── 背景生成的行程級上限（11 §2；二次架構審計 F-04）────────
+    #
+    # 每租戶的 `streams` 額度（預設 2）是**公平性**機制，不是容量機制：租戶數不設限，
+    # 所以 N 個租戶 × 2 條是無界的。`api/background.py` 的 `spawn()` 之前無條件
+    # `create_task`，一個行程能同時扛幾條生成因此沒有任何答案——症狀不是被擋下，
+    # 是全部一起變慢（每條都吃一個 LLM 連線、一份 context、一條 SSE 緩衝），而
+    # TTFT 在那個點之後失去意義。
+    #
+    # 64 是起始值（11 §2 的 p95 目標之下，單行程同時處理數十條串流是可支撐的量級），
+    # **待壓測校正**——文件值是起始點，調整要引用數據（CLAUDE.md 開發流程）。
+    # 設成 0 或負數視為不設限（回到 2B 之前的行為，給緊急情況一條退路）。
+    api_max_concurrent_generations: int = 64
+    # 額滿時 429 的 `Retry-After`（秒）。取一個「大於典型生成時間的一小段」而不是
+    # 幾分鐘：塞住的原因是瞬時併發，而一條生成的牆鐘上限是 120 秒（`ai_chat_total_
+    # timeout_seconds`），等太久等於把可重試的請求變成放棄。
+    api_busy_retry_after_seconds: int = 5
+
     # 訊息卡在 `streaming` 多久算生成已死（補償掃描標成 interrupted）。
     # 生成本身有 120 秒的牆鐘上限（06 §4），超過這個門檻代表產生它的行程已經不在了
     # ——OOM、被 kill -9、機器沒了。優雅關機有自己的收尾路徑（chat.py 的 shield）。

@@ -32,6 +32,7 @@ from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
 from core.exceptions import DomainError, ErrorCode
 from core.redis import get_redis, tenant_key
+from core.request_cache import cached
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.identity import TenantRepository
@@ -81,6 +82,10 @@ class QuotaReservation:
     resource: str
     amount: int
     key: str
+    # 預留當下算出的 TTL。**commit/release 要用它補到期時間**，理由見
+    # `QuotaService._keep_expiry`——不帶著走的話，收尾那一刻已經沒有依據算得出來
+    # （期別可能翻頁了，重算會得到新期別的 TTL 而 key 是舊期別的）。
+    ttl_seconds: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +210,9 @@ class QuotaService:
                 used=used_after - amount,
                 resets_at=None if resource in _GAUGES else _period_end(resource, now),
             )
-        return QuotaReservation(tenant_id=tenant_id, resource=resource, amount=amount, key=key)
+        return QuotaReservation(
+            tenant_id=tenant_id, resource=resource, amount=amount, key=key, ttl_seconds=ttl
+        )
 
     def commit(self, reservation: QuotaReservation, *, actual: int | None = None) -> None:
         """把預留校正為實際值（reserve/commit 的第二段）。actual 為 None＝照預留量。"""
@@ -217,6 +224,7 @@ class QuotaService:
             # 期別在生成途中翻頁（舊 key 過期、調整落在新 key 上）才會出現；
             # 負值沒有語意，夾回 0。
             client.incrby(reservation.key, -adjusted)
+        self._keep_expiry(reservation)
 
     def release(self, reservation: QuotaReservation) -> None:
         """整筆歸還（生成失敗、串流結束）。重複 release 不會把額度變成負的送人。"""
@@ -224,6 +232,25 @@ class QuotaService:
         remaining = cast("int", client.decrby(reservation.key, reservation.amount))
         if remaining < 0:
             client.incrby(reservation.key, -remaining)
+        self._keep_expiry(reservation)
+
+    def _keep_expiry(self, reservation: QuotaReservation) -> None:
+        """收尾時確保 key 仍有到期時間（縱深防禦；二次架構審計 F-05）。
+
+        `INCRBY` / `DECRBY` 會**建立**不存在的 key，而建出來的那個沒有 TTL。所以
+        「key 已經不在了，而 commit/release 又把它變回來」的順序會復活一個**永不過期**
+        的計數器——它會一路活到下一次 `correct()`（日結對帳，帶 `ex=`）才被蓋掉，
+        期間那個租戶的額度看起來一直是用掉的。
+
+        `NX`：**只補給沒有 TTL 的 key**。無條件 `EXPIRE` 會把每次收尾都變成續命，
+        月額度的 key 於是永遠不會到期——那是比原問題更糟的方向。
+
+        觸發面很窄（第一輪審計評估的兩條路徑實際上都被擋著：期別 key 帶 +1 天
+        grace TTL，聊天有 120 秒總逾時），剩下的是 Redis 資料遺失類——AOF 沒回放、
+        有人手動 DEL、failover 到一個落後的副本。成本兩行，所以還是做。
+        """
+        # redis-py 的 expire 支援 NX（Redis ≥ 7.0；compose 釘 7.4）。
+        get_redis().expire(reservation.key, reservation.ttl_seconds, nx=True)
 
     def correct(self, tenant_id: uuid.UUID, resource: str, value: int) -> None:
         """對帳用（2A-2b）：把計數器直接擺成事實值。**方向永遠是 DB 蓋 Redis**，
@@ -264,7 +291,24 @@ class QuotaService:
 
     def limits(self, tenant_id: uuid.UUID) -> dict[str, int | None]:
         """這個租戶生效中的限額（plan 預設 → 租戶覆寫）。對帳快照也讀它——
-        歷史報表要知道「當時的上限」。"""
+        歷史報表要知道「當時的上限」。
+
+        **每個請求只查一次**（二次架構審計 F-03）。一則聊天訊息的 `start_turn` 會
+        連呼三次 `check_and_reserve`，每一次都經這裡開一組
+        `tenant_context + unit_of_work`；上傳路徑是兩次。限額在請求中途不會變，
+        那幾趟交易純粹是成本，而它落在 TTFT 的量測路徑上。
+
+        memo 只在請求區塊內生效（`core/request_cache.py`）；Celery task 與管理指令
+        沒有那個邊界，走的還是原本每次查一遍的路徑——那正確，它們的「一次」可能
+        跨越好幾分鐘。
+
+        **回傳的是副本**：memo 存的是同一個 dict，直接交出去的話任何呼叫端的就地
+        修改都會污染本請求後續的每一次查詢。五個 key 的淺拷貝相對於一次 DB 往返
+        是零成本。
+        """
+        return dict(cached(f"quota:limits:{tenant_id}", lambda: self._load_limits(tenant_id)))
+
+    def _load_limits(self, tenant_id: uuid.UUID) -> dict[str, int | None]:
         with tenant_context(tenant_id), unit_of_work():
             tenant = self._tenants.current()
             if tenant is None:

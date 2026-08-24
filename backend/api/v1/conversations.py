@@ -23,7 +23,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query, Response, status
 from fastapi.responses import StreamingResponse
 
-from api.background import spawn
+from api.background import ensure_capacity, spawn
 from api.dependencies.auth import Principal
 from api.dependencies.permissions import RequireScope
 from api.schemas.conversation import (
@@ -202,6 +202,13 @@ async def send_message(
     ——一句話版本：這個 POST 若同時回串流，網路閃斷時 client 分不出單子送出去了沒，
     重送一次就是兩則訊息、兩次生成、兩次帳單。
     """
+    if stream:
+        # 行程級的過載保護（二次架構審計 F-04）。**擋在建立回合之前**：擋在後面的話，
+        # 被拒的請求已經寫了兩則訊息、扣了三種額度，而使用者只拿到一個 429。
+        # 非串流那條路不經這裡——它是同步等待，併發由 uvicorn 自己的 worker 數擋著，
+        # 而它本來就標為技術債（09 §5）。
+        ensure_capacity()
+
     turn = await run_orm(
         _chat.start_turn,
         principal.tenant_id,

@@ -162,6 +162,22 @@ def problem_response(
     )
 
 
+def _retry_after_header(exc: DomainError) -> dict[str, str] | None:
+    """帶了 `retry_after_seconds` 的例外要同時送 `Retry-After` 標頭（RFC 9110 §10.2.3）。
+
+    **在單一出口做，不在各個例外類別做**：這是 details 與標頭之間的一條對映規則，
+    散在各處的話，下一個帶重試時間的例外會忘了送標頭，而症狀是「client 的自動重試
+    沒有生效」——沒有錯誤、沒有 log，只是重試策略退回它自己的預設值。
+
+    涵蓋 `ServerBusyError`（429，二次架構審計 F-04）與 `AccountLockedError`（423，
+    1A-3 起就帶著這個 detail 卻沒有標頭）。值必須是整數秒。
+    """
+    seconds = (exc.details or {}).get("retry_after_seconds")
+    if not isinstance(seconds, int) or isinstance(seconds, bool) or seconds < 0:
+        return None
+    return {"Retry-After": str(seconds)}
+
+
 def _install_problem_schema(app: FastAPI) -> None:
     """把 ``ProblemDetail`` 註冊進 OpenAPI components。
 
@@ -264,6 +280,7 @@ def create_app() -> FastAPI:
             detail=exc.message,
             request_id=request_id,
             extensions={"details": exc.details} if exc.details else None,
+            headers=_retry_after_header(exc),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -358,6 +375,7 @@ def create_app() -> FastAPI:
             request_id=request_id,
         )
 
+    from api.health import router as health_router
     from api.v1.analytics import router as analytics_router
     from api.v1.audit import router as audit_router
     from api.v1.auth import router as auth_router
@@ -368,6 +386,11 @@ def create_app() -> FastAPI:
     from api.v1.tenants import router as tenants_router
     from api.v1.users import router as users_router
 
+    # **不帶 `/api/v1` 前綴**：探測端點屬於基礎設施契約，不是業務 API——版本化的
+    # 是後者。編排器的探測路徑寫在 compose / K8s 的設定裡，跟著 API 版本走的話，
+    # 每次改版都要同步改一份部署設定，而漏改的症狀是「容器一直被判定不健康」。
+    # `include_in_schema=False`（見該 router）：它們也不該出現在給前端的 OpenAPI 裡。
+    app.include_router(health_router)
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(users_router, prefix="/api/v1")
     app.include_router(tenants_router, prefix="/api/v1")
