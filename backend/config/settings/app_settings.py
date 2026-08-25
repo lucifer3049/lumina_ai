@@ -333,6 +333,39 @@ class AppSettings(BaseSettings):
     # timeout_seconds`），等太久等於把可重試的請求變成放棄。
     api_busy_retry_after_seconds: int = 5
 
+    # ── HTTP 頻率限制（09 §1.3、10 §2.1；二次架構審計 F-11＋L3）────
+    #
+    # 這一層擋的不是配額：配額問「這個租戶這一期還有多少額度」（要先認證），
+    # 這裡問「這個來源這一分鐘打了幾次」（必須在認證之前，否則登入端點沒有保護）。
+    #
+    # **總開關預設開**。關掉的正當理由只有一個：某個環境沒有 Redis，而那時整套
+    # 限流本來就會 fail open（見 middleware），關掉只是少寫幾筆 log。
+    rate_limit_enabled: bool = True
+    # 一般端點：正常使用者開一個聊天頁就會打十幾次 API，300/分鐘留了很寬的餘裕。
+    # **待壓測校正**——文件值是起始點（CLAUDE.md 開發流程）。≤0 = 該桶不限流。
+    rate_limit_per_minute: int = 300
+    # 認證端點（`/api/v1/auth/*`）：那裡的每一次請求都在猜密碼或換 token。
+    # 20/分鐘擋得住暴力破解與 L3 的鎖定型 DoS，而正常人一分鐘不會登入 20 次。
+    rate_limit_auth_per_minute: int = 20
+    # 429 的 `Retry-After`（秒）。取「到下一個時窗」的量級——固定時窗之下，
+    # 被擋的人最多等 60 秒就會拿到新額度。
+    rate_limit_retry_after_seconds: int = 60
+    # **是否採信 `X-Forwarded-For`。預設 False，而且這個預設是安全相關的**：
+    # 那個標頭是 client 送的，直接採信等於讓任何人自報假 IP——每個請求換一個，
+    # 限流就完全失效，且它會**安靜地**失效（計數器照樣在動，只是每個 key 都是 1）。
+    # 只有在確定有一個我們控制的反向代理會覆寫它時才開（Phase 4）。
+    rate_limit_trust_proxy_headers: bool = False
+
+    # 終局事件送出之後，SSE 緩衝區還留多久（二次架構審計 L1）。
+    #
+    # 生成期間的 5 分鐘（`core/streams.py` 的 `BUFFER_TTL_SECONDS`）是為了「長回答
+    # 不能中途過期」；收尾之後緩衝區只剩一個用途——**client 在收到 `done` 之前就
+    # 斷線了，重連回來補讀最後幾個事件**，而那只會發生在幾秒內。
+    #
+    # 60 秒是「夠一次重連 + 一點網路抖動」。**調成 0 等於關掉續傳**：斷線的 client
+    # 回來會拿到 409 `RESUME_EXPIRED`，那是把成本問題換成使用者看得見的錯誤。
+    stream_settled_ttl_seconds: int = 60
+
     # 訊息卡在 `streaming` 多久算生成已死（補償掃描標成 interrupted）。
     # 生成本身有 120 秒的牆鐘上限（06 §4），超過這個門檻代表產生它的行程已經不在了
     # ——OOM、被 kill -9、機器沒了。優雅關機有自己的收尾路徑（chat.py 的 shield）。

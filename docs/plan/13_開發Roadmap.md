@@ -386,10 +386,19 @@ stream_chat／1D-3b PromptBuilder／1D-4a 端點與生成／1D-4b resume 與 sto
 
 **關機演練的涵蓋範圍要說清楚**：`make deploy-shutdown-drill` 驗到的是「SIGTERM 傳得到應用（看得到 lifespan 收尾）、容器在寬限期內自己退出」。**「drain 真的等了進行中的生成」不在其中**——那由 `tests/unit/test_background_drain.py` 涵蓋（等待、逾時、取消、上限值四條），而端到端把兩者串起來需要一個可控延遲的 provider，MockProvider 沒有這個旋鈕。
 
+**P2 四項於 2026-08-25 落地**（審計的建議至此全數處理完畢）：
+
+| 項目 | 內容 | 落地 |
+|------|------|------|
+| **F-07：ChatService 是交會點** | 814 行、建構子七個協作者、全 repo 唯一同時 import `ai/`／`rag/`／`platform/` 的地方（全 services 跨 context import 14 條、5 條在此檔）。時機的判斷是「**3A 前**小幅切分」——Tool 系統會把工具定義、可用性判斷與 schema 全部加進「組請求」那一段，而那正是最長的部分 | 切出 `TurnBudget`（118 行：三種資源的預留與結算，含「被擋時自我清理」）與 `TurnComposer`（191 行：system prompt → 歷史 → 檢索 → context）。chat.py **814 → 665 行**，不再 import `rag.pipeline` 與 `ai.prompts`。`compose()` **收欄位而不是收 `TurnStarted`**——反過來 import 會讓兩個模組互相依賴。**既有注入口全部保留**：F-07 是重構不是改介面，換掉注入口會讓「這次有沒有改變行為」無從判斷 |
+| **F-11＋L3：HTTP rate limit** | 之前只有三支 middleware。L3：登入失敗計數以 `tenant+email` 為鍵且每次失敗重設 TTL，所以知道 slug 與 email 的人可以**持續鎖住任何帳號** | `RateLimitMiddleware`（per-IP 固定時窗）。**兩個桶**：認證端點 20/分（擋暴力破解與 L3 的鎖定型 DoS）、其餘 300/分。**預設不採信 `X-Forwarded-For`**——那是 client 送的標頭，採信等於讓任何人自報假 IP，而限流會**安靜地**失效（計數器照樣在動，只是每個 key 都是 1）。**fail open**（與系統其他地方相反，刻意）：限流是保護機制不是安全邊界，讓它在 Redis 抖動時關掉整個網站，是用一個確定的故障換一個可能的攻擊。掛在追蹤 context **內**、body 上限**外**，由 `test_middleware_order.py` 釘住 |
+| **L1：`StreamBuffer.drop()` 沒有呼叫端** | docstring 從 1D-4b 起就寫著這是「200 併發下的記憶體差別」，而它一個呼叫端都沒有——每條串流的完整回答都在 Redis 躺滿 5 分鐘，其中 4 分多鐘沒有讀者 | 新增 `settle()`：終局事件之後把 TTL 縮到 `stream_settled_ttl_seconds`（預設 60）。**縮短而不是刪掉**——`drop()` 會把「斷線後回來續傳」變成 409 `RESUME_EXPIRED`，那是把成本問題換成使用者看得見的錯誤。`drop()` 留著給「失敗重跑」用（entry id 必須遞增）。**必須在最後一個 `append()` 之後**呼叫（append 每次都把 TTL 推回 5 分鐘），由測試釘住 |
+| **F-12：評測租戶常駐開發庫** | `lumina-eval` 的語料跑完沒有人清 | `manage.py purge_eval_knowledge` ＋ `make eval-clean`（`EVAL_ARGS=--dry-run` 可先看）。**只刪 `eval-*` 知識庫、不刪租戶**（下次評測還要用它）；級聯走 P0-2 的 `DeletedKnowledgePurgeService`，不寫第二份順序邏輯。**實跑清掉 1,499 個 chunk**——正是審計引用的數字 |
+
 **尚未處理**：
 
-- **P2**：F-07 ChatService 切出 TurnBudget／TurnComposer（3A 開工前）／F-11＋L3 rate limit middleware（含 per-IP 維度）／L1 串流結束後縮短緩衝 TTL／F-12 `make eval-clean`。
-- **F-01 的餘項**（本次刻意不做，屬 Phase 4）：反向代理／TLS、多 replica 與滾動更新、secrets manager、`api` 容器不該帶 owner 憑證（它只是因為 `base.py` 在 import 期 `_required_env("DB_ADMIN_PASSWORD")` 而必須帶著）。
+- **F-01 的餘項，全部屬 Phase 4**：反向代理／TLS 終結、多 replica 與滾動更新、secrets manager、以及 **`api` 容器不該帶 owner 資料庫憑證**——它不需要 DDL 權限，只是因為 `config/settings/base.py` 在 import 期無條件 `_required_env("DB_ADMIN_PASSWORD")` 而必須帶著。拆法（讓 admin alias 變成可選、或分成兩份 settings）留到 Phase 4 與反向代理一起做，本次刻意不動：它要改的是設定結構，而那會牽動 migration／pytest 建庫兩條路徑。
+- **`rate_limit_per_minute` / `api_max_concurrent_generations` 的值待壓測校正**——文件值是起始點（§1.2）。
 - 兩輪都**明確不建議**的事：Microservices、CQRS、`core/interfaces/` 抽象層、platform 拆分。
 
 

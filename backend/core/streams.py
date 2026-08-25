@@ -25,13 +25,31 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
+from config.settings.app_settings import get_app_settings
 from core.redis import get_async_redis, tenant_key
 
-__all__ = ["BUFFER_TTL_SECONDS", "StreamBuffer", "StreamEvent"]
+__all__ = ["BUFFER_TTL_SECONDS", "StreamBuffer", "StreamEvent", "settled_ttl_seconds"]
 
 # 09 §3.2：resume buffer TTL 5 分鐘。它同時是成本上限——每一條串流都在 Redis 留一份
 # 完整回答，而它的用途只有「斷線後幾秒內接回去」。
 BUFFER_TTL_SECONDS = 300
+
+
+def settled_ttl_seconds() -> int:
+    """**收尾之後**的緩衝區壽命（二次架構審計 L1）。
+
+    `BUFFER_TTL_SECONDS` 的 5 分鐘是為了「生成還在跑」那段時間——一條長回答不能在
+    中途過期。可是終局事件送出之後，緩衝區剩下的用途只有一個：**client 在收到
+    `done` 之前就斷線了，重連回來補讀最後那幾個事件**。那件事只會發生在幾秒內。
+
+    於是每一條串流的完整回答都在 Redis 躺滿 5 分鐘，而它 4 分多鐘都沒有讀者。
+    `StreamBuffer.drop()` 的 docstring 從 1D-4b 起就寫著這是「200 併發下的記憶體
+    差別」，但**它一個呼叫端都沒有**。
+
+    **縮短而不是刪掉**：直接 `drop()` 會把「斷線後回來續傳」變成 409
+    `RESUME_EXPIRED`——那是把一個成本問題換成一個使用者看得見的錯誤。
+    """
+    return get_app_settings().stream_settled_ttl_seconds
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,8 +152,32 @@ class StreamBuffer:
     async def ttl_seconds(self) -> int:
         return int(await get_async_redis().ttl(self.key))
 
+    async def settle(self) -> None:
+        """終局事件送出之後，把緩衝區的壽命縮到 `settled_ttl_seconds()`。
+
+        **一定要在最後一個 `append()` 之後呼叫**：`append` 每次都把 TTL 重設回
+        `BUFFER_TTL_SECONDS`（那是它該做的——長回答不能中途過期），所以順序反過來
+        就等於沒做。呼叫端是 `ChatService._complete` / `_fail`，兩者都在送出
+        `done` / `error` 之後。
+
+        **stop 旗標一起縮**：它與緩衝區同生共死，留著一個沒有緩衝區的旗標只會讓
+        下一次的 `stop_requested()` 多一次 round trip。
+        """
+        ttl = settled_ttl_seconds()
+        client = get_async_redis()
+        async with client.pipeline(transaction=False) as pipe:
+            pipe.expire(self.key, ttl)
+            pipe.expire(self._stop_key, ttl)
+            await pipe.execute()
+
     async def drop(self) -> None:
-        """正常結束後主動清掉，不必等 TTL——那是 200 併發下的記憶體差別。"""
+        """整個刪掉。
+
+        **正常收尾走的是 `settle()` 不是這裡**：刪掉會讓「斷線後回來續傳」變成 409。
+        這支留著是給「失敗重跑」用的——重跑前必須先刪，否則 entry id 不遞增（見本
+        類別 docstring），由 tests/integration/test_stream_buffer.py 的
+        `TestRegeneration` 守著。
+        """
         await get_async_redis().delete(self.key)
 
 

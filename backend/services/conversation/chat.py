@@ -33,15 +33,12 @@ from typing import Any
 
 from ai.gateway import AIGateway, build_gateway
 from ai.gateway.chat import (
-    ChatMessage,
-    ChatRequest,
     DoneDelta,
     ErrorDelta,
     TextDelta,
     ToolCallDelta,
     UsageDelta,
 )
-from ai.prompts import ContextChunk, build_context_block, build_user_turn
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
 from core.db import run_orm
@@ -49,46 +46,24 @@ from core.exceptions import DomainError, ErrorCode, NotFoundError, ProviderError
 from core.streams import StreamBuffer
 from core.tenant import tenant_context
 from core.uow import unit_of_work
-from etl.tokens import estimate_tokens
-from rag.citation import assemble_citations, marker_for
-from rag.pipeline import build_search_query
-from rag.retrievers.vector import RetrievedChunk
+from rag.citation import assemble_citations
 from repositories.conversation import ConversationRepository, MessageRepository
-from services.ai.prompts import SYSTEM_RAG_PROMPT_KEY, PromptService
+from services.ai.prompts import PromptService
+from services.conversation.budget import TurnBudget
+from services.conversation.composer import PreparedTurn, TurnComposer
 from services.conversation.conversations import MessageView, message_view
-from services.platform.quota import QuotaExceededError, QuotaReservation, QuotaService
+from services.platform.quota import QuotaReservation, QuotaService
 from services.platform.usage import UsageEvent, UsageService
-from services.rag.retrieval import RetrievalOutcome, RetrievalService
+from services.rag.retrieval import RetrievalService
 
 logger = get_logger(__name__)
 
 __all__ = ["ChatService", "TurnStarted"]
 
-# 06 §5 的記憶視窗：近 10 輪。一問一答算兩則，所以取 20 則。
-#
-# 摘要壓縮（超出視窗的輪次併進 summary）屬 Phase 3C——在那之前，一場很長的對話會
-# 直接失去更早的內容。這是**刻意的**：沒有摘要時的正確行為是「記得最近的」，而不是
-# 「把全部塞進 context 直到爆掉」。
-HISTORY_WINDOW_MESSAGES = 20
-
 # 中止旗標的輪詢間隔（1D-4b）。**不是每個 token 問一次**：那是每個 token 一趟 Redis
 # 往返，而 token 是以百計的。0.2 秒是「使用者按下停止到真的停下來」的上限，那遠低於
 # 人的感知門檻，而省下來的是幾百趟往返。
 STOP_POLL_SECONDS = 0.2
-
-
-def _token_reserve_for(question: str) -> int:
-    """開場要預留多少 token 額度（reserve/commit 的 reserve 值）。
-
-    **設定值 + 這個問題本身的估計量**。設定值（`quota_token_reserve_estimate`）涵蓋的
-    是「答案 + context」那一段——它們的長度要到生成結束才知道，只能先估。但問題本身
-    的長度**現在就知道**，而它可以差好幾個量級：一則貼滿的訊息（schema 上限 32,000
-    字元）光是問題就三萬多 token，用一個固定的 2000 去擋線等於沒擋——真實用量要等
-    收尾 commit 才追認，那時該擋的那幾則已經送出去了。
-
-    高估的代價只有「月底最後幾則被提早擋下」，而低估的代價是超用之後才發現。
-    """
-    return get_app_settings().quota_token_reserve_estimate + estimate_tokens(question)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,18 +87,6 @@ class TurnStarted:
     stream_reservation: QuotaReservation | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _PreparedTurn:
-    """送出去之前組好的一切。`chunks` 留到收尾時比對引用（06 §3.3）。"""
-
-    request: ChatRequest
-    prompt_version: int
-    chunks: tuple[RetrievedChunk, ...]
-    retrieved: bool
-    # 哪幾個增強步驟被跳過了（2B-3）——一路走到 `usage.rag.degraded`。
-    degraded: tuple[str, ...] = ()
-
-
 class ChatService:
     def __init__(
         self,
@@ -135,13 +98,19 @@ class ChatService:
         gateway: AIGateway | None = None,
         usage: UsageService | None = None,
         quota: QuotaService | None = None,
+        budget: TurnBudget | None = None,
+        composer: TurnComposer | None = None,
     ) -> None:
         self._conversations = conversations or ConversationRepository()
         self._messages = messages or MessageRepository()
-        self._prompts = prompts or PromptService()
-        self._retrieval = retrieval or RetrievalService()
         self._usage = usage or UsageService()
-        self._quota = quota or QuotaService()
+        # 額度與組請求各自切出去了（二次架構審計 F-07）。**個別協作者的注入口留著**：
+        # 既有測試注入的是 `prompts` / `retrieval` / `quota`，而 F-07 是重構不是改
+        # 介面——把注入口換掉會讓「這次改動有沒有改變行為」變得無從判斷。
+        self._budget = budget or TurnBudget(quota=quota)
+        self._composer = composer or TurnComposer(
+            prompts=prompts, retrieval=retrieval, messages=self._messages
+        )
         # Gateway 惰性建立，理由同 `RetrievalService`：`build_gateway()` 會解析 provider
         # 名稱，而缺金鑰時直接 raise——建構 service 本身不該因此失敗。
         self._gateway = gateway
@@ -174,36 +143,16 @@ class ChatService:
 
         # 配額擋線（2A-2a）：在**建立任何訊息之前**。擋在後面的話，429 的請求會留下
         # 「有問題、永遠沒有回答」的半個回合，而它還吃掉了一則訊息額度。
-        # 任何一關被擋就把前面預留的全部歸還——被擋的請求不得消耗額度。
-        reservations: list[QuotaReservation] = []
-        token_reservation: QuotaReservation | None = None
-        stream_reservation: QuotaReservation | None = None
-        try:
-            if r := self._quota.check_and_reserve(tenant_id, "messages_day", 1):
-                reservations.append(r)
-            token_reservation = self._quota.check_and_reserve(
-                tenant_id, "tokens_month", _token_reserve_for(question)
-            )
-            if token_reservation:
-                reservations.append(token_reservation)
-            stream_reservation = self._quota.check_and_reserve(tenant_id, "streams", 1)
-            if stream_reservation:
-                reservations.append(stream_reservation)
-        except QuotaExceededError:
-            for reservation in reservations:
-                self._quota.release(reservation)
-            raise
+        # 被擋時的自我清理在 `TurnBudget.reserve` 裡（見該處）。
+        reserved = self._budget.reserve(tenant_id, question=question)
 
         try:
             turn = self._create_turn(tenant_id, user_id, conversation_id, question=question)
         except Exception:
             # DB 那一步失敗（對話不存在、寫入錯誤）不能吃掉額度。
-            for reservation in reservations:
-                self._quota.release(reservation)
+            self._budget.release(reserved)
             raise
-        return replace(
-            turn, token_reservation=token_reservation, stream_reservation=stream_reservation
-        )
+        return replace(turn, token_reservation=reserved.tokens, stream_reservation=reserved.stream)
 
     def _create_turn(
         self,
@@ -256,8 +205,7 @@ class ChatService:
         try:
             await self._generate(tenant_id, turn)
         finally:
-            if turn.stream_reservation is not None:
-                await run_orm(self._quota.release, turn.stream_reservation)
+            await self._budget.release_stream(turn.stream_reservation)
 
     async def _generate(self, tenant_id: uuid.UUID, turn: TurnStarted) -> None:
         """把每一段寫進緩衝區，最後收尾持久化。
@@ -271,10 +219,18 @@ class ChatService:
         usage: dict[str, Any] = {}
         model = turn.model
         prompt_version: int | None = None
-        prepared: _PreparedTurn | None = None
+        prepared: PreparedTurn | None = None
 
         try:
-            prepared = await self._prepare(tenant_id, turn)
+            prepared = await self._composer.compose(
+                tenant_id,
+                conversation_id=turn.conversation_id,
+                message_id=turn.message_id,
+                user_message_id=turn.user_message_id,
+                question=turn.question,
+                kb_ids=turn.kb_ids,
+                model=turn.model,
+            )
             request, prompt_version = prepared.request, prepared.prompt_version
             await buffer.append(
                 "meta",
@@ -422,20 +378,6 @@ class ChatService:
                 cause=type(exc).__name__,
             )
 
-    async def _settle_token_quota(self, turn: TurnStarted, usage: dict[str, Any]) -> None:
-        """token 額度的第二段（2A-2a）：有實際用量就 commit 校正，沒有就整筆歸還。
-
-        不歸還的話，provider 一個字都沒吐的失敗回合也吃掉 2000 的預留量——
-        連續幾次失敗之後，額度被「失敗」吃光，而 usage_logs 裡一筆帳都沒有。
-        """
-        if turn.token_reservation is None:
-            return
-        if usage:
-            actual = int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0)
-            await run_orm(self._quota.commit, turn.token_reservation, actual=actual)
-        else:
-            await run_orm(self._quota.release, turn.token_reservation)
-
     def require_readable(
         self,
         tenant_id: uuid.UUID,
@@ -484,95 +426,6 @@ class ChatService:
 
     # ── 內部 ────────────────────────────────────────────────────
 
-    async def _prepare(self, tenant_id: uuid.UUID, turn: TurnStarted) -> _PreparedTurn:
-        """system prompt（1D-3b）+ 近 N 輪原文 + 檢索到的 context（1D-5）→ 請求。
-
-        歷史從 DB 讀而不是由呼叫端傳：那是唯一一份真相，而「前端送什麼就用什麼」等於
-        讓 client 決定 LLM 看得到哪些內容——它可以偽造一段從未發生過的對話。
-
-        **組裝順序是 06 §3 的 system → memory → context → query**，而 context 與問題
-        都在最後那一則 `user` 訊息裡（10 §5 的指令／資料分域，見 `build_user_turn`）。
-        """
-        rendered = await run_orm(self._prompts.render, tenant_id, key=SYSTEM_RAG_PROMPT_KEY)
-        history, previous_questions = await run_orm(self._history, tenant_id, turn)
-        outcome = await self._retrieve(tenant_id, turn, previous_questions)
-        chunks = outcome.chunks
-
-        context = ""
-        if chunks:
-            context = build_context_block(
-                [
-                    ContextChunk(
-                        marker=marker_for(index),
-                        text=chunk.content,
-                        doc_name=chunk.document_name,
-                        page=chunk.page,
-                        heading_path=chunk.heading_path,
-                    )
-                    for index, chunk in enumerate(chunks)
-                ]
-            )
-
-        messages = [
-            ChatMessage(role="system", content=rendered.system),
-            *history,
-            ChatMessage(role="user", content=build_user_turn(turn.question, context)),
-        ]
-        return _PreparedTurn(
-            request=ChatRequest(messages=messages, model=turn.model),
-            prompt_version=rendered.version,
-            chunks=tuple(chunks),
-            retrieved=bool(turn.kb_ids),
-            degraded=outcome.degraded,
-        )
-
-    async def _retrieve(
-        self, tenant_id: uuid.UUID, turn: TurnStarted, previous_questions: Sequence[str]
-    ) -> RetrievalOutcome:
-        """這一輪的 context（06 §3）。沒掛 KB 就整段跳過——06 §9 的純閒聊路徑不付
-        RAG 成本，而沒有 KB 時檢索一定查不到任何東西。
-
-        回的是 `RetrievalOutcome` 而不是清單（2B-3）：降級標記要跟著走到
-        `usage.rag.degraded`，而把它掛在 service 的 instance 上會在併發請求之間外洩
-        ——這個 service 是跨請求共用的。
-        """
-        if not turn.kb_ids:
-            return RetrievalOutcome(chunks=[])
-
-        params = await run_orm(self._retrieval.params_for, tenant_id, turn.kb_ids)
-        query = build_search_query(
-            turn.question,
-            previous_questions=previous_questions,
-            history_turns=params.query_history_turns,
-        )
-        return await run_orm(
-            self._retrieval.retrieve_for_chat, tenant_id, kb_ids=turn.kb_ids, query=query
-        )
-
-    def _history(
-        self, tenant_id: uuid.UUID, turn: TurnStarted
-    ) -> tuple[list[ChatMessage], list[str]]:
-        """近 N 輪 → (要送給模型的歷史, 先前的問題)。
-
-        **這一輪的問題不在歷史裡**：它與 context 一起組成最後那則 user 訊息
-        （`_prepare`），留在歷史裡會讓同一個問題出現兩次。還在生成的那一則也跳過
-        ——它的內容是空的。
-
-        先前的問題另外回傳，給檢索用（`build_search_query`）：「那病假呢？」單獨拿去
-        搜命中的是一組無關內容，而模型那邊本來就看得到歷史，不需要改寫過的問句。
-        """
-        with tenant_context(tenant_id), unit_of_work():
-            rows = self._messages.for_conversation(
-                turn.conversation_id, limit=HISTORY_WINDOW_MESSAGES
-            )
-
-        skip = {turn.message_id, turn.user_message_id}
-        kept = [row for row in rows if row.content and uuid.UUID(str(row.id)) not in skip]
-        return (
-            [ChatMessage(role=_role_of(row.role), content=row.content) for row in kept],
-            [str(row.content) for row in kept if row.role == "user"],
-        )
-
     async def _complete(
         self,
         buffer: StreamBuffer,
@@ -584,7 +437,7 @@ class ChatService:
         usage: dict[str, Any],
         model: str,
         prompt_version: int | None,
-        prepared: _PreparedTurn | None,
+        prepared: PreparedTurn | None,
         status: str = "completed",
     ) -> None:
         """正常收尾。`status` 只有中止時不是 `completed`——那時 `finish_reason` 是
@@ -621,11 +474,15 @@ class ChatService:
                     conversation_id=turn.conversation_id,
                 ),
             )
-        await self._settle_token_quota(turn, usage)
+        await self._budget.settle_tokens(turn.token_reservation, usage)
         await self._emit_citations(buffer, prepared, citations)
         await buffer.append(
             "done", {"message_id": str(turn.message_id), "finish_reason": finish_reason}
         )
+        # 終局事件已送出——把緩衝區的壽命從 5 分鐘縮到 `stream_settled_ttl_seconds`
+        # （二次架構審計 L1）。**必須在最後一個 append 之後**：append 每次都把 TTL
+        # 重設回 5 分鐘。
+        await buffer.settle()
         logger.info(
             "chat_turn_completed",
             message_id=str(turn.message_id),
@@ -650,7 +507,7 @@ class ChatService:
         usage: dict[str, Any],
         model: str,
         prompt_version: int | None,
-        prepared: _PreparedTurn | None = None,
+        prepared: PreparedTurn | None = None,
         cause: str | None = None,
     ) -> None:
         """收尾：**先持久化再送事件**。
@@ -675,9 +532,12 @@ class ChatService:
             citations=citations,
             error={"code": str(code), "cause": cause} if cause else {"code": str(code)},
         )
-        await self._settle_token_quota(turn, usage)
+        await self._budget.settle_tokens(turn.token_reservation, usage)
         await self._emit_citations(buffer, prepared, citations)
         await buffer.append("error", {"code": str(code), "title": message, "retryable": retryable})
+        # 同 `_complete`：終局事件之後縮短緩衝區壽命（L1）。失敗的回合同樣可能有
+        # 一個正在重連的 client——它要看得到那則 error，而不是一個 409。
+        await buffer.settle()
         logger.warning(
             "chat_turn_failed",
             message_id=str(turn.message_id),
@@ -687,7 +547,7 @@ class ChatService:
         )
 
     def _citations(
-        self, answer: str, prepared: _PreparedTurn | None, *, message_id: uuid.UUID
+        self, answer: str, prepared: PreparedTurn | None, *, message_id: uuid.UUID
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         """回答 + 本輪 context → 驗證過的引用，以及**這一輪的三個數字**（06 §3.3）。
 
@@ -730,7 +590,7 @@ class ChatService:
     async def _emit_citations(
         self,
         buffer: StreamBuffer,
-        prepared: _PreparedTurn | None,
+        prepared: PreparedTurn | None,
         citations: list[dict[str, Any]],
     ) -> None:
         """`citations` 事件（09 §3.2）。**一定在 `done`／`error` 之前**——那兩個是
@@ -803,12 +663,3 @@ def _with_rag_stats(usage: dict[str, Any], stats: dict[str, Any] | None) -> dict
     if stats is None:
         return usage
     return {**usage, "rag": stats}
-
-
-def _role_of(role: str) -> Any:
-    """DB 的 role 字串 → `ChatMessage` 的 role。
-
-    未知的值退成 `user`：那比讓整次生成因為一個沒見過的字串而失敗好，而 05 §3.4 的
-    四個值（user/assistant/tool/system）本來就涵蓋得了現在的寫入路徑。
-    """
-    return role if role in {"system", "user", "assistant", "tool"} else "user"

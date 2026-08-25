@@ -46,6 +46,18 @@ if _worker := os.environ.get("PYTEST_XDIST_WORKER"):
         )
     os.environ["REDIS_DB"] = str(int(_worker.removeprefix("gw")) + 1)
 
+# **HTTP 頻率限制在測試裡預設關掉**（二次架構審計 F-11）。同樣必須早於 import：
+# `get_app_settings()` 帶 lru_cache。
+#
+# 理由不是「限流會擋到測試」這麼簡單——它會**隨機**擋到測試：桶是 per-IP 的，而
+# ASGITransport 底下每一條 api 測試都是同一個 127.0.0.1；認證桶是 20/分鐘，而幾乎
+# 每條 api 測試都先登入一次。於是同一份程式碼會依「這一分鐘剛好跑了幾條測試」而
+# 紅或綠，看起來像 flaky，實際上是限流正常運作。
+#
+# 要驗限流本身的測試自己把它打開（tests/api/test_rate_limit.py），那也讓「這條
+# 測試在驗限流」這件事在檔案裡看得見。
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
+
 import pytest
 from django.db import connections
 from pytest_django import DjangoDbBlocker

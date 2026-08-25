@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.utils import timezone
 
@@ -88,15 +88,23 @@ class DeletedKnowledgePurgeService:
         self._etl_jobs = etl_jobs or EtlJobRepository()
         self._directory = directory or TenantDirectoryRepository()
 
-    def purge_for_tenant(self, tenant_id: uuid.UUID) -> KnowledgePurgeCounts:
+    def purge_for_tenant(
+        self, tenant_id: uuid.UUID, *, deleted_before: datetime | None = None
+    ) -> KnowledgePurgeCounts:
         """清一個租戶的一批；回傳刪掉的量。
 
         **一批就好，不迴圈到清空**：批次上限（`retention_purge_batch_size`）的目的
         是不要讓單一租戶的積欠把整輪維運窗吃光，在這裡加一個 while 等於把上限抵銷掉。
         沒清完的下一輪繼續——job 每天都跑，而這些資料已經在保留窗外躺了 30 天。
+
+        ``deleted_before`` 覆寫保留窗，**只給維運指令用**（`purge_eval_knowledge`）。
+        排程一律不傳，走 `retention_purge_after_days`——保留窗的意義是「使用者可能
+        後悔」，讓排程能繞過它等於讓那個窗變成裝飾。
         """
         settings = get_app_settings()
-        cutoff = timezone.now() - timedelta(days=settings.retention_purge_after_days)
+        cutoff = deleted_before or (
+            timezone.now() - timedelta(days=settings.retention_purge_after_days)
+        )
         limit = settings.retention_purge_batch_size
 
         with tenant_context(tenant_id), unit_of_work():

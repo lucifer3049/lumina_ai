@@ -216,6 +216,7 @@ def create_app() -> FastAPI:
     # 也要 import 本模組的 `problem_response`。
     from api.middleware.audit import AuditMiddleware
     from api.middleware.body_limit import BodySizeLimitMiddleware
+    from api.middleware.rate_limit import RateLimitMiddleware
 
     # **順序有意義**：先掛的在內層（Starlette 由後往前包）。稽核要讀租戶
     # contextvar，而清掉它的是 RequestContextMiddleware 的 finally——稽核必須
@@ -225,6 +226,11 @@ def create_app() -> FastAPI:
     # （所以不必進稽核那一層），但它仍然要有 request_id 與一筆存取日誌——413 若在
     # 日誌上完全看不見，「使用者說傳不上去」就查不出是被哪一道擋的。
     app.add_middleware(BodySizeLimitMiddleware)
+    # 頻率限制在 body 上限**外**、追蹤 context **內**（二次架構審計 F-11）：
+    # 被擋下的請求連 Content-Length 都不必看，但它仍然要有 request_id 與一筆存取
+    # 日誌——429 若在日誌上完全看不見，「使用者說一直被擋」就查不出是哪一道擋的。
+    # 由 tests/unit/test_middleware_order.py 釘住，不是只寫在這裡。
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestContextMiddleware)
 
     @app.exception_handler(DomainError)

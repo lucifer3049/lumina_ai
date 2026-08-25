@@ -109,7 +109,8 @@ DEMO_PASSWORD ?= demo-password-1234
 .PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys migrate \
         dev api api-pinned start stop restart status demo-tenant app-logs \
         test test-unit test-integration test-api smoke verify-infra verify-provider \
-        tei-up tei-down tei-logs \
+        tei-up tei-down tei-logs eval-sample eval-retrieval eval-clean \
+        deploy-up deploy-migrate deploy-down deploy-logs deploy-shutdown-drill \
         image lock-check lint lint-backend ci-status \
         fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
         loadtest-report clean
@@ -431,6 +432,12 @@ eval-sample: ## 重新取樣評測資料（SOURCE=drcd|docs；會使既有 basel
 eval-retrieval: ## 離線檢索評測（DATASET=drcd|handwritten MODE=vector|hybrid|hybrid+rerank）
 	$(UV_RUN) python scripts/eval_retrieval.py --dataset $(DATASET) --mode $(MODE) \
 		--tenant $(EVAL_TENANT) $(EVAL_ARGS)
+
+# 評測語料在開發庫裡常駐（2B-4 時 1,499 個 chunk 加同樣數量的向量），跑完沒有人清
+# ——這是開發環境衛生，不是正確性問題（二次架構審計 F-12）。**只刪 eval-* 知識庫，
+# 不刪租戶**：下一次評測還要用它。加 EVAL_ARGS=--dry-run 先看會刪什麼。
+eval-clean: ## 清掉評測租戶的 eval-* 知識庫（語料、chunk、向量、物件）
+	$(UV_RUN) python manage.py purge_eval_knowledge --tenant $(EVAL_TENANT) $(EVAL_ARGS)
 
 # 只挑 test_infra_*.py（-k 會比對 module 名，不用 shell glob——glob 會在 repo 根展開，
 # 而 pytest 的工作目錄是 backend/，路徑對不上）。與 test-integration 的差別在此：
