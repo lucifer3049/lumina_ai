@@ -52,6 +52,7 @@ def _kb_out(view: KnowledgeBaseView) -> KnowledgeBaseOut:
         description=view.description,
         status=view.status,
         document_count=view.document_count,
+        config=view.config,
     )
 
 
@@ -98,6 +99,7 @@ async def create_knowledge_base(
         principal.tenant_id,
         name=payload.name,
         description=payload.description,
+        config=payload.config,
     )
     return _kb_out(view)
 
@@ -116,12 +118,19 @@ async def update_knowledge_base(
     payload: KnowledgeBaseUpdateIn,
     principal: Annotated[Principal, Depends(RequireScope("knowledge:admin"))],
 ) -> KnowledgeBaseOut:
+    """名稱、描述與 **KB 級參數覆寫**（09 §2.3 的「設定（chunk、檢索參數）」，2B-5）。
+
+    ``knowledge:admin`` 而不是 ``write``：改檢索參數改變的是**所有人**問到的答案，
+    破壞範圍等同改整個知識庫的行為——而 Editor 的日常（上傳一份文件）破壞範圍限於
+    單一文件且是軟刪除。
+    """
     view = await run_orm(
         _knowledge_bases.update,
         principal.tenant_id,
         kb_id,
         name=payload.name,
         description=payload.description,
+        config=payload.config,
     )
     return _kb_out(view)
 

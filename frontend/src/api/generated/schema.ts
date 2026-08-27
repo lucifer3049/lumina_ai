@@ -321,7 +321,14 @@ export interface paths {
         delete: operations["knowledge_bases_delete"];
         options?: never;
         head?: never;
-        /** Update Knowledge Base */
+        /**
+         * Update Knowledge Base
+         * @description 名稱、描述與 **KB 級參數覆寫**（09 §2.3 的「設定（chunk、檢索參數）」，2B-5）。
+         *
+         *     ``knowledge:admin`` 而不是 ``write``：改檢索參數改變的是**所有人**問到的答案，
+         *     破壞範圍等同改整個知識庫的行為——而 Editor 的日常（上傳一份文件）破壞範圍限於
+         *     單一文件且是軟刪除。
+         */
         patch: operations["knowledge_bases_update"];
         trace?: never;
     };
@@ -704,6 +711,10 @@ export interface components {
         };
         /** KnowledgeBaseCreateIn */
         KnowledgeBaseCreateIn: {
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Description
              * @default
@@ -719,6 +730,10 @@ export interface components {
         };
         /** KnowledgeBaseOut */
         KnowledgeBaseOut: {
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            };
             /** Description */
             description: string;
             /** Document Count */
@@ -738,6 +753,10 @@ export interface components {
          * @description ``None`` = 這次沒給（部分更新），不是「設為空」。
          */
         KnowledgeBaseUpdateIn: {
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            } | null;
             /** Description */
             description?: string | null;
             /** Name */
@@ -944,8 +963,71 @@ export interface components {
         };
         /** RagQueryOut */
         RagQueryOut: {
+            /** Degraded */
+            degraded?: string[];
             /** Items */
             items: components["schemas"]["RetrievedChunkOut"][];
+            trace?: components["schemas"]["RagTraceOut"] | null;
+        };
+        /** RagRerankOut */
+        RagRerankOut: {
+            /** Applied */
+            applied: boolean;
+            /** Candidate Count */
+            candidate_count: number;
+            /** Elapsed Ms */
+            elapsed_ms: number;
+            /** Kept Count */
+            kept_count: number;
+            /** Scores */
+            scores: number[];
+            /** Threshold */
+            threshold: number;
+        };
+        /**
+         * RagRouteOut
+         * @description 一條檢索路在**融合之前**的樣子（06 §7 的「候選數」、`rag_trace` 的一部分）。
+         *
+         *     `top_scores` 是這一路自己尺度上的分數。融合之後 `items[].score` 是 RRF 的名次
+         *     倒數和（第一名 ≈ 0.016），原本的餘弦相似度就此消失——而「向量覺得這一段有多像」
+         *     正是判斷「檢索爛還是排序爛」的第一個數字。
+         */
+        RagRouteOut: {
+            /** Abstained */
+            abstained: boolean;
+            /** Candidate Count */
+            candidate_count: number;
+            /** Elapsed Ms */
+            elapsed_ms: number;
+            /** Name */
+            name: string;
+            /** Top Scores */
+            top_scores: number[];
+        };
+        /**
+         * RagTraceOut
+         * @description 這一趟檢索的過程（06 §7 的 `rag_trace`，2B-5）。
+         *
+         *     **這個端點存在的理由是「看檢索到底準不準」**（見 `api/v1/rag.py`）。只回一串
+         *     命中的話，看得到結果、看不到過程——而「為什麼是這個順序」正是要看的東西。
+         *
+         *     **不帶 chunk 內文**：內文已經在 ``items`` 裡了，再帶一份會讓回應大小隨 top_k
+         *     翻倍，而那一份沒有任何新資訊。
+         */
+        RagTraceOut: {
+            /** Elapsed Ms */
+            elapsed_ms: number;
+            /** Fused Count */
+            fused_count: number;
+            /** Mode */
+            mode: string;
+            rerank?: components["schemas"]["RagRerankOut"] | null;
+            /** Routes */
+            routes: components["schemas"]["RagRouteOut"][];
+            /** Stages */
+            stages: {
+                [key: string]: number;
+            };
         };
         /**
          * RetrievedChunkOut

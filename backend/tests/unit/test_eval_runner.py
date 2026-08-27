@@ -99,6 +99,21 @@ def _report(runner: ModuleType, tiny_dataset: tuple[Any, Any], **overrides: Any)
         },
     }
     kwargs.update(overrides)
+    # 2B-5 起 rerank 模式的報告**必須**逐題帶著分數（2B-4 結案缺口①：沒有分布就
+    # 裁決不了絕對門檻）。這幾條測試看的是別的東西，補一組合法的分數讓它們過關
+    # ——分數本身的規則在 `test_eval_rerank_scores.py`。
+    if str(kwargs["mode"]).endswith("+rerank") and "per_question" not in kwargs:
+        kwargs["per_question"] = [
+            {
+                "question_id": outcome.question_id,
+                "hit_rank": None,
+                "retrieved": list(outcome.retrieved),
+                "retrieved_chunk_ids": [],
+                "relevant": sorted(outcome.relevant),
+                "scores": [0.9 - index / 10 for index in range(len(outcome.retrieved))],
+            }
+            for outcome in kwargs["outcomes"]
+        ]
     report = runner.build_report(**kwargs)
     assert isinstance(report, dict)
     return report
@@ -121,7 +136,10 @@ class TestReportShape:
             "metrics",
             "per_question",
         }
-        assert report["schema_version"] == 1
+        # 2B-5 升 2：逐題的 `scores` 與整份的 `rerank_scores` 是**新增**欄位，舊報告
+        # 仍然比得動（`_require_comparable` 不看版本），但讀報告的人要分得出「這一份
+        # 沒有分數」是因為它是舊的，而不是因為那次跑掉了。
+        assert report["schema_version"] == 2
         assert report["mode"] == "vector"
         assert set(report["dataset"]) >= {
             "name",

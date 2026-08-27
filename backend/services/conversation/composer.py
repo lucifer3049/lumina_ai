@@ -29,6 +29,7 @@ from core.uow import unit_of_work
 from rag.citation import marker_for
 from rag.pipeline import build_search_query
 from rag.retrievers.vector import RetrievedChunk
+from rag.trace import RagTrace
 from repositories.conversation import MessageRepository
 from services.ai.prompts import SYSTEM_RAG_PROMPT_KEY, PromptService
 from services.rag.retrieval import RetrievalOutcome, RetrievalService
@@ -53,6 +54,10 @@ class PreparedTurn:
     retrieved: bool
     # 哪幾個增強步驟被跳過了（2B-3）——一路走到 `usage.rag.degraded`。
     degraded: tuple[str, ...] = ()
+    # 這一趟檢索的單據（06 §7，2B-5）。**帶到收尾才寫出去**：引用的驗證結果是
+    # 06 §7 明列的一項，而它要等模型講完才知道；檢索時先寫一筆、收尾再寫一筆的話，
+    # 「這個月有多少 % 的查詢降級了」的分母會憑空變成兩倍。
+    trace: RagTrace | None = None
 
 
 class TurnComposer:
@@ -125,6 +130,7 @@ class TurnComposer:
             chunks=tuple(chunks),
             retrieved=bool(kb_ids),
             degraded=outcome.degraded,
+            trace=outcome.trace,
         )
 
     async def _retrieve(

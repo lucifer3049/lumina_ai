@@ -86,8 +86,9 @@ def fuse_candidates(
     在 hybrid 裡是**常態而不是例外**，而原本以 `chunk_id` 決勝等於擲骰子：24 題的手寫
     題組裡有 9 題的正確答案就這樣被擠下 1~2 名（recall@1 0.4375 → 0.3333）。
 
-    **回傳的 `score` 換成融合分數**（越大越相關，尺度本身沒有意義）。要「這一段在各路
-    原本的分數」的話，那屬於 2B-5 的 `rag_trace`。
+    **回傳的 `score` 換成融合分數**（越大越相關，尺度本身沒有意義）。「這一段在各路
+    原本的分數」在 `rag/trace.py` 的 `RouteTrace.top_scores`——那是 2B-5 補上的，
+    因為融合之後餘弦相似度與 pgroonga 分數就此永遠查不回來。
     """
     scores: dict[object, float] = {}
     chunks: dict[object, RetrievedChunk] = {}

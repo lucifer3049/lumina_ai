@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -29,9 +30,12 @@ from config.settings.app_settings import get_app_settings
 from core.exceptions import NotFoundError
 from core.tenant import tenant_context
 from core.uow import unit_of_work
+from etl.tokens import estimate_tokens
 from rag.pipeline import fuse_candidates, gate_by_absolute_score, gate_by_score, select_context
 from rag.retrievers.keyword import build_fts_query
 from rag.retrievers.vector import RetrievedChunk, normalise_query, to_retrieved
+from rag.trace import RagTrace, TraceBuilder
+from rag.trace import emit as emit_trace
 from repositories.knowledge import ChunkRepository, EmbeddingRepository, KnowledgeBaseRepository
 from services.knowledge.embedding import model_for
 from services.rag.params import MAX_TOP_K, RagParams, resolve_rag_params
@@ -69,6 +73,10 @@ class RetrievalOutcome:
 
     chunks: list[RetrievedChunk]
     degraded: tuple[str, ...] = ()
+    # 這一趟的單據（06 §7，2B-5）。**沒檢索就是 `None`**：純閒聊路徑記一筆全是 0
+    # 的 trace 會汙染所有比例型指標的分母——「有多少 % 的查詢降級了」會把從來沒查過
+    # 知識庫的那些也算進去，而那個比例只會愈看愈好。
+    trace: RagTrace | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,12 +156,22 @@ class RetrievalService:
         if not 1 <= limit <= MAX_TOP_K:
             raise ValueError(f"top_k 必須介於 1 與 {MAX_TOP_K} 之間")
 
-        groups, degraded = self._retrieve(tenant_id, kb, text, params, top_k=limit, mode=mode)
+        builder = TraceBuilder(mode or params.retrieval_mode)
+        groups, degraded = self._retrieve(
+            tenant_id, kb, text, params, top_k=limit, mode=mode, trace=builder
+        )
         # **`/rag/query` 與問答看到同一組候選**：這個端點存在的理由就是「看檢索準不
         # 準」，兩邊各自融合一次的話，1D-5 那個「除錯 API 查得到、實際問答查不到」的
         # 情境會換個位置重演。
-        fused = fuse_candidates(groups, k=params.rrf_k, limit=params.hybrid_candidates)
-        return self._rerank(text, fused, params, mode=mode, degraded=degraded)
+        with builder.stage("fuse"):
+            fused = fuse_candidates(groups, k=params.rrf_k, limit=params.hybrid_candidates)
+        builder.fused(len(fused))
+        outcome = self._rerank(text, fused, params, mode=mode, degraded=degraded, trace=builder)
+        # **這條路不組 context**（它不生成答案），所以 trace 沒有 context 那一段——
+        # 記一個 0 段的 context 會讓「這條路不裁切」與「裁到只剩 0 段」長得一樣。
+        trace = builder.build(degraded=outcome.degraded)
+        emit_trace(trace)
+        return replace(outcome, trace=trace)
 
     def retrieve_for_chat(
         self,
@@ -176,7 +194,8 @@ class RetrievalService:
         """
         text = normalise_query(query)
         if not text or not kb_ids:
-            # 沒掛 KB 就是純閒聊路徑（06 §9），連一次 embedding 的錢都不該付。
+            # 沒掛 KB 就是純閒聊路徑（06 §9），連一次 embedding 的錢都不該付，
+            # 也就沒有單據可開（`trace` 維持 `None`，見 `RetrievalOutcome`）。
             return RetrievalOutcome(chunks=[])
 
         available = [kb for kb in (self._find_kb(tenant_id, kb_id) for kb_id in kb_ids) if kb]
@@ -186,6 +205,7 @@ class RetrievalService:
             return RetrievalOutcome(chunks=[])
 
         params = resolve_rag_params(available[0].config)
+        builder = TraceBuilder(mode or params.retrieval_mode)
         # **同一個模型只算一次向量。** 查詢向量與 KB 無關，只與模型有關；每個 KB 各
         # 算一次等於同一段文字付 N 次錢，而結果完全相同。不能無條件只算一次的原因是
         # 各 KB 的 `embedding_model` 可以不同（06 §2.2：向量只在同一個模型的空間裡
@@ -195,19 +215,37 @@ class RetrievalService:
         degraded: tuple[str, ...] = ()
         for kb in available:
             kb_groups, kb_degraded = self._retrieve(
-                tenant_id, kb, text, params, top_k=params.top_k, mode=mode, cache=cache
+                tenant_id,
+                kb,
+                text,
+                params,
+                top_k=params.top_k,
+                mode=mode,
+                cache=cache,
+                trace=builder,
             )
             groups.extend(kb_groups)
             # 多 KB 時任何一個 KB 的 FTS 出事都算降級：使用者感受到的是「答案變差」，
             # 而那與「只有第二個知識庫的字面檢索掛了」在畫面上沒有分別。
             degraded = tuple(dict.fromkeys([*degraded, *kb_degraded]))
 
-        fused = fuse_candidates(groups, k=params.rrf_k, limit=params.hybrid_candidates)
-        reranked = self._rerank(text, fused, params, mode=mode, degraded=degraded)
-        selected = select_context(
-            reranked.chunks,
-            max_chunks=params.context_chunks,
+        with builder.stage("fuse"):
+            fused = fuse_candidates(groups, k=params.rrf_k, limit=params.hybrid_candidates)
+        builder.fused(len(fused))
+        reranked = self._rerank(text, fused, params, mode=mode, degraded=degraded, trace=builder)
+        with builder.stage("select"):
+            selected = select_context(
+                reranked.chunks,
+                max_chunks=params.context_chunks,
+                token_budget=params.context_token_budget,
+            )
+        builder.selected(
+            chunks=selected,
+            candidates=reranked.chunks,
             token_budget=params.context_token_budget,
+            # 與 chunker **同一個函式**（`select_context` 用的也是它）：兩邊估法不同
+            # 時壓縮率會對不起來，而症狀只是「這個數字看起來怪怪的」。
+            count_tokens=estimate_tokens,
         )
         logger.info(
             "rag_context_selected",
@@ -217,7 +255,14 @@ class RetrievalService:
             context_count=len(selected),
             degraded=list(reranked.degraded),
         )
-        return RetrievalOutcome(chunks=selected, degraded=reranked.degraded)
+        # **問答這條路的單據在收尾時才寫出去**（`ChatService`）：引用的驗證結果是
+        # 06 §7 明列的一項，而它要等模型講完才知道。這裡寫一筆、收尾再寫一筆的話，
+        # 「這個月有多少 % 的查詢降級了」的分母會憑空變成兩倍。
+        return RetrievalOutcome(
+            chunks=selected,
+            degraded=reranked.degraded,
+            trace=builder.build(degraded=reranked.degraded),
+        )
 
     def params_for(self, tenant_id: uuid.UUID, kb_ids: Sequence[uuid.UUID]) -> RagParams:
         """這場對話的檢索參數。`ChatService` 用它決定查詢要往前帶幾個問題。
@@ -242,6 +287,7 @@ class RetrievalService:
         *,
         top_k: int,
         mode: str | None,
+        trace: TraceBuilder,
         cache: dict[str, _EmbeddedQuery] | None = None,
     ) -> tuple[list[list[RetrievedChunk]], tuple[str, ...]]:
         """一個 KB → 各路的候選清單（融合前）。
@@ -255,13 +301,15 @@ class RetrievalService:
         effective = mode or params.retrieval_mode
         groups = [
             gate_by_score(
-                self._search(tenant_id, kb, text, top_k=top_k, cache=cache),
+                self._search(tenant_id, kb, text, top_k=top_k, cache=cache, trace=trace),
                 min_score_ratio=params.min_score_ratio,
             )
         ]
         degraded: tuple[str, ...] = ()
         if effective.startswith("hybrid"):
-            keyword, failed = self._search_fts(tenant_id, kb, text, top_k=params.fts_top_k)
+            keyword, failed = self._search_fts(
+                tenant_id, kb, text, top_k=params.fts_top_k, trace=trace
+            )
             if failed:
                 degraded = ("fts",)
             if keyword:
@@ -276,6 +324,7 @@ class RetrievalService:
         *,
         mode: str | None,
         degraded: tuple[str, ...],
+        trace: TraceBuilder,
     ) -> RetrievalOutcome:
         """融合後的候選 → cross-encoder 重排 → 絕對門檻（06 §3.1 的 Rerank 階段，2B-3）。
 
@@ -297,17 +346,28 @@ class RetrievalService:
             return RetrievalOutcome(chunks=candidates, degraded=degraded)
 
         settings = get_app_settings()
+        started = time.perf_counter()
         try:
-            result = self.gateway.rerank(
-                text,
-                [chunk.content for chunk in candidates],
-                model=settings.ai_rerank_model,
-                top_n=params.context_chunks,
-                timeout_seconds=settings.ai_rerank_timeout_seconds,
-            )
+            with trace.stage("rerank"):
+                result = self.gateway.rerank(
+                    text,
+                    [chunk.content for chunk in candidates],
+                    model=settings.ai_rerank_model,
+                    top_n=params.context_chunks,
+                    timeout_seconds=settings.ai_rerank_timeout_seconds,
+                )
         # 同 FTS：什麼錯都接得住是降級的前提（provider、連線、逾時都在這裡收斂）。
         except Exception as exc:
             logger.warning("rag_rerank_degraded", error=type(exc).__name__, detail=str(exc))
+            # 降級也要記一筆：`applied=False` 與「這次沒跑 rerank 模式」（`rerank`
+            # 整段為 None）必須分得開——前者是故障，後者是設定。
+            trace.reranked(
+                applied=False,
+                candidates=len(candidates),
+                kept=(),
+                threshold=params.rerank_threshold,
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            )
             return RetrievalOutcome(
                 chunks=candidates, degraded=tuple(dict.fromkeys([*degraded, "rerank"]))
             )
@@ -320,6 +380,13 @@ class RetrievalService:
             if 0 <= doc.index < len(candidates)
         ]
         kept = gate_by_absolute_score(reordered, threshold=params.rerank_threshold)
+        trace.reranked(
+            applied=True,
+            candidates=len(candidates),
+            kept=kept,
+            threshold=params.rerank_threshold,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        )
         logger.info(
             "rerank_applied",
             candidate_count=len(candidates),
@@ -329,7 +396,13 @@ class RetrievalService:
         return RetrievalOutcome(chunks=kept, degraded=degraded)
 
     def _search_fts(
-        self, tenant_id: uuid.UUID, kb: _KnowledgeBaseSnapshot, text: str, *, top_k: int
+        self,
+        tenant_id: uuid.UUID,
+        kb: _KnowledgeBaseSnapshot,
+        text: str,
+        *,
+        top_k: int,
+        trace: TraceBuilder,
     ) -> tuple[list[RetrievedChunk], bool]:
         """字面比對那一路。**失敗一律降級成「這一路沒有候選」，不往外拋。**
 
@@ -350,10 +423,12 @@ class RetrievalService:
             # 答案，而降級指的是「該做卻做不到」。混在一起的話 `usage.rag.degraded`
             # 會被純中文問句灌爆，而真正的故障就淹在裡面了。
             logger.info("fts_abstained", kb_id=str(kb.id))
+            trace.route("fts", kb_id=str(kb.id), chunks=(), elapsed_ms=0.0, abstained=True)
             return [], False
 
+        started = time.perf_counter()
         try:
-            with tenant_context(tenant_id), unit_of_work():
+            with trace.stage("fts"), tenant_context(tenant_id), unit_of_work():
                 hits = self._chunks.search_fts(query, kb_id=kb.id, top_k=top_k)
         # 什麼錯都接得住是降級的前提：這裡的例外可能來自 DB（索引不存在）、PGroonga
         # （計畫選錯）、甚至連線層。分類它們只會讓下一種沒想到的錯誤變成 500。
@@ -361,9 +436,21 @@ class RetrievalService:
             logger.warning(
                 "rag_fts_degraded", kb_id=str(kb.id), error=type(exc).__name__, detail=str(exc)
             )
+            trace.route(
+                "fts",
+                kb_id=str(kb.id),
+                chunks=(),
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            )
             return [], True
 
         results = to_retrieved(hits)
+        trace.route(
+            "fts",
+            kb_id=str(kb.id),
+            chunks=results,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        )
         logger.info(
             "fts_retrieval_completed", kb_id=str(kb.id), top_k=top_k, hit_count=len(results)
         )
@@ -376,11 +463,13 @@ class RetrievalService:
         text: str,
         *,
         top_k: int,
+        trace: TraceBuilder,
         cache: dict[str, _EmbeddedQuery] | None = None,
     ) -> list[RetrievedChunk]:
-        embedded = self._embed(text, model_for(kb.embedding_model), cache)
+        embedded = self._embed(text, model_for(kb.embedding_model), cache, trace)
 
-        with tenant_context(tenant_id), unit_of_work():
+        started = time.perf_counter()
+        with trace.stage("vector"), tenant_context(tenant_id), unit_of_work():
             hits = self._embeddings.search(
                 embedded.vector,
                 kb_id=kb.id,
@@ -393,6 +482,12 @@ class RetrievalService:
             )
 
         results = to_retrieved(hits)
+        trace.route(
+            "vector",
+            kb_id=str(kb.id),
+            chunks=results,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        )
         logger.info(
             "retrieval_completed",
             kb_id=str(kb.id),
@@ -404,13 +499,22 @@ class RetrievalService:
         return results
 
     def _embed(
-        self, text: str, model: str, cache: dict[str, _EmbeddedQuery] | None
+        self,
+        text: str,
+        model: str,
+        cache: dict[str, _EmbeddedQuery] | None,
+        trace: TraceBuilder,
     ) -> _EmbeddedQuery:
-        """查詢向量。同一次檢索內、同一個模型只算一次（見 `retrieve_for_chat`）。"""
+        """查詢向量。同一次檢索內、同一個模型只算一次（見 `retrieve_for_chat`）。
+
+        **命中快取時不計時**：那一趟沒有付出任何成本，計進去會讓「embedding 花了
+        多久」隨 KB 數量放大，而那個數字本來就是拿來看 provider 快不快的。
+        """
         if cache is not None and model in cache:
             return cache[model]
         # 查詢向量與文件向量走同一個 Gateway、同一個模型（見模組 docstring）。
-        result = self.gateway.embed([text], model=model)
+        with trace.stage("embed"):
+            result = self.gateway.embed([text], model=model)
         embedded = _EmbeddedQuery(
             vector=list(result.vectors[0]),
             model=result.model,

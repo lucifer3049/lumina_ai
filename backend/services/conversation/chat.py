@@ -47,6 +47,7 @@ from core.streams import StreamBuffer
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from rag.citation import assemble_citations
+from rag.trace import emit as emit_trace
 from repositories.conversation import ConversationRepository, MessageRepository
 from services.ai.prompts import PromptService
 from services.conversation.budget import TurnBudget
@@ -444,6 +445,7 @@ class ChatService:
         `stopped`，讓前端分得出「講完了」與「被停下來」（05 §3.4 的 `interrupted`）。"""
         answer = "".join(text)
         citations, rag_stats = self._citations(answer, prepared, message_id=turn.message_id)
+        self._emit_trace(prepared, rag_stats)
         await run_orm(
             self._persist,
             tenant_id,
@@ -520,6 +522,9 @@ class ChatService:
         """
         answer = "".join(text)
         citations, rag_stats = self._citations(answer, prepared, message_id=turn.message_id)
+        # **失敗的回合一樣要開單據**：出事那天要查的正是這幾筆，而它們與成功的回合
+        # 在檢索那一段沒有任何差別。
+        self._emit_trace(prepared, rag_stats)
         await run_orm(
             self._persist,
             tenant_id,
@@ -545,6 +550,29 @@ class ChatService:
             status=status,
             produced_characters=sum(len(part) for part in text),
         )
+
+    def _emit_trace(self, prepared: PreparedTurn | None, stats: dict[str, Any] | None) -> None:
+        """一次問答**一筆** `rag_trace`（06 §7）。
+
+        寫在收尾而不是檢索當下，因為 06 §7 明列的最後一項是「citation 驗證結果」——
+        而那要等模型講完才知道。兩個地方各寫一筆的話，「這個月有多少 % 的查詢降級
+        了」的分母會憑空變成兩倍，而兩筆都長得像真的。
+
+        `prepared.trace` 是 `None` 代表這一輪沒有檢索（純閒聊路徑，06 §9）。**那時
+        不寫**：記一筆全是 0 的單據會汙染所有比例型指標的分母（同 `usage.rag`
+        的處置）。
+
+        `stats` 是 `None` 而 trace 不是的情況也存在——模型一個字都沒產生就失敗了。
+        那時檢索確實跑過，單據照開，只是沒有引用可驗。
+        """
+        if prepared is None or prepared.trace is None:
+            return
+        trace = prepared.trace
+        if stats is not None:
+            trace = trace.with_citations(
+                citations=int(stats["citations"]), dropped=int(stats["dropped"])
+            )
+        emit_trace(trace)
 
     def _citations(
         self, answer: str, prepared: PreparedTurn | None, *, message_id: uuid.UUID

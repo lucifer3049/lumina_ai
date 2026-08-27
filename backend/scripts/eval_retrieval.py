@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import os
 import sys
 import uuid
@@ -116,7 +117,11 @@ MODES = ("vector", "vector+rerank", "hybrid", "hybrid+rerank")
 IMPLEMENTED_MODES = MODES
 _MODE_OWNERS: dict[str, str] = {}
 
-SCHEMA_VERSION = 1
+# 2B-5 起是 2：逐題多記 `scores`（cross-encoder 給的分數）與整份的 `rerank_scores`
+# 分布。**純新增欄位**，所以 2B-0 的 baseline（version 1）仍然比得動——可比性看的是
+# 題組與 embedding 模型（`_require_comparable`），不是報告的版本。版本仍要動，因為
+# 讀報告的人要分得出「這一份沒有分數」是因為它是舊的，而不是因為那次跑掉了。
+SCHEMA_VERSION = 2
 # 報告要回答的是「前幾名裡有沒有」，而不同的 k 回答不同的問題：k=1 是「第一名就對」，
 # k=20 是「有沒有進候選集」。rerank 只能重排它拿得到的候選，所以 recall@20 掉下去時
 # 2B-4 再怎麼調都救不回來——那是 2B-1／2B-2 的責任範圍。
@@ -238,6 +243,9 @@ def build_report(
         # 之後會被歸給錯的東西。半年後桌上兩份 `hybrid+rerank` 差 0.08，一份是本機 TEI
         # 跑的、一份是 Jina 跑的，沒記下來就看不出來。
         raise EvaluationError(f"模式 {mode} 的報告必須記下 rerank_provider 與 rerank_model")
+    rows = [dict(row) for row in (per_question or _rows(outcomes))]
+    if mode.endswith("+rerank"):
+        _require_scores(rows)
     metrics = aggregate(outcomes, ks=KS).as_dict()
     return {
         "schema_version": SCHEMA_VERSION,
@@ -253,7 +261,10 @@ def build_report(
         },
         "retrieval": dict(retrieval),
         "metrics": metrics,
-        "per_question": [dict(row) for row in (per_question or _rows(outcomes))],
+        # 只有真的跑了 rerank 才有這一段（同 `rerank_model` 的處置）：純向量報告掛一個
+        # 空的 `rerank_scores` 讀起來像「跑了但沒記」。
+        **({"rerank_scores": _score_distribution(rows)} if mode.endswith("+rerank") else {}),
+        "per_question": rows,
     }
 
 
@@ -470,7 +481,16 @@ def run_evaluation(
         # 「檢索回了不屬於這個語料的東西」這件事就會從報告裡消失，而那正是租戶隔離
         # 出問題時唯一看得見的痕跡。
         chunk_ids = [str(hit.chunk_id) for hit in hits]
-        retrieved = tuple(mapping[chunk_id] for chunk_id in chunk_ids if chunk_id in mapping)
+        # **段落與分數在同一個推導式裡產生**，因此逐一對得起來。分開兩次過濾的話，
+        # 「對不回語料的那幾段」會讓兩份清單錯位，而「正解拿了幾分」會取到隔壁那一段
+        # 的分數——報告看起來完全正常，分布也很漂亮（`_require_scores` 擋長度，
+        # 這裡擋的是順序）。
+        mapped = [
+            (mapping[chunk_id], hit.score)
+            for chunk_id, hit in zip(chunk_ids, hits, strict=True)
+            if chunk_id in mapping
+        ]
+        retrieved = tuple(passage_id for passage_id, _ in mapped)
         if len(retrieved) != len(chunk_ids):
             logger.warning(
                 "eval_hit_outside_corpus",
@@ -492,6 +512,10 @@ def run_evaluation(
                 "retrieved": list(retrieved),
                 "retrieved_chunk_ids": chunk_ids,
                 "relevant": sorted(question.passage_ids),
+                # rerank 模式下這就是 cross-encoder 給的 0~1 分數（`RetrievalOutcome`
+                # 的 `score` 在 rerank 之後已經換成它）。非 rerank 模式記的是融合
+                # 分數，`build_report` 不會拿它去產分布——那兩個尺度不能混。
+                "scores": [round(score, 6) for _, score in mapped],
             }
         )
 
@@ -619,7 +643,36 @@ def _print_summary(report: Mapping[str, Any], path: Path) -> None:
     for key in sorted(metrics):
         if key != "question_count":
             print(f"  {key:<12} {metrics[key]:.4f}")
+    _print_score_distribution(report)
     print(f"  → {path}")
+
+
+def _print_score_distribution(report: Mapping[str, Any]) -> None:
+    """裁決絕對門檻要看的兩個數字，直接印出來（2B-4 結案缺口①）。
+
+    要人自己去翻 JSON 的話，這份資料就只會在「有人特地想起它」的那一天被用到——
+    而缺口①已經帶過一整個工作包了。
+    """
+    distribution = report.get("rerank_scores")
+    if not isinstance(distribution, Mapping):
+        return
+    print("  rerank 分數分布（裁決絕對門檻用）：")
+    for group, label in (("hit", "正解  "), ("miss", "非正解")):
+        summary = distribution.get(group) or {}
+        if not summary.get("count"):
+            print(f"    {label} 無樣本")
+            continue
+        print(
+            f"    {label} n={summary['count']:<4} "
+            f"min={summary['min']:.4f} p05={summary['p05']:.4f} "
+            f"p50={summary['p50']:.4f} p95={summary['p95']:.4f} max={summary['max']:.4f}"
+        )
+    hit = distribution.get("hit") or {}
+    miss = distribution.get("miss") or {}
+    if hit.get("p05") is not None and miss.get("p95") is not None:
+        # 兩端之間有間隙才存在「砍得掉錯的、又留得住對的」那個數字。負的間隙代表
+        # **任何**門檻都會付出代價，而那本身就是一個結論。
+        print(f"    可用區間 {miss['p95']:.4f} ~ {hit['p05']:.4f}（正解 p05 − 非正解 p95）")
 
 
 def _print_comparison(comparison: Comparison) -> None:
@@ -648,6 +701,85 @@ def _rows(outcomes: Sequence[QuestionOutcome]) -> list[dict[str, Any]]:
         }
         for outcome in outcomes
     ]
+
+
+def _require_scores(rows: Sequence[Mapping[str, Any]]) -> None:
+    """rerank 模式的報告**必須**逐題帶著分數（2B-4 結案缺口①）。
+
+    絕對門檻 0.3 至今預設關閉，理由不是「不想開」，是「沒有分布可以裁決它」——而
+    一份沒有分數的 rerank 報告照樣比得動、照樣有 recall，半年後要裁決門檻時才發現
+    這一份沒得用，那時 GPU 上跑的模型已經換過了。同 `rerank_model` 的漏填處置。
+
+    長度也要對得起來：兩份清單錯位的話，「正解拿了幾分」會取到隔壁那一段的分數
+    ——而報告看起來完全正常，分布也很漂亮。
+    """
+    for row in rows:
+        scores = row.get("scores")
+        if scores is None:
+            raise EvaluationError(
+                f"rerank 模式的報告必須逐題記下 rerank 分數（{row.get('question_id')} 沒有）"
+            )
+        if len(list(scores)) != len(list(row.get("retrieved") or ())):
+            raise EvaluationError(
+                f"分數與命中的段落數對不起來（{row.get('question_id')}："
+                f"{len(list(scores))} 個分數 / {len(list(row.get('retrieved') or ()))} 段）"
+            )
+
+
+def _score_distribution(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """分數分布，**正解與非正解分開**（2B-4 結案缺口①）。
+
+    門檻要回答的問題是「有沒有一個數字砍得掉錯的、又留得住對的」。混在一起的分布
+    只說得出「大部分候選分數很低」——那句話對任何一個門檻都成立，於是 0.3 會被一個
+    看似漂亮的分布背書，而它同時砍掉了一成正解。那一成的症狀是「這個知識庫對某些
+    問題突然說不知道」，沒有任何地方看得出來。
+
+    **沒命中的題目只餵 miss 那一組**：把它記成 hit=0 會把正解的低分端整個拉下來。
+    """
+    hits: list[float] = []
+    misses: list[float] = []
+    for row in rows:
+        relevant = set(row.get("relevant") or ())
+        for passage_id, score in zip(
+            row.get("retrieved") or (), row.get("scores") or (), strict=False
+        ):
+            (hits if passage_id in relevant else misses).append(float(score))
+    return {"hit": _summarise(hits), "miss": _summarise(misses)}
+
+
+def _summarise(values: Sequence[float]) -> dict[str, Any]:
+    """裁決門檻要看的是**兩端**：正解的低分端（門檻高於它就會誤砍）與非正解的高分端
+    （門檻低於它就等於沒砍）。平均數在這裡毫無用處——它被中間那一大坨拉著走。"""
+    if not values:
+        # 空的時候其餘欄位是 `None` 而不是 0：0 是一個分數，而「沒有樣本」不是。
+        return {
+            "count": 0,
+            "min": None,
+            "p05": None,
+            "p25": None,
+            "p50": None,
+            "p75": None,
+            "p95": None,
+            "max": None,
+        }
+    ordered = sorted(values)
+    return {
+        "count": len(ordered),
+        "min": round(ordered[0], 6),
+        "p05": _percentile(ordered, 0.05),
+        "p25": _percentile(ordered, 0.25),
+        "p50": _percentile(ordered, 0.50),
+        "p75": _percentile(ordered, 0.75),
+        "p95": _percentile(ordered, 0.95),
+        "max": round(ordered[-1], 6),
+    }
+
+
+def _percentile(ordered: Sequence[float], q: float) -> float:
+    """最近名次法（nearest-rank）。**不內插**：門檻要拿一個真的出現過的分數當依據，
+    內插出來的 0.4137 在這份資料上沒有任何一段拿過。"""
+    index = max(0, math.ceil(q * len(ordered)) - 1)
+    return round(ordered[index], 6)
 
 
 def _hit_rank(outcome: QuestionOutcome) -> int | None:

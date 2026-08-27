@@ -22,6 +22,11 @@ class KnowledgeBaseOut(BaseModel):
     description: str
     status: str
     document_count: int
+    # KB 級的參數覆寫（05 §3.2、15 §4.1 的第三層，2B-5）。**形狀刻意留成自由的
+    # 物件**：逐鍵宣告成 pydantic 欄位的話，這裡會變成參數清單的第二份，而它與
+    # `services/knowledge/kb_config.py` 的那一份漂掉時沒有任何測試會紅——症狀是
+    # 新加的參數在 OpenAPI 上看不見，前端因此送不出去。驗證一律在寫入端做。
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class KnowledgeBaseListOut(BaseModel):
@@ -45,6 +50,10 @@ def _reject_blank(value: str | None) -> str | None:
 class KnowledgeBaseCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=2000)
+    # ``None`` = 沒給（建立時等同空的覆寫）。驗證在 Service
+    # （`validate_kb_config`）——建立與更新因此走同一條，兩條各驗一次的話，其中
+    # 一條遲早會漏掉新加的參數。
+    config: dict[str, Any] | None = None
 
     @field_validator("name")
     @classmethod
@@ -59,6 +68,10 @@ class KnowledgeBaseUpdateIn(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
+    # ``config`` 的「設為空」是明確的 ``{}``——那是使用者把一個調壞的 KB 還原的
+    # 唯一出路，與「這次沒給」必須分得開。給了就是**整份取代**，不是逐鍵合併：
+    # 深層合併讀起來比較體貼，但它讓「刪掉一個覆寫」變成不可能。
+    config: dict[str, Any] | None = None
 
     @field_validator("name")
     @classmethod

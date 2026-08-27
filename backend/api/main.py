@@ -162,6 +162,29 @@ def problem_response(
     )
 
 
+def _extensions_of(exc: DomainError) -> dict[str, Any] | None:
+    """4xx 的 extension member（09 §1.3 的 ``errors[]`` 與 ``details``）。
+
+    **``errors`` 從 details 裡拉到頂層**：09 附錄 A 說 `VALIDATION_FAILED` 帶的是
+    欄位級的 ``errors[]``，而那個契約與「錯誤是誰丟出來的」無關——pydantic 擋下的
+    （`validation_error_handler`）與業務規則擋下的（如 KB config 的區塊名打錯，2B-5）
+    對 client 是同一件事：某幾個欄位填錯了，請看這幾個 field。
+
+    埋在 ``details.errors`` 底下的話，前端要為第二種來源寫第二套解析——而漏寫的
+    症狀是「有些欄位錯誤標得出來、有些標不出來」，看起來像前端的 bug。
+    """
+    if not exc.details:
+        return None
+    details = dict(exc.details)
+    errors = details.pop("errors", None)
+    extensions: dict[str, Any] = {}
+    if isinstance(errors, list):
+        extensions["errors"] = errors
+    if details:
+        extensions["details"] = details
+    return extensions or None
+
+
 def _retry_after_header(exc: DomainError) -> dict[str, str] | None:
     """帶了 `retry_after_seconds` 的例外要同時送 `Retry-After` 標頭（RFC 9110 §10.2.3）。
 
@@ -278,14 +301,12 @@ def create_app() -> FastAPI:
         )
 
         # 4xx 是使用者可修正的錯誤，details 屬於契約的一部分，照實回傳。
-        # 註：VALIDATION_FAILED 走 errors[]（見 validation_error_handler），
-        # 與此處的 details 是不同用途。
         return problem_response(
             status=status,
             code=str(exc.code),
             detail=exc.message,
             request_id=request_id,
-            extensions={"details": exc.details} if exc.details else None,
+            extensions=_extensions_of(exc),
             headers=_retry_after_header(exc),
         )
 

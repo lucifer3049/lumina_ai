@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 09 |
-| 版本 | v1.3 |
-| 日期 | 2026-07-30 |
+| 版本 | v1.4 |
+| 日期 | 2026-08-27 |
 | 狀態 | Draft — 待審閱 |
 | 相依文件 | 01（ADR-004）、03（codegen）、04（模組對映）、10（認證與權限細節） |
-| 變更紀錄 | v1.1：新增附錄 A 錯誤 code 初始字典（15 審查報告 F-05）。v1.2：§3.2 的 `citations` 事件改為物件（`{"items":[...]}`）並增列 marker／doc_version／heading_path／snippet 四欄，同時載明事件順序與「檢索跑過就送、即使是空的」（2026-08-17，1D-5；理由見 13 §3.5）。v1.3（2A 落地）：§2.6 的 `/notifications` 列表回應補 `unread_count`——前端側欄的未讀紅點若要另打一支端點，等於每次輪詢兩個請求 |
+| 變更紀錄 | v1.1：新增附錄 A 錯誤 code 初始字典（15 審查報告 F-05）。v1.2：§3.2 的 `citations` 事件改為物件（`{"items":[...]}`）並增列 marker／doc_version／heading_path／snippet 四欄，同時載明事件順序與「檢索跑過就送、即使是空的」（2026-08-17，1D-5；理由見 13 §3.5）。v1.3（2A 落地）：§2.6 的 `/notifications` 列表回應補 `unread_count`——前端側欄的未讀紅點若要另打一支端點，等於每次輪詢兩個請求。v1.4（2B-5 落地）：§2.5 的 `/rag/query` 補 `degraded` 與 `trace`；§2.3 的 KB 三個動詞把「同上」展開成實際權限——`PATCH` 自 1B 起就是 `knowledge:admin` 而不是 `write`（改檢索參數改變的是**所有人**問到的答案，破壞範圍等同改整個知識庫，而 Editor 的日常只影響單一文件且是軟刪除），寫成「同上」會讓人以為 Editor 改得動 |
 
 ---
 
@@ -86,7 +86,7 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 | Method | Path | 說明 | 權限 |
 |--------|------|------|------|
 | GET/POST ★ | /knowledge-bases | KB 列表 / 建立 | knowledge:read / write |
-| GET/PATCH/DELETE | /knowledge-bases/{id} | 詳情 / 設定（chunk、檢索參數）/ 刪除 | 同上（資源級 grant 疊加） |
+| GET/PATCH/DELETE | /knowledge-bases/{id} | 詳情 / 設定（chunk、檢索參數）/ 刪除 | read / **admin** / admin（資源級 grant 疊加） |
 | POST | /knowledge-bases/{id}/reindex | 重嵌入（202 + job） | knowledge:admin |
 | GET | /knowledge-bases/{id}/documents | KB 內文件列表 | knowledge:read |
 | POST ★ | /knowledge-bases/{id}/documents | 上傳（multipart；大檔走 §3.1 分塊流程） | knowledge:write |
@@ -124,7 +124,7 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 | GET | /tools | 可用工具（含 schema） | tool:read |
 | PATCH | /tools/{name} | 租戶啟用/政策覆寫 | tool:admin |
 | GET | /tools/{name}/executions | 執行紀錄（分頁） | tool:read |
-| POST | /rag/query | 獨立檢索 API（不生成，回 chunks+scores；供整合方與除錯） | rag:query |
+| POST | /rag/query | 獨立檢索 API（不生成，回 chunks+scores，另帶 `degraded` 與 `trace` 摘要——06 §7 的 `rag_trace`，2B-5；供整合方與除錯） | rag:query |
 | POST | /rag/evaluations | 觸發評測 run（202） | eval:run |
 | GET | /rag/evaluations/{id} | 評測結果 | eval:read |
 

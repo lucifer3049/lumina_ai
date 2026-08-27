@@ -58,5 +58,55 @@ class RetrievedChunkOut(BaseModel):
     heading_path: list[str]
 
 
+class RagRouteOut(BaseModel):
+    """一條檢索路在**融合之前**的樣子（06 §7 的「候選數」、`rag_trace` 的一部分）。
+
+    `top_scores` 是這一路自己尺度上的分數。融合之後 `items[].score` 是 RRF 的名次
+    倒數和（第一名 ≈ 0.016），原本的餘弦相似度就此消失——而「向量覺得這一段有多像」
+    正是判斷「檢索爛還是排序爛」的第一個數字。
+    """
+
+    name: str
+    candidate_count: int
+    elapsed_ms: float
+    top_scores: list[float]
+    # 棄權（2B-2b）不是降級：「這句話裡沒有字面比對幫得上忙的東西」是正確答案。
+    abstained: bool
+
+
+class RagRerankOut(BaseModel):
+    applied: bool
+    candidate_count: int
+    kept_count: int
+    threshold: float
+    elapsed_ms: float
+    scores: list[float]
+
+
+class RagTraceOut(BaseModel):
+    """這一趟檢索的過程（06 §7 的 `rag_trace`，2B-5）。
+
+    **這個端點存在的理由是「看檢索到底準不準」**（見 `api/v1/rag.py`）。只回一串
+    命中的話，看得到結果、看不到過程——而「為什麼是這個順序」正是要看的東西。
+
+    **不帶 chunk 內文**：內文已經在 ``items`` 裡了，再帶一份會讓回應大小隨 top_k
+    翻倍，而那一份沒有任何新資訊。
+    """
+
+    mode: str
+    elapsed_ms: float
+    stages: dict[str, float]
+    routes: list[RagRouteOut]
+    fused_count: int
+    rerank: RagRerankOut | None = None
+
+
 class RagQueryOut(BaseModel):
     items: list[RetrievedChunkOut]
+    # 哪幾個增強步驟被跳過了（2B-3）。**正常路徑是空清單而不是省略欄位**：省略的話，
+    # 「這一趟沒有降級」與「這個版本還沒有這個欄位」在呼叫端分不出來。
+    #
+    # 不回的話，除錯端點給出一組很差的結果時，呼叫端分不出是「檢索真的差」還是
+    # 「TEI 容器沒開」——而那兩者在畫面上長得一模一樣（2B-4 結案缺口⑥）。
+    degraded: list[str] = Field(default_factory=list)
+    trace: RagTraceOut | None = None

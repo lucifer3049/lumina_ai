@@ -477,6 +477,18 @@
       },
       "KnowledgeBaseCreateIn": {
         "properties": {
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          },
           "description": {
             "default": "",
             "maxLength": 2000,
@@ -514,6 +526,11 @@
       },
       "KnowledgeBaseOut": {
         "properties": {
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
           "description": {
             "title": "Description",
             "type": "string"
@@ -549,6 +566,18 @@
       "KnowledgeBaseUpdateIn": {
         "description": "``None`` = 這次沒給（部分更新），不是「設為空」。",
         "properties": {
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          },
           "description": {
             "anyOf": [
               {
@@ -1020,18 +1049,163 @@
       },
       "RagQueryOut": {
         "properties": {
+          "degraded": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Degraded",
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/RetrievedChunkOut"
             },
             "title": "Items",
             "type": "array"
+          },
+          "trace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RagTraceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "items"
         ],
         "title": "RagQueryOut",
+        "type": "object"
+      },
+      "RagRerankOut": {
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "candidate_count": {
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "number"
+          },
+          "kept_count": {
+            "title": "Kept Count",
+            "type": "integer"
+          },
+          "scores": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Scores",
+            "type": "array"
+          },
+          "threshold": {
+            "title": "Threshold",
+            "type": "number"
+          }
+        },
+        "required": [
+          "applied",
+          "candidate_count",
+          "kept_count",
+          "threshold",
+          "elapsed_ms",
+          "scores"
+        ],
+        "title": "RagRerankOut",
+        "type": "object"
+      },
+      "RagRouteOut": {
+        "description": "一條檢索路在**融合之前**的樣子（06 §7 的「候選數」、`rag_trace` 的一部分）。\n\n`top_scores` 是這一路自己尺度上的分數。融合之後 `items[].score` 是 RRF 的名次\n倒數和（第一名 ≈ 0.016），原本的餘弦相似度就此消失——而「向量覺得這一段有多像」\n正是判斷「檢索爛還是排序爛」的第一個數字。",
+        "properties": {
+          "abstained": {
+            "title": "Abstained",
+            "type": "boolean"
+          },
+          "candidate_count": {
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "number"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "top_scores": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Top Scores",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "candidate_count",
+          "elapsed_ms",
+          "top_scores",
+          "abstained"
+        ],
+        "title": "RagRouteOut",
+        "type": "object"
+      },
+      "RagTraceOut": {
+        "description": "這一趟檢索的過程（06 §7 的 `rag_trace`，2B-5）。\n\n**這個端點存在的理由是「看檢索到底準不準」**（見 `api/v1/rag.py`）。只回一串\n命中的話，看得到結果、看不到過程——而「為什麼是這個順序」正是要看的東西。\n\n**不帶 chunk 內文**：內文已經在 ``items`` 裡了，再帶一份會讓回應大小隨 top_k\n翻倍，而那一份沒有任何新資訊。",
+        "properties": {
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "number"
+          },
+          "fused_count": {
+            "title": "Fused Count",
+            "type": "integer"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "rerank": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RagRerankOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "routes": {
+            "items": {
+              "$ref": "#/components/schemas/RagRouteOut"
+            },
+            "title": "Routes",
+            "type": "array"
+          },
+          "stages": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Stages",
+            "type": "object"
+          }
+        },
+        "required": [
+          "mode",
+          "elapsed_ms",
+          "stages",
+          "routes",
+          "fused_count"
+        ],
+        "title": "RagTraceOut",
         "type": "object"
       },
       "RetrievedChunkOut": {
@@ -3319,6 +3493,7 @@
         ]
       },
       "patch": {
+        "description": "名稱、描述與 **KB 級參數覆寫**（09 §2.3 的「設定（chunk、檢索參數）」，2B-5）。\n\n``knowledge:admin`` 而不是 ``write``：改檢索參數改變的是**所有人**問到的答案，\n破壞範圍等同改整個知識庫的行為——而 Editor 的日常（上傳一份文件）破壞範圍限於\n單一文件且是軟刪除。",
         "operationId": "knowledge_bases_update",
         "parameters": [
           {

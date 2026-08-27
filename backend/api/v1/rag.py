@@ -21,9 +21,17 @@ from fastapi import APIRouter, Depends
 from api.dependencies.auth import Principal
 from api.dependencies.permissions import RequireScope
 from api.schemas.problem import ERROR_RESPONSES
-from api.schemas.rag import RagQueryIn, RagQueryOut, RetrievedChunkOut
+from api.schemas.rag import (
+    RagQueryIn,
+    RagQueryOut,
+    RagRerankOut,
+    RagRouteOut,
+    RagTraceOut,
+    RetrievedChunkOut,
+)
 from core.db import run_orm
 from rag.retrievers.vector import RetrievedChunk
+from rag.trace import RagTrace
 from services.rag.retrieval import RetrievalService
 
 router = APIRouter(tags=["rag"], responses=ERROR_RESPONSES)
@@ -60,7 +68,45 @@ async def rag_query(
         query=body.query,
         top_k=body.top_k,
     )
-    # 降級標記（`outcome.degraded`）暫時不出現在回應裡：那要動 09 §2.3 的 schema 與
-    # 前端 generated client，而兩者排在 2B 結案的文件同步（2B-5 的 rag_trace 會用到
-    # 同一份資料）。目前它走 log 與 `usage.rag`。
-    return RagQueryOut(items=[_chunk_out(chunk) for chunk in outcome.chunks])
+    return RagQueryOut(
+        items=[_chunk_out(chunk) for chunk in outcome.chunks],
+        degraded=list(outcome.degraded),
+        trace=_trace_out(outcome.trace),
+    )
+
+
+def _trace_out(trace: RagTrace | None) -> RagTraceOut | None:
+    """`rag_trace` → 對外的摘要。
+
+    **逐欄位列，不是把 `as_dict()` 原樣丟出去**（同其他 schema 的理由）：那份 dict
+    是給 log 用的，之後在裡面加一個內部欄位會自動流到 client，而不會有任何測試紅燈。
+    `top_chunk_ids` 因此刻意不在這裡——它已經在 ``items`` 裡了。
+    """
+    if trace is None:
+        return None
+    return RagTraceOut(
+        mode=trace.mode,
+        elapsed_ms=round(trace.elapsed_ms, 3),
+        stages={name: round(value, 3) for name, value in trace.stages.items()},
+        routes=[
+            RagRouteOut(
+                name=route.name,
+                candidate_count=route.candidate_count,
+                elapsed_ms=round(route.elapsed_ms, 3),
+                top_scores=list(route.top_scores),
+                abstained=route.abstained,
+            )
+            for route in trace.routes
+        ],
+        fused_count=trace.fused_count,
+        rerank=RagRerankOut(
+            applied=trace.rerank.applied,
+            candidate_count=trace.rerank.candidate_count,
+            kept_count=trace.rerank.kept_count,
+            threshold=trace.rerank.threshold,
+            elapsed_ms=round(trace.rerank.elapsed_ms, 3),
+            scores=list(trace.rerank.scores),
+        )
+        if trace.rerank
+        else None,
+    )
