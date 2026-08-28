@@ -85,8 +85,24 @@ os.environ["AI_CHAT_MODEL"] = "mock-chat"
 os.environ["AI_CHAT_API_KEY"] = ""
 os.environ["AI_CHAT_FALLBACK_MODELS"] = ""
 
+# rerank 同理，而它的理由與上面兩個**不完全相同**：TEI 是自架的，不花錢也不需要金鑰，
+# 所以「測試會花錢」那一條在這裡不成立。真正的問題是**它要 GPU**——本機開發機上有、
+# CI 上沒有，而 rerank 失敗是降級（fail open，2B-3）：CI 上每一條檢索測試都會安靜地
+# 少掉 rerank 那一段，然後全部照樣綠。於是「rerank 有沒有真的跑」變成一個由環境決定
+# 的事實，而測試看起來完全正常。
+#
+# **這一行在 2B-5 之前不需要存在**：那時 `rag_retrieval_mode` 預設是 `vector`，rerank
+# 根本不會被呼叫，`.env` 裡的 `AI_RERANK_PROVIDER=tei` 因此無害。預設值改成
+# `vector+rerank` 的那一刻，整個測試套件開始打本機的 TEI 容器（實測如此：
+# `POST http://127.0.0.1:18080/rerank` 出現在 api 層的測試輸出裡）。
+#
+# base_url 一併清掉，理由同金鑰：即使有人繞過上面那行，也沒有位址可以連。
+os.environ["AI_RERANK_PROVIDER"] = "mock"
+os.environ["AI_RERANK_MODEL"] = "mock-rerank"
+os.environ["AI_RERANK_BASE_URL"] = ""
+
 # 這個模組在 `django.setup()` 期被 import，通常早於第一次 `get_app_settings()`——但
-# 「通常」不夠：只要有任何一條 import 路徑先讀過設定，上面三行就白寫了，而症狀是
+# 「通常」不夠：只要有任何一條 import 路徑先讀過設定，上面那幾行就白寫了，而症狀是
 # 測試偶爾會打真 API。清一次快取讓它與時序無關。
 from .app_settings import get_app_settings  # noqa: E402
 

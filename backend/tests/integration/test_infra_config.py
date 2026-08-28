@@ -214,7 +214,16 @@ class TestSmtpCredentials:
         for key in list(os.environ):
             if key.startswith("SMTP_"):
                 monkeypatch.delenv(key, raising=False)
-        required = {"REDIS_PASSWORD": "pw", "S3_ACCESS_KEY": "ak", "S3_SECRET_KEY": "sk"}
+        # 「一份最小的**合法** production 設定」——這個 dict 的用途一直是這個。
+        # `AI_RERANK_PROVIDER` 是 2B-5 加進來的：預設模式含 rerank 之後，production
+        # 配上 mock reranker 會被 `_reject_mock_rerank_in_production` 擋下，而這裡要
+        # 驗的是 SMTP，不是那條規則（一個規則只該有一個地方會紅）。
+        required = {
+            "REDIS_PASSWORD": "pw",
+            "S3_ACCESS_KEY": "ak",
+            "S3_SECRET_KEY": "sk",
+            "AI_RERANK_PROVIDER": "tei",
+        }
         for key, value in (required | env).items():
             monkeypatch.setenv(key, value)
         return AppSettings(_env_file=None)  # type: ignore[call-arg]

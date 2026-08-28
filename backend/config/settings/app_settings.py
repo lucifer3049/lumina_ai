@@ -189,10 +189,24 @@ class AppSettings(BaseSettings):
     # 06 §3.1 的「RRF → 24」：融合後留幾筆進下一關。2B-4 的 rerank 吃的就是它，
     # 而 cross-encoder 的成本與這個數字成正比（11 §4 的 rerank < 800ms）。
     rag_hybrid_candidates: int = 24
-    # 06 §3.1 的絕對門檻。**預設 0＝關閉**：它是 cross-encoder 的尺度（0~1），只有在
-    # rerank 真的跑過時才有意義——降級跳過 rerank 之後手上是 RRF 的融合分數
-    # （第一名 1/61 ≈ 0.016），套 0.3 會把候選全砍光。位置的強制在
-    # `services/rag/retrieval.py`；開不開由資料決定（同相對門檻，1D-5）。
+    # 06 §3.1 的絕對門檻。**預設 0＝關閉，而且 0.3 這個值已被資料推翻**（2B-5 的第四
+    # 次評測，2026-08-27）：
+    #
+    # | 題組 | 正解 p05／p50 | 非正解 p95 | 0.3 砍掉的正解 | 整題全砍 |
+    # |------|---------------|------------|----------------|----------|
+    # | 手寫 24 題 | 0.0023／0.2429 | 0.1824 | **56%** | **14/24 題** |
+    # | DRCD 120 題 | 0.9294／0.9973 | 0.5657 | 0% | 0 題 |
+    #
+    # 手寫題上**兩群分數重疊**（正解 p05 < 非正解 p95），代表不存在「砍得掉錯的、又
+    # 留得住對的」那個數字——連 0.05 都會讓 4 題失去全部正解。DRCD 上無害是因為它是
+    # 抽取式 QA：問句由段落本身產生，cross-encoder 給正解近乎滿分，那量不到真實問句
+    # 的樣子，而手寫題組存在的全部理由就是這個（2B-0）。
+    #
+    # 另有一條與尺度有關的理由仍然成立：降級跳過 rerank 之後手上是 RRF 的融合分數
+    # （第一名 1/61 ≈ 0.016），套任何絕對門檻都會把候選全砍光。因此它只在 rerank
+    # **真的跑完**時才套用，強制位置在 `services/rag/retrieval.py`。
+    #
+    # 要擋「知識庫無相關內容」請用不吃尺度的相對門檻（`rag_min_score_ratio`）。
     rag_rerank_threshold: float = 0.0
 
     # 檢索模式（2B-2）。**預設 `vector`，而 06 §3.1 的設計是 hybrid**——這個偏離有
@@ -223,15 +237,19 @@ class AppSettings(BaseSettings):
     # cross-encoder 把它們打回去了。也就是說在這兩份題組上，**hybrid 的邊際貢獻是零，
     # 而不是負的**（那是 2B-2 沒有裁判時的情況）。
     #
-    # 因此預設**維持 `vector`**：同樣的分數下，多一路 FTS 是多一次 DB 查詢與多一段
+    # **hybrid 那一路不進預設**：同樣的分數下，多一路 FTS 是多一次 DB 查詢與多一段
     # 融合。程式與測試全部留著——邊際貢獻為零是「這兩份題組上」的結論，而識別符密集的
     # 語料（產品型號、錯誤碼）正是 FTS 該贏的地方，KB 層的 `retrieval_mode` 覆寫開得起。
     #
-    # **兩個 `+rerank` 模式不設為預設值**，理由與 `ai_rerank_provider` 預設 `mock` 是
-    # 同一條：漏設 provider 的人會拿字元重疊比例當 cross-encoder 用，而那比不 rerank
-    # 更糟。接上 rerank 是一個要用手做的決定（`make tei-up` + `AI_RERANK_PROVIDER=tei`
-    # + 這一格）。
-    rag_retrieval_mode: Literal["vector", "vector+rerank", "hybrid", "hybrid+rerank"] = "vector"
+    # **rerank 那一路進預設**（2026-08-27 使用者裁決，2B-5）：0.4375 → 0.7917 不是可以
+    # 留給「記得手動打開」的差距。2B-4 當時不敢改的理由是「漏設 provider 的人會拿字元
+    # 重疊比例（`MockRerankProvider`）當 cross-encoder 用，而那比不 rerank 更糟」——
+    # 那個風險由下面的 `_reject_mock_rerank_in_production` 擋掉，而不是用一個永遠沒有
+    # 人打開的預設值擋。TEI 沒起來時走既有的降級鏈（跳過 rerank，回到 baseline 的品質），
+    # 且 2B-5 之後那件事在 `rag_trace` 的 `degraded` 與 `/rag/query` 的回應裡看得見。
+    rag_retrieval_mode: Literal["vector", "vector+rerank", "hybrid", "hybrid+rerank"] = (
+        "vector+rerank"
+    )
     # 06 §3.1 的 rerank top_n 6~8。Phase 1 沒有 rerank，這是「進 context 幾段」。
     rag_context_chunks: int = 8
     # 06 §3.2：RAG context 的 token 預算。與 chunker 用同一個估算器（`etl/tokens.py`），
@@ -420,6 +438,37 @@ class AppSettings(BaseSettings):
         ):
             raise ValueError(
                 "SMTP_USERNAME 有值但 SMTP_PASSWORD 是空的——正式環境不接受半套的認證設定"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_mock_rerank_in_production(self) -> AppSettings:
+        """正式環境不准用 `MockRerankProvider` 當 cross-encoder（2B-5）。
+
+        `MockRerankProvider` 打的是**字元重疊比例**。它排出來的順序看起來完全合理
+        （相關的段落確實傾向共用字），分數也在 0~1，`rag_trace` 裡 `applied=True`
+        ——沒有任何一個地方會顯示 rerank 其實沒在工作，而它比不 rerank 更糟：真的
+        cross-encoder 修正的正是「字面像但語意無關」那一類候選，mock 反而偏袒它們。
+
+        這條檢查存在的理由是 `rag_retrieval_mode` 現在**預設就含 rerank**
+        （2026-08-27 裁決）。預設值把「要不要 rerank」從一個手動決定變成自動的，
+        於是「provider 漏設」從一個顯眼的疏忽變成一個安靜的預設——Fail Fast 是把
+        它換回顯眼。
+
+        限定 production 的理由同 `_reject_half_configured_smtp_auth`：開發與 CI 就是
+        要能在沒有 GPU 的機器上跑完整條 RAG 路徑，讓它們為此炸掉只會逼人把模式改回
+        `vector`，而那會讓測試涵蓋的路徑與正式環境的不同。`environment` 預設就是
+        production，漏設環境變數時落在嚴格那邊。
+        """
+        if (
+            self.environment == "production"
+            and self.rag_retrieval_mode.endswith("+rerank")
+            and self.ai_rerank_provider == "mock"
+        ):
+            raise ValueError(
+                "RAG_RETRIEVAL_MODE 含 rerank 但 AI_RERANK_PROVIDER=mock"
+                "——mock 打的是字元重疊比例，不是 cross-encoder；"
+                "正式環境請設 tei 或 jina，或把模式改成不含 rerank 的"
             )
         return self
 

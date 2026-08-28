@@ -171,6 +171,11 @@ class TestLoginSuccess:
         token 明文送上網路。所以放寬的條件必須被釘死在測試裡。
         """
         monkeypatch.setenv("ENVIRONMENT", "production")
+        # production 的設定要**整份合法**才建得起來：測試環境把 rerank provider 釘成
+        # mock（`config/settings/test.py`），而 2B-5 之後預設檢索模式含 rerank，兩者
+        # 在 production 相遇會被 `_reject_mock_rerank_in_production` 擋下。少了這一行，
+        # 症狀是登入回 500——指向的位置離真正的原因非常遠。
+        monkeypatch.setenv("AI_RERANK_PROVIDER", "tei")
         get_app_settings.cache_clear()
 
         async with httpx.AsyncClient(

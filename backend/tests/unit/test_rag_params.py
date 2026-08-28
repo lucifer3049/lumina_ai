@@ -23,7 +23,12 @@
 
 from __future__ import annotations
 
-from config.settings.app_settings import get_app_settings
+from typing import Any
+
+import pytest
+from pydantic import ValidationError
+
+from config.settings.app_settings import AppSettings, get_app_settings
 from services.rag.params import MAX_TOP_K, resolve_rag_params
 
 
@@ -42,13 +47,15 @@ class TestSystemDefaults:
         assert settings.rag_fts_top_k == 40
         assert settings.rag_rrf_k == 60
         assert settings.rag_hybrid_candidates == 24
-        # **預設是 `vector` 而不是 06 §3.1 設計的 hybrid**（2026-08-23 使用者裁決）：
-        # 三種 FTS 策略在兩份 golden set 上都沒讓 hybrid 勝出，而管線少了 rerank 這個
-        # 裁判。數據與理由見 `app_settings.rag_retrieval_mode` 的註解；2B-4 接上
-        # reranker 後用同一套評測再決定要不要翻回來。
-        assert settings.rag_retrieval_mode == "vector"
-        # 06 §3.1 的絕對門檻 0.3——**預設關閉**（0）：它是 cross-encoder 的尺度，只有
-        # rerank 真的跑過時才有意義，而開不開由資料決定（同相對門檻，1D-5）。
+        # **預設 `vector+rerank`**（2026-08-27 使用者裁決，2B-5）：兩份題組上贏的是
+        # rerank 而不是 hybrid——手寫題 recall@1 0.4375 → 0.7917，而 hybrid 那一路的
+        # 邊際貢獻逐題為零。數據與理由見 `app_settings.rag_retrieval_mode` 的註解。
+        # **hybrid 不進預設但程式全留**：識別符密集的語料仍是 FTS 該贏的地方，走 KB
+        # 層的 `retrieval_mode` 覆寫。
+        assert settings.rag_retrieval_mode == "vector+rerank"
+        # 06 §3.1 的絕對門檻 0.3——**預設關閉（0），且 0.3 這個值已被資料推翻**
+        # （2B-5 第四次評測：手寫題上正解與非正解的分數重疊，0.3 會砍掉 56% 的正解、
+        # 14/24 題連一段正解都不剩）。要擋「無相關內容」只能走相對門檻。
         assert settings.rag_rerank_threshold == 0.0
         assert settings.rag_context_chunks == 8
         assert settings.rag_context_token_budget == 4500
@@ -157,7 +164,10 @@ class TestHybridParams:
         """
         params = resolve_rag_params({"retrieval": {"retrieval_mode": "hybird"}})
 
-        assert params.retrieval_mode == "vector"
+        # 退回的是**系統預設**（`app_settings`），不是某個寫死的字串——2B-5 把預設從
+        # `vector` 改成 `vector+rerank` 時，這條若比對字面值就會變成「壞值會讓那個 KB
+        # 悄悄少掉 rerank」而測試照樣綠。
+        assert params.retrieval_mode == get_app_settings().rag_retrieval_mode
 
 
 class TestRerankParams:
@@ -177,3 +187,54 @@ class TestRerankParams:
             assert (
                 resolve_rag_params({"retrieval": {"retrieval_mode": mode}}).retrieval_mode == mode
             )
+
+
+class TestMockRerankIsRejectedInProduction:
+    """`MockRerankProvider` 不准在正式環境當 cross-encoder 用（2B-5）。
+
+    這條與 `rag_retrieval_mode` 的預設值是**同一個決定的兩半**：預設值把 rerank
+    打開，這條把「打開了卻接著假的 reranker」擋掉。只留其中一半的話，正式環境會拿
+    字元重疊比例排序，而 `rag_trace` 裡 `applied=True`、分數在 0~1、順序看起來合理
+    ——沒有任何地方顯示它沒在工作。
+    """
+
+    def _settings(self, **overrides: Any) -> AppSettings:
+        """不讀 `.env`：讀了的話這幾條會隨開發機的設定而綠或紅。"""
+        base: dict[str, Any] = {
+            "environment": "production",
+            "rag_retrieval_mode": "vector+rerank",
+            "ai_rerank_provider": "mock",
+        }
+        base.update(overrides)
+        return AppSettings(_env_file=None, **base)  # type: ignore[call-arg]
+
+    def test_production_with_mock_rerank_fails_fast(self) -> None:
+        with pytest.raises(ValidationError, match="mock"):
+            self._settings()
+
+    @pytest.mark.parametrize("provider", ["tei", "jina"])
+    def test_a_real_reranker_is_accepted(self, provider: str) -> None:
+        assert self._settings(ai_rerank_provider=provider).ai_rerank_provider == provider
+
+    def test_a_mode_without_rerank_is_accepted(self) -> None:
+        """沒有要 rerank 的話，provider 是什麼都不重要——它根本不會被呼叫。"""
+        assert self._settings(rag_retrieval_mode="vector").ai_rerank_provider == "mock"
+        assert self._settings(rag_retrieval_mode="hybrid").ai_rerank_provider == "mock"
+
+    @pytest.mark.parametrize("environment", ["development", "test"])
+    def test_development_and_test_may_use_the_mock(self, environment: str) -> None:
+        """開發與 CI 必須能在沒有 GPU 的機器上跑完整條 RAG 路徑。
+
+        讓它們為此炸掉的話，唯一的出路是把模式改回 `vector`——而那會讓測試涵蓋的
+        路徑與正式環境的不是同一條，這比 mock 本身危險。
+        """
+        assert self._settings(environment=environment).ai_rerank_provider == "mock"
+
+    def test_hybrid_plus_rerank_is_covered_too(self) -> None:
+        """守門看的是「模式含不含 rerank」，不是「等不等於 vector+rerank」。
+
+        寫成等值比較的話，`hybrid+rerank` 會從這條檢查底下溜過去——而它是四個模式
+        裡最容易被人手動設上去的那一個（06 §3.1 的設計就長那樣）。
+        """
+        with pytest.raises(ValidationError, match="mock"):
+            self._settings(rag_retrieval_mode="hybrid+rerank")

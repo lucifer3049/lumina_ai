@@ -33,6 +33,7 @@ from ai.gateway.providers.mock import MockChatProvider, MockEmbeddingProvider
 from api.main import REQUEST_ID_HEADER, create_app
 from common.passwords import hash_password
 from config.logging import configure_logging
+from config.settings.app_settings import get_app_settings
 from core.redis import get_redis, tenant_key
 from rag.citation import marker_for
 from services.knowledge.embedding import EmbeddingService
@@ -224,8 +225,12 @@ class TestQueryEndpointExposesIt:
         response = await _query(client, await _token(client), kb_id)
 
         trace = response.json()["trace"]
-        assert trace["mode"] == "vector"
+        # **模式取自設定而不是寫死**：2B-5 把預設從 `vector` 改成 `vector+rerank` 時
+        # 這條紅了，而它要驗的是「trace 有沒有把模式記下來」，不是「預設值是哪一個」
+        # （那條在 `test_rag_params.py`，一個決定只該有一個地方會紅）。
+        assert trace["mode"] == get_app_settings().rag_retrieval_mode
         assert trace["fused_count"] == 1
+        # 走的是哪幾**路**與有沒有 rerank 無關：rerank 是融合之後的重排，不是第三路。
         assert [route["name"] for route in trace["routes"]] == ["vector"]
         assert set(trace["stages"]) >= {"embed", "vector", "fuse"}
 
