@@ -39,6 +39,7 @@ from core.tasks import (  # noqa: E402
     MAINTAIN_PARTITIONS_TASK,
     PURGE_DELETED_TASK,
     RECONCILE_QUOTA_TASK,
+    REINDEX_KB_TASK,
     RESCUE_STUCK_DOCUMENTS_TASK,
     RESCUE_STUCK_STREAMS_TASK,
     SEND_NOTIFICATION_EMAIL_TASK,
@@ -60,6 +61,9 @@ celery_app.conf.update(
     task_routes={
         INGEST_DOCUMENT_TASK: {"queue": "etl"},
         EMBED_DOCUMENT_TASK: {"queue": "embedding"},
+        # 重建自成一條佇列（2B-6）：一次是幾十分鐘的整庫批次，混在 embedding 裡會把
+        # 使用者剛上傳的文件擋在後面——而那個等待使用者看得到。
+        REINDEX_KB_TASK: {"queue": "reindex"},
         # 維運任務自成一條佇列（2A-2b）：塞在 etl 後面的話，大批上傳會把日結對帳
         # 推遲到不知何時。**新增 Beat 任務必須路由到 worker 有聽的佇列**——
         # tests/unit/test_platform_beat.py 對每一條 beat_schedule 驗這件事
@@ -164,3 +168,4 @@ celery_app.autodiscover_tasks(["worker"], related_name="etl_tasks")
 celery_app.autodiscover_tasks(["worker"], related_name="embedding_tasks")
 celery_app.autodiscover_tasks(["worker"], related_name="maintenance_tasks")
 celery_app.autodiscover_tasks(["worker"], related_name="notification_tasks")
+celery_app.autodiscover_tasks(["worker"], related_name="reindex_tasks")

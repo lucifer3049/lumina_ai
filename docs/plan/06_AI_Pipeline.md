@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 06 |
-| 版本 | v1.6 |
+| 版本 | v1.7 |
 | 日期 | 2026-08-27 |
 | 狀態 | Draft — 待審閱 |
 | 相依文件 | 01（ADR-003/004）、04（RAG / Embedding / Memory / Gateway 模組）、05（chunks / embeddings 表） |
-| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08）。v1.2：新增 §3.5 Prompt Engineering 策略分級表；§4 增補 reasoning 模式與 structured output 的介面預留。v1.3：§2.1 的 Clean / Chunk 兩列補上 1B-5 的實作定案（語言偵測方式、正規化邊界、不可切塊型別、token 計數注入）。v1.4：§3.1 與 §3.3 併入 1D-5 的四項實作定案（2026-08-17）——引用標記改用「本輪第幾段」的短編號、Phase 1 的檢索門檻改為可選的相對門檻、condense 先做免呼叫模型的版本、幻覺引用只剔清單不改寫文字；並在 §3.1 前加註參數的落點（15 §4.1）。偏離的完整理由見 13 §3.5。v1.5：§7 補上 `rag_trace` 的落地紀錄（2B-5）——六項全部有欄位，另記三個設計決定（一次查詢一筆、不記 chunk 內文、逐路記融合前的原始分數）與兩個未做（Loki 保存／Dashboard、§3.4 的跨語言配對）。v1.6：§3.1 的 Rerank 門檻裁決——第四次評測的分數分布推翻 `threshold=0.3`，絕對門檻維持關閉；同列記下 hybrid 不進預設的裁決（系統預設 `vector+rerank`），依據見 13 §4 的 2B-4／2B-5 結案 |
+| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08）。v1.2：新增 §3.5 Prompt Engineering 策略分級表；§4 增補 reasoning 模式與 structured output 的介面預留。v1.3：§2.1 的 Clean / Chunk 兩列補上 1B-5 的實作定案（語言偵測方式、正規化邊界、不可切塊型別、token 計數注入）。v1.4：§3.1 與 §3.3 併入 1D-5 的四項實作定案（2026-08-17）——引用標記改用「本輪第幾段」的短編號、Phase 1 的檢索門檻改為可選的相對門檻、condense 先做免呼叫模型的版本、幻覺引用只剔清單不改寫文字；並在 §3.1 前加註參數的落點（15 §4.1）。偏離的完整理由見 13 §3.5。v1.5：§7 補上 `rag_trace` 的落地紀錄（2B-5）——六項全部有欄位，另記三個設計決定（一次查詢一筆、不記 chunk 內文、逐路記融合前的原始分數）與兩個未做（Loki 保存／Dashboard、§3.4 的跨語言配對）。v1.6：§3.1 的 Rerank 門檻裁決——第四次評測的分數分布推翻 `threshold=0.3`，絕對門檻維持關閉；同列記下 hybrid 不進預設的裁決（系統預設 `vector+rerank`），依據見 13 §4 的 2B-4／2B-5 結案。v1.7：§2.2 補上 2B-6 的落地紀錄（四步的實作落點、重切不遞增版本、重切與換模型分兩次跑、保留窗參數） |
 
 ---
 
@@ -56,6 +56,25 @@ flowchart LR
 3. 完成度 100% → KB.embedding_version 原子切換 → 查詢改用新版
 4. 觀察期（可回退）→ 清理 Job 刪舊版 embeddings
 ```
+
+**落地紀錄（2B-6，2026-08-28）**——`services/knowledge/reindex.py`＋`reindex_plan.py`，
+對外是 `POST /knowledge-bases/{id}/reindex`（202 + job）：
+
+| 步 | 實作落點 | 錯了會怎樣（都沒有例外） |
+|----|----------|--------------------------|
+| 1 | 目標寫進 `kb_reindex_jobs`，**KB 現行值一個字都不動** | 存進 KB 就是第 3 步提前發生：檢索照一個一列都對不上的 `(model, version)` 去查，整庫回零筆而 API 全部 200 |
+| 2 | 逐批 64（同 `EmbeddingService`）寫入 `(target_model, target_version)`，兩版並存靠 `UNIQUE(chunk, model, embedding_version)` | 沿用現行版本號＝就地覆蓋，「舊版持續服務」當場失效且無法回退 |
+| 3 | 完成度 100% 時**一個 UPDATE 換三個欄位**（model、embedding_version、indexed_knowledge_version） | 分開寫的話，中間那一瞬間 KB 指向不存在的組合 |
+| 4 | `switched_at + reindex_rollback_window_days`（預設 7 天）之後，由既有的每日 `cleanup_chunks` 一併清掉舊向量 | 條件若寫成「不等於 KB 現行版本」，它會刪掉**剛算好、還沒切換**的那一批——那個 job 於是每一輪都重算、每一輪都被刪 |
+
+**兩項與本節原文不同的定案**（依 13 §1.2，實測／成本推翻計畫值時記錄於此）：
+
+1. **重切（切塊參數變更）不遞增 embedding 版本。** 本節的四步講的是 embedding 版本
+   升級；切塊變更走的是 `DocumentService.reingest`，產生的是全新的 chunk 列（舊的
+   當場 `superseded` 退出檢索），沒有東西需要並存。遞增會讓同一批 chunk 被算兩次
+   ——一次是正常 ETL 路徑用 KB 現行版本算的，一次是 reindex 用 `current+1` 算的。
+2. **重切與換模型不得是同一個 job**（回 422，請分兩次跑）。同一個 job 內只有「重算
+   兩次」或「重切期間整庫查不到」兩種做法，分兩次跑兩者都沒有。
 
 ## 3. Query Pipeline（讀路徑：RAG + Generation）
 

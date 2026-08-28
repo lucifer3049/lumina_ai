@@ -18,7 +18,14 @@ from typing import Any, cast
 import factory
 
 from apps.identity.models import Tenant
-from apps.knowledge.models import Chunk, Document, Embedding, EtlJob, KnowledgeBase
+from apps.knowledge.models import (
+    Chunk,
+    Document,
+    Embedding,
+    EtlJob,
+    KbReindexJob,
+    KnowledgeBase,
+)
 from config.settings.app_settings import get_app_settings
 
 
@@ -129,6 +136,28 @@ class EtlJobFactory(factory.django.DjangoModelFactory[EtlJob]):
     celery_task_id = ""
 
 
+class KbReindexJobFactory(factory.django.DjangoModelFactory[KbReindexJob]):
+    class Meta:
+        model = KbReindexJob
+
+    id = factory.LazyFunction(uuid.uuid4)
+    tenant = factory.SelfAttribute("kb.tenant")
+    kb = factory.SubFactory(KnowledgeBaseFactory)
+    # 目標版本必定大於 KB 現行值——兩版並存靠的就是這個差（06 §2.2 第 1 步）。
+    # 寫死成 1 的話，用 factory 造出來的 job 會與現行版本撞鍵，而那是 2B-6 最想
+    # 擋掉的形狀。
+    target_model = "text-embedding-3-small"
+    target_embedding_version = 2
+    target_knowledge_version = 1
+    rechunk = False
+    status = "pending"
+    total_chunks = 0
+    embedded_chunks = 0
+    total_documents = 0
+    rechunked_documents = 0
+    error: dict[str, object] | None = None
+
+
 # ── 對外介面：有回傳型別的薄包裝 ────────────────────────────────
 
 
@@ -170,3 +199,7 @@ def make_embedding(**kwargs: Any) -> Embedding:
 
 def make_etl_job(**kwargs: Any) -> EtlJob:
     return cast(EtlJob, EtlJobFactory(**_resolve(kwargs)))
+
+
+def make_kb_reindex_job(**kwargs: Any) -> KbReindexJob:
+    return cast(KbReindexJob, KbReindexJobFactory(**_resolve(kwargs)))

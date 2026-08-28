@@ -45,6 +45,7 @@ EXPECTED_ACTIONS = {
     "knowledge_bases_create": ("knowledge_base.create", "knowledge_base", None),
     "knowledge_bases_update": ("knowledge_base.update", "knowledge_base", "kb_id"),
     "knowledge_bases_delete": ("knowledge_base.delete", "knowledge_base", "kb_id"),
+    "knowledge_bases_reindex": ("knowledge_base.reindex", "knowledge_base", "kb_id"),
     "documents_upload": ("document.upload", "document", None),
     "documents_reingest": ("document.reingest", "document", "document_id"),
     "documents_delete": ("document.delete", "document", "document_id"),

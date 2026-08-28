@@ -38,6 +38,9 @@ CREATED = 201
 NO_CONTENT = 204
 ACCEPTED = 202
 FORBIDDEN = 403
+# 進度端點在「沒重建過」時回 404——四個角色都有 knowledge:read，所以這一列驗的是
+# 「讀得到這條路」（權限沒擋），而 404 是資源狀態不是權限結果。
+NOT_FOUND = 404
 
 # 上傳那一列的 body 不是 JSON。用一個哨兵值標記，由 test_permission_matrix 轉成
 # multipart——把 multipart 的細節塞進矩陣會讓那張表變得難讀，而表的可讀性正是
@@ -80,6 +83,21 @@ PERMISSION_MATRIX = [
         "/api/v1/knowledge-bases/{kb}",
         {"name": "改名"},
         {"owner": ALLOWED, "admin": ALLOWED, "editor": FORBIDDEN, "viewer": FORBIDDEN},
+    ),
+    # 整庫重建（2B-6）：一次是整庫重新嵌入的錢，而且重建期間所有人問到的答案都會
+    # 受影響——與 PATCH config 同一級（knowledge:admin），不是 write。
+    (
+        "POST",
+        "/api/v1/knowledge-bases/{kb}/reindex",
+        {},
+        {"owner": ACCEPTED, "admin": ACCEPTED, "editor": FORBIDDEN, "viewer": FORBIDDEN},
+    ),
+    # 看進度是 read：問不到東西的人要看得出「正在重建」，而那些人多半只有讀權限。
+    (
+        "GET",
+        "/api/v1/knowledge-bases/{kb}/reindex",
+        None,
+        {"owner": NOT_FOUND, "admin": NOT_FOUND, "editor": NOT_FOUND, "viewer": NOT_FOUND},
     ),
     (
         "GET",

@@ -40,6 +40,11 @@ KNOWLEDGE_TABLES = (
     # 回傳，只是範圍變成整個資料庫。embeddings 的洩漏後果與 chunks 相同，而且它
     # 是檢索**實際比對**的東西（chunk 的文字只是事後拿來顯示的）。
     "knowledge_embedding",
+    # 2B-6 新增。沒有文件內容，但漏開一樣是外洩：job 的存在本身洩漏「那個租戶有
+    # 哪些 KB、什麼時候重建過」，而寫入端更實際——少了 policy，一個漏帶 tenant
+    # filter 的 UPDATE 會把別家進行中的 job 標成 completed，那個 KB 於是會在向量
+    # 還沒算完時被切換過去。
+    "knowledge_kbreindexjob",
 )
 
 

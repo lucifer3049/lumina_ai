@@ -68,6 +68,9 @@ AUDIT_ACTIONS: dict[str, AuditSpec] = {
     "knowledge_bases_create": AuditSpec("knowledge_base.create", "knowledge_base", None),
     "knowledge_bases_update": AuditSpec("knowledge_base.update", "knowledge_base", "kb_id"),
     "knowledge_bases_delete": AuditSpec("knowledge_base.delete", "knowledge_base", "kb_id"),
+    # 2B-6：整庫重建要花錢，也會改變所有人問到的答案——「誰在什麼時候把這個知識庫
+    # 重建成哪個模型」事後只有這裡查得到。
+    "knowledge_bases_reindex": AuditSpec("knowledge_base.reindex", "knowledge_base", "kb_id"),
     "documents_upload": AuditSpec("document.upload", "document", None),
     "documents_reingest": AuditSpec("document.reingest", "document", "document_id"),
     "documents_delete": AuditSpec("document.delete", "document", "document_id"),

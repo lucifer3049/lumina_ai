@@ -87,7 +87,8 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 |--------|------|------|------|
 | GET/POST ★ | /knowledge-bases | KB 列表 / 建立 | knowledge:read / write |
 | GET/PATCH/DELETE | /knowledge-bases/{id} | 詳情 / 設定（chunk、檢索參數）/ 刪除 | read / **admin** / admin（資源級 grant 疊加） |
-| POST | /knowledge-bases/{id}/reindex | 重嵌入（202 + job） | knowledge:admin |
+| POST | /knowledge-bases/{id}/reindex | 重建（202 + job）。body 可省略；`target_model` 省略＝沿用現行模型，`rechunk` 省略＝由 `knowledge_version` 判定。**重切 ＋ 換模型的組合回 422**（2B-6，理由見 13 §4） | knowledge:admin |
+| GET | /knowledge-bases/{id}/reindex | 最近一次重建的進度（沒跑過回 **404**——回 200 加空殼的話，前端分不出「沒重建過」與「重建完了」）。2B-6 新增 | knowledge:read |
 | GET | /knowledge-bases/{id}/documents | KB 內文件列表 | knowledge:read |
 | POST ★ | /knowledge-bases/{id}/documents | 上傳（multipart；大檔走 §3.1 分塊流程） | knowledge:write |
 | GET | /documents/{id} | 詳情含 ETL 狀態/進度/stats | knowledge:read |

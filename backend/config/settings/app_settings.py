@@ -334,6 +334,20 @@ class AppSettings(BaseSettings):
     # 期間 HNSW 索引在抖、其他查詢在等。沒清完的下一輪繼續——job 每天都跑。
     retention_purge_batch_size: int = 500
 
+    # ── KB 重建的觀察期（06 §2.2 第 4 步，2B-6）────────────────
+    #
+    # 「原子切換 → **觀察期（可回退）** → 清理 Job 刪舊版 embeddings」。可回退的
+    # 具體意思就是「舊向量還在」：把 KB 的 `embedding_model` / `embedding_version`
+    # 改回去，檢索當場回到重建前的行為。窗內就刪的話，「回退」只剩「再重建一次」，
+    # 而那是整庫重算的錢與時間。
+    #
+    # 7 天而不是軟刪除的 30 天：重建的品質退步在幾天內就會被使用者反映出來（答得
+    # 比以前差），而它佔的是**向量**——每個 chunk 一份 1536 維 halfvec，留一整個月
+    # 等於把整個知識庫的向量存兩份存一個月。
+    reindex_rollback_window_days: int = 7
+    # 每個租戶每輪最多清幾個 job（同 `retention_purge_batch_size` 的分批理由）。
+    reindex_purge_batch_size: int = 50
+
     # ── 背景生成的行程級上限（11 §2；二次架構審計 F-04）────────
     #
     # 每租戶的 `streams` 額度（預設 2）是**公平性**機制，不是容量機制：租戶數不設限，

@@ -25,6 +25,7 @@ from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.knowledge import DocumentRepository, KnowledgeBaseRepository
 from services.knowledge.kb_config import validate_kb_config
+from services.knowledge.reindex_plan import needs_reindex
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,9 @@ class KnowledgeBaseView:
     # 設定畫面要嘛自己記一份（會與 DB 漂），要嘛每次都顯示空白——而空白與「沒有
     # 覆寫」在畫面上長得一樣。
     config: dict[str, Any]
+    # 既有的 chunk 是不是用現在這組切塊參數切出來的（2B-6）。`knowledge_version` 在
+    # 使用者按下儲存的那一刻就跳了，chunk 要等重建跑完才換——兩者相等才是 False。
+    needs_reindex: bool
 
 
 class KnowledgeBaseService:
@@ -163,6 +167,10 @@ class KnowledgeBaseService:
             status=kb.status,
             document_count=self._documents.count_for_kb(kb.id),
             config=dict(kb.config or {}),
+            needs_reindex=needs_reindex(
+                knowledge_version=int(kb.knowledge_version),
+                indexed_knowledge_version=int(kb.indexed_knowledge_version),
+            ),
         )
 
 

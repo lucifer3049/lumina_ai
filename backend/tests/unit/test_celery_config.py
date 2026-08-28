@@ -229,4 +229,5 @@ class TestTaskDiscovery:
             "embedding_tasks",
             "maintenance_tasks",
             "notification_tasks",
+            "reindex_tasks",
         }

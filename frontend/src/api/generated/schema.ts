@@ -359,6 +359,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/knowledge-bases/{kb_id}/reindex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Reindex Status
+         * @description 最近一次重建的進度。
+         *
+         *     **`read` 而不是 `admin`**：問不到東西的人要看得出「正在重建」，而那些人多半
+         *     只有讀權限。
+         *
+         *     沒跑過回 **404**（而不是 200 加一個空殼）：空殼之下，前端分不出「從來沒重建過」
+         *     與「重建完成了」——兩者在畫面上會長得一樣。
+         */
+        get: operations["knowledge_bases_reindex_status"];
+        put?: never;
+        /**
+         * Reindex Knowledge Base
+         * @description 整庫重建（06 §2.2）。**`admin` 而不是 `write`**：一次是整庫重新嵌入的錢，
+         *     而且重建期間所有人問到的答案都會受影響——破壞範圍等同改整個知識庫的行為。
+         */
+        post: operations["knowledge_bases_reindex"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notifications": {
         parameters: {
             query?: never;
@@ -709,6 +740,57 @@ export interface components {
             /** Message */
             message: string;
         };
+        /**
+         * KbReindexIn
+         * @description 重建的請求（09 §2.3 的 ``POST /knowledge-bases/{id}/reindex``，2B-6）。
+         *
+         *     兩個欄位都可省略——切塊參數改完之後按「重建」的人沒有要換模型，body 是 ``{}``。
+         */
+        KbReindexIn: {
+            /** Rechunk */
+            rechunk?: boolean | null;
+            /** Target Model */
+            target_model?: string | null;
+        };
+        /** KbReindexJobOut */
+        KbReindexJobOut: {
+            /** Embedded Chunks */
+            embedded_chunks: number;
+            /** Error */
+            error?: {
+                [key: string]: unknown;
+            } | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Kb Id
+             * Format: uuid
+             */
+            kb_id: string;
+            /** Rechunk */
+            rechunk: boolean;
+            /** Rechunked Documents */
+            rechunked_documents: number;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: string;
+            /** Switched At */
+            switched_at?: string | null;
+            /** Target Embedding Version */
+            target_embedding_version: number;
+            /** Target Model */
+            target_model: string;
+            /** Total Chunks */
+            total_chunks: number;
+            /** Total Documents */
+            total_documents: number;
+        };
         /** KnowledgeBaseCreateIn */
         KnowledgeBaseCreateIn: {
             /** Config */
@@ -745,6 +827,11 @@ export interface components {
             id: string;
             /** Name */
             name: string;
+            /**
+             * Needs Reindex
+             * @default false
+             */
+            needs_reindex?: boolean;
             /** Status */
             status: string;
         };
@@ -2710,6 +2797,126 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DocumentOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    knowledge_bases_reindex_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kb_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbReindexJobOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    knowledge_bases_reindex: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kb_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KbReindexIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbReindexJobOut"];
                 };
             };
             /** @description 請求格式錯誤 */

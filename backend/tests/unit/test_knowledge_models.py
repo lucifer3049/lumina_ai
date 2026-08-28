@@ -24,7 +24,7 @@ import inspect
 
 from django.db import models
 
-from apps.knowledge.models import Chunk, Document, EtlJob, KnowledgeBase
+from apps.knowledge.models import Chunk, Document, EtlJob, KbReindexJob, KnowledgeBase
 
 ALL_KNOWLEDGE_MODELS = (KnowledgeBase, Document, Chunk, EtlJob)
 
@@ -236,6 +236,7 @@ def test_tables_use_djangos_default_names() -> None:
         Document: "knowledge_document",
         Chunk: "knowledge_chunk",
         EtlJob: "knowledge_etljob",
+        KbReindexJob: "knowledge_kbreindexjob",
     }
 
     actual = {model: model._meta.db_table for model in expected}

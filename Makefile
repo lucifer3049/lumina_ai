@@ -275,9 +275,9 @@ dev: ## 開發伺服器：單 worker + 熱重載 + console log（前景，Ctrl-C
 # worker fixture 當時用 `--pool solo`（為了少一層行程），於是測到的形狀與部署的形狀
 # 不同，而**差異剛好就在出事的那一項**。兩邊現在一致，並由 test_dev_launcher.py 對帳。
 WORKER_CMD = LOG_FORMAT=console $(UV_RUN) python -m celery -A config.celery_app worker \
-	--queues etl,embedding,maintenance --pool threads --concurrency $(ETL_CONCURRENCY) --loglevel info
+	--queues etl,embedding,maintenance,reindex --pool threads --concurrency $(ETL_CONCURRENCY) --loglevel info
 
-worker: ## 啟動背景 worker（Celery，etl + embedding + maintenance 佇列；需先 make up）
+worker: ## 啟動背景 worker（Celery，etl + embedding + maintenance + reindex 佇列；需先 make up）
 	$(WORKER_CMD)
 
 # Beat 排程器（2A-2b）。**單一行程**：Beat 是排程的唯一發令者，跑兩份會讓每個

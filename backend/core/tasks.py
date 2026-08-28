@@ -41,6 +41,9 @@ PURGE_DELETED_TASK = "platform.purge_deleted"
 # 2A-5：通知的 email 派送。**不是 Beat 任務**（沒有排程），而是事件觸發——
 # 寄信離開請求路徑靠的就是它。
 SEND_NOTIFICATION_EMAIL_TASK = "platform.send_notification_email"
+# 2B-6：KB 級重建（06 §2.2 的四步）。**不走 embedding 佇列**——一次重建是幾十分鐘的
+# 整庫批次，塞在那條佇列裡會把使用者剛上傳的文件擋在後面，而後者的等待看得見。
+REINDEX_KB_TASK = "knowledge.reindex_kb"
 
 
 def warm_up() -> None:
@@ -106,6 +109,39 @@ def enqueue_embedding(
         document_id=document_id,
         delay_seconds=delay_seconds,
     )
+
+
+def enqueue_reindex(
+    *, tenant_id: uuid.UUID, job_id: uuid.UUID, delay_seconds: int = 0
+) -> str | None:
+    """把一個重建 job 排進 reindex 佇列，回傳 task id（送不出去時回 None）。
+
+    **在交易提交之後才呼叫**（同 `enqueue_ingestion`）：worker 可能在 COMMIT 之前就
+    開始處理，而它查不到那個 job。
+
+    送不出去不讓請求失敗：job 已經在 DB 裡且狀態是 pending，重推的入口存在。
+    **代價要記著**——目前沒有掃描器會把停在 pending 的 job 撿回來（與 1B/1C 的
+    enqueue 補償缺口是同一種，而 `rescue_stuck_documents` 只認文件）。
+
+    參數形狀與 `_send` 不同（job 而非 document），因此不共用：硬套的話那個 helper
+    會多一個「這次是哪一種 id」的分支，而它現在的簡單正是它不會出錯的原因。
+    """
+    from config.celery_app import celery_app
+    from config.logging import get_logger
+
+    try:
+        result = celery_app.send_task(
+            REINDEX_KB_TASK,
+            kwargs={"tenant_id": str(tenant_id), "job_id": str(job_id)},
+            countdown=delay_seconds or None,
+            retry=False,
+        )
+    except Exception:
+        get_logger(__name__).warning(
+            "task_enqueue_failed", task=REINDEX_KB_TASK, job_id=str(job_id), exc_info=True
+        )
+        return None
+    return str(result.id)
 
 
 def _send(

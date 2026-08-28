@@ -68,6 +68,11 @@ class KnowledgeBase(TimestampedModel):
     embedding_version = models.IntegerField(default=1)
     # 設定變更（chunk 策略、embedding 模型）時遞增，供「這個 KB 需要重建嗎」判定。
     knowledge_version = models.IntegerField(default=1)
+    # **現有的 chunk 是用哪一版設定切出來的**（2B-6）。`knowledge_version` 在使用者
+    # 按下儲存的那一刻就跳了，而 chunk 要等重建跑完才換——兩者相等才代表「不需要
+    # 重建」。少了這一欄，「需要重建嗎」無從判定：唯一的替代是拿 chunk 的內容去比
+    # 參數，而那既算不出來也不便宜。
+    indexed_knowledge_version = models.IntegerField(default=1)
     status = models.TextField(default="active")
 
     class Meta:
@@ -231,6 +236,75 @@ class Embedding(TimestampedModel):
 
     def __str__(self) -> str:
         return f"Embedding({self.chunk_id}/{self.model}v{self.embedding_version})"
+
+
+class KbReindexJob(TimestampedModel):
+    """KB 級重建的執行紀錄（06 §2.2 的四步，2B-6）。
+
+    **與 `EtlJob` 分開**：那一張的粒度是「一份文件的一個階段」，冪等鍵是
+    ``(document, doc_version, stage)``。重建的粒度是整個 KB，而它要回答的是
+    ``EtlJob`` 答不出來的三件事：這次的**目標**是什麼（原子切換要切到哪裡去）、
+    **完成度**多少（第 3 步的閘門）、**什麼時候切換的**（第 4 步的保留窗起點）。
+    硬塞進 `EtlJob` 的話，這三個值只能靠掃全表推回來——而第 3 步是不可逆的。
+
+    ``target_*`` 三欄就是 06 §2.2 第 1 步的「設定新 model/version」**存放處**：
+    存進 KB 自己的欄位就是第 3 步提前發生（KB 只有一組現行值），檢索會在新向量算完
+    之前就照一個一列都對不上的 ``(model, version)`` 去查，整庫回零筆而 API 全部 200。
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="kb_reindex_jobs")
+    kb = models.ForeignKey(KnowledgeBase, on_delete=models.PROTECT, related_name="reindex_jobs")
+    # 目標（第 1 步）。`target_embedding_version` 必定大於 KB 現行值——兩版並存靠的
+    # 就是 `Embedding` 的 `UNIQUE(chunk, model, embedding_version)`。
+    target_model = models.TextField()
+    target_embedding_version = models.IntegerField()
+    target_knowledge_version = models.IntegerField()
+    # 這次要不要連 chunk 一起重切（切塊參數變了）。
+    rechunk = models.BooleanField(default=False)
+    # pending / rechunking / embedding / completed / failed
+    # （`services/knowledge/reindex_plan.py` 是這組字串的單一來源）
+    status = models.TextField(default="pending")
+    # 進度。分母在開跑時定下來——邊跑邊算的話，進度會隨新上傳的文件倒退。
+    total_chunks = models.IntegerField(default=0)
+    embedded_chunks = models.IntegerField(default=0)
+    total_documents = models.IntegerField(default=0)
+    rechunked_documents = models.IntegerField(default=0)
+    # 重切進行到哪一份文件（依 id 排序的游標）。**不用「已處理筆數」當偏移量**：
+    # 重建期間有人刪掉或上傳一份文件，整個視窗就位移一格，而被跳過的那份會安靜地
+    # 留著舊參數切出來的 chunk。游標比對的是 id，增刪都不影響。
+    rechunk_cursor = models.UUIDField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    # **第 4 步的保留窗從這裡起算**，不是從 `created_at`：可回退的窗口是從切換那一刻
+    # 開始的，用建立時間算等於「重建跑得愈久、可回退的時間愈短」——而跑得久的正是
+    # 最該留退路的那些。
+    switched_at = models.DateTimeField(null=True, blank=True)
+    # 舊版向量已清（第 4 步做完）。清理器靠它跳過已處理的 job，不必每天重掃一次。
+    purged_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    error = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            # **同一個 KB 同時只能有一個進行中的 job**。約束而不只是 service 的 if：
+            # 使用者在等 40 分鐘時會再按一次（那是預期行為），而兩個請求會同時通過
+            # 那個 if——接著兩個 job 各自往同一批 chunk 寫不同版本的向量，然後互相
+            # 把對方切掉。條件與 `reindex_plan.REINDEX_ACTIVE_STATUSES` 是同一份。
+            models.UniqueConstraint(
+                fields=["kb"],
+                condition=models.Q(status__in=["pending", "rechunking", "embedding"]),
+                name="uq_reindex_job_active_per_kb",
+            ),
+        ]
+        indexes = [
+            # 「這個 KB 最近一次重建」——進度端點走這條。
+            models.Index(fields=["tenant", "kb", "-created_at"], name="ix_reindex_tenant_kb_time"),
+            # 第 4 步的清理器：切換過、還沒清的那些。
+            models.Index(fields=["tenant", "status"], name="ix_reindex_tenant_status"),
+        ]
+
+    def __str__(self) -> str:
+        return f"KbReindexJob({self.kb_id}→{self.target_model}v{self.target_embedding_version})"
 
 
 class EtlJob(TimestampedModel):

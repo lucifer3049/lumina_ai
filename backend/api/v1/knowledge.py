@@ -28,6 +28,8 @@ from api.dependencies.permissions import RequireScope
 from api.schemas.knowledge import (
     DocumentListOut,
     DocumentOut,
+    KbReindexIn,
+    KbReindexJobOut,
     KnowledgeBaseCreateIn,
     KnowledgeBaseListOut,
     KnowledgeBaseOut,
@@ -35,14 +37,16 @@ from api.schemas.knowledge import (
 )
 from api.schemas.problem import ERROR_RESPONSES
 from core.db import run_orm
-from core.exceptions import UploadTooLargeError
+from core.exceptions import NotFoundError, UploadTooLargeError
 from services.knowledge.documents import DocumentService, DocumentView
 from services.knowledge.knowledge_bases import KnowledgeBaseService, KnowledgeBaseView
+from services.knowledge.reindex import KbReindexJobView, KbReindexService
 from services.knowledge.uploads import MAX_UPLOAD_BYTES
 
 router = APIRouter(tags=["knowledge"], responses=ERROR_RESPONSES)
 _knowledge_bases = KnowledgeBaseService()
 _documents = DocumentService()
+_reindex = KbReindexService()
 
 
 def _kb_out(view: KnowledgeBaseView) -> KnowledgeBaseOut:
@@ -53,6 +57,26 @@ def _kb_out(view: KnowledgeBaseView) -> KnowledgeBaseOut:
         status=view.status,
         document_count=view.document_count,
         config=view.config,
+        needs_reindex=view.needs_reindex,
+    )
+
+
+def _reindex_out(view: KbReindexJobView) -> KbReindexJobOut:
+    return KbReindexJobOut(
+        id=view.id,
+        kb_id=view.kb_id,
+        status=view.status,
+        target_model=view.target_model,
+        target_embedding_version=view.target_embedding_version,
+        rechunk=view.rechunk,
+        total_chunks=view.total_chunks,
+        embedded_chunks=view.embedded_chunks,
+        total_documents=view.total_documents,
+        rechunked_documents=view.rechunked_documents,
+        started_at=view.started_at,
+        switched_at=view.switched_at,
+        finished_at=view.finished_at,
+        error=view.error,
     )
 
 
@@ -217,6 +241,49 @@ async def _read_within_limit(file: UploadFile) -> bytes:
             raise UploadTooLargeError(limit_bytes=MAX_UPLOAD_BYTES)
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/reindex",
+    operation_id="knowledge_bases_reindex",
+    # 202：重建是幾十分鐘的背景批次（09 §2.3）。回 200 會讓前端以為做完了，而它才剛
+    # 進佇列——該做的是回去輪詢下面那條，而狀態碼就是那個提示。
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def reindex_knowledge_base(
+    kb_id: uuid.UUID,
+    payload: KbReindexIn,
+    principal: Annotated[Principal, Depends(RequireScope("knowledge:admin"))],
+) -> KbReindexJobOut:
+    """整庫重建（06 §2.2）。**`admin` 而不是 `write`**：一次是整庫重新嵌入的錢，
+    而且重建期間所有人問到的答案都會受影響——破壞範圍等同改整個知識庫的行為。"""
+    view = await run_orm(
+        _reindex.start,
+        principal.tenant_id,
+        kb_id,
+        target_model=payload.target_model,
+        rechunk=payload.rechunk,
+    )
+    return _reindex_out(view)
+
+
+@router.get("/knowledge-bases/{kb_id}/reindex", operation_id="knowledge_bases_reindex_status")
+async def get_reindex_status(
+    kb_id: uuid.UUID,
+    principal: Annotated[Principal, Depends(RequireScope("knowledge:read"))],
+) -> KbReindexJobOut:
+    """最近一次重建的進度。
+
+    **`read` 而不是 `admin`**：問不到東西的人要看得出「正在重建」，而那些人多半
+    只有讀權限。
+
+    沒跑過回 **404**（而不是 200 加一個空殼）：空殼之下，前端分不出「從來沒重建過」
+    與「重建完成了」——兩者在畫面上會長得一樣。
+    """
+    view = await run_orm(_reindex.latest, principal.tenant_id, kb_id)
+    if view is None:
+        raise NotFoundError("這個知識庫沒有重建紀錄")
+    return _reindex_out(view)
 
 
 @router.get("/knowledge-bases/{kb_id}/documents", operation_id="documents_list")

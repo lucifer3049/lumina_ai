@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypedDict
@@ -40,7 +40,14 @@ from django.utils import timezone
 from pgvector import HalfVector
 from pgvector.django import CosineDistance
 
-from apps.knowledge.models import Chunk, Document, Embedding, EtlJob, KnowledgeBase
+from apps.knowledge.models import (
+    Chunk,
+    Document,
+    Embedding,
+    EtlJob,
+    KbReindexJob,
+    KnowledgeBase,
+)
 from core.tenant import get_current_tenant_id
 from repositories.base import SoftDeletableRepository, TenantScopedRepository
 
@@ -121,6 +128,23 @@ class DocumentRepository(SoftDeletableRepository[Document]):
 
     def count_for_kb(self, kb_id: uuid.UUID) -> int:
         return self.get_queryset().filter(kb_id=kb_id).count()
+
+    def for_kb_after(
+        self, kb_id: uuid.UUID, *, after: uuid.UUID | None, limit: int
+    ) -> list[Document]:
+        """KB 底下 id 大於游標的文件，最多 ``limit`` 份（2B-6 的重切分批）。
+
+        **游標而不是 OFFSET**：重建期間有人上傳或刪掉一份文件，整個 OFFSET 視窗就
+        位移一格，而被跳過的那份會安靜地留著舊參數切出來的 chunk。
+        """
+        queryset = self.get_queryset().filter(kb_id=kb_id)
+        if after is not None:
+            queryset = queryset.filter(id__gt=after)
+        return list(queryset.order_by("id")[:limit])
+
+    def count_in_statuses_for_kb(self, kb_id: uuid.UUID, statuses: Iterable[str]) -> int:
+        """KB 底下處在這幾個狀態的文件數——重切階段用來判斷「還在跑嗎」。"""
+        return self.get_queryset().filter(kb_id=kb_id, status__in=list(statuses)).count()
 
     # ── 保留窗的硬刪（05 §5.4，二次架構審計 P0-2）──────────────
 
@@ -484,6 +508,14 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
         """
         return list(self.get_queryset().filter(kb_id=kb_id, superseded=False).order_by("seq"))
 
+    def count_active_for_kb(self, *, kb_id: uuid.UUID) -> int:
+        """該 KB 現行的 chunk 數——reindex 完成度的**分母**（2B-6）。
+
+        條件與 `for_retrieval` 逐字相同（未 superseded）。兩者不一致的話，重建會照
+        一組數字算進度、檢索照另一組回答，而分母偏大時那個 job 永遠到不了 100%。
+        """
+        return self.get_queryset().filter(kb_id=kb_id, superseded=False).count()
+
     def active_for_version(self, *, document_id: uuid.UUID, doc_version: int) -> list[Chunk]:
         """一份文件**目前這一版、未 superseded** 的 chunk——embedding 的輸入（1C-3）。
 
@@ -724,6 +756,102 @@ class EmbeddingRepository(TenantScopedRepository[Embedding]):
             .values_list("chunk_id", flat=True)
         )
         return [chunk_id for chunk_id in chunk_ids if chunk_id not in existing]
+
+    def count_for_kb_version(self, *, kb_id: uuid.UUID, model: str, embedding_version: int) -> int:
+        """該 KB 底下已經有**這一版**向量的 chunk 數——reindex 完成度的分子（2B-6）。
+
+        走 ``chunk__kb_id`` 而不是 embedding 自己的欄位：向量沒有 kb_id（它掛在
+        chunk 上），而反正規化第三次的代價高於這個 join。
+        """
+        return (
+            self.get_queryset()
+            .filter(chunk__kb_id=kb_id, model=model, embedding_version=embedding_version)
+            .count()
+        )
+
+    def purge_other_versions(
+        self, *, kb_id: uuid.UUID, keep_model: str, keep_embedding_version: int
+    ) -> int:
+        """刪掉該 KB 底下**除了現行版本以外**的向量（06 §2.2 第 4 步）。
+
+        呼叫端必須先確認「已經切換過而且觀察期已過」——這個方法本身不判斷時間，
+        它只認「保留哪一版」。**重建進行中時呼叫是災難**：那時的「非現行版」正是剛
+        算好、還沒切換的那一批，刪掉會讓那個 job 永遠到不了 100%，而它每一輪都重算
+        一次、每一輪都被刪一次（見 `OldEmbeddingCleanupService` 的守門）。
+        """
+        deleted, _ = (
+            self.get_queryset()
+            .filter(chunk__kb_id=kb_id)
+            .exclude(model=keep_model, embedding_version=keep_embedding_version)
+            .delete()
+        )
+        return int(deleted)
+
+
+class KbReindexJobRepository(TenantScopedRepository[KbReindexJob]):
+    """KB 級重建的 job（06 §2.2、2B-6）。"""
+
+    model = KbReindexJob
+
+    def create(
+        self,
+        *,
+        kb_id: uuid.UUID,
+        target_model: str,
+        target_embedding_version: int,
+        target_knowledge_version: int,
+        rechunk: bool,
+        total_chunks: int,
+        total_documents: int,
+    ) -> KbReindexJob:
+        """建立。**併發的第二筆由 DB 的 partial unique 擋下**（不是這裡的 if）。
+
+        呼叫端要接 `IntegrityError` 並轉成 409：使用者在等 40 分鐘時會再按一次，
+        而兩個請求會同時通過任何「先查再建」的檢查。
+        """
+        return KbReindexJob.objects.create(
+            tenant_id=get_current_tenant_id(operation="KbReindexJobRepository.create"),
+            kb_id=kb_id,
+            target_model=target_model,
+            target_embedding_version=target_embedding_version,
+            target_knowledge_version=target_knowledge_version,
+            rechunk=rechunk,
+            total_chunks=total_chunks,
+            total_documents=total_documents,
+        )
+
+    def get_by_id(self, job_id: uuid.UUID) -> KbReindexJob | None:
+        return self.get_queryset().filter(id=job_id).first()
+
+    def latest_for_kb(self, kb_id: uuid.UUID) -> KbReindexJob | None:
+        return self.get_queryset().filter(kb_id=kb_id).order_by("-created_at").first()
+
+    def active_for_kb(self, kb_id: uuid.UUID, *, statuses: Sequence[str]) -> KbReindexJob | None:
+        """進行中的 job。
+
+        ``statuses`` 由呼叫端傳入而不是在這裡寫死：那組字串的單一來源是
+        `services/knowledge/reindex_plan.REINDEX_ACTIVE_STATUSES`，而 repository
+        不得 import services（鐵則 2 的方向是 services → repositories）。在這裡再寫
+        一份的話，兩份遲早會漂，而漂掉時的症狀是「擋不住第二次觸發」——沒有錯誤，
+        只有兩個 job 互相覆蓋。
+        """
+        return self.get_queryset().filter(kb_id=kb_id, status__in=list(statuses)).first()
+
+    def update(self, job_id: uuid.UUID, **fields: object) -> int:
+        return self.get_queryset().filter(id=job_id).update(**fields)
+
+    def switched_before(self, cutoff: datetime, *, limit: int) -> list[KbReindexJob]:
+        """切換超過觀察期、而且還沒清過舊向量的 job（第 4 步的輸入）。
+
+        條件是 ``switched_at``（不是 ``created_at``）：可回退的窗口從**切換**那一刻
+        起算，用建立時間算的話，重建跑得愈久可回退的時間愈短——而跑得久的正是最該
+        留退路的那些。
+        """
+        return list(
+            self.get_queryset()
+            .filter(status="completed", purged_at__isnull=True, switched_at__lt=cutoff)
+            .order_by("switched_at")[:limit]
+        )
 
 
 class EtlJobRepository(TenantScopedRepository[EtlJob]):

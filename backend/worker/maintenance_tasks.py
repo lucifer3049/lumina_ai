@@ -26,7 +26,7 @@ from core.tasks import (
 )
 from services.conversation.purge import DeletedConversationPurgeService
 from services.conversation.rescue import StuckStreamRescueService
-from services.knowledge.cleanup import ChunkCleanupService
+from services.knowledge.cleanup import ChunkCleanupService, OldEmbeddingCleanupService
 from services.knowledge.purge import DeletedKnowledgePurgeService
 from services.knowledge.rescue import StuckDocumentRescueService
 from services.platform.analytics import UsageRollupService
@@ -64,10 +64,16 @@ def reconcile_quota() -> dict[str, Any]:
 
 @shared_task(name=CLEANUP_CHUNKS_TASK)
 def cleanup_chunks() -> dict[str, Any]:
-    """superseded chunk 的每日清理（06 §2.2、2A-2b）。"""
+    """重建留下的兩種殘骸：superseded chunk（2A-2b）與舊版向量（06 §2.2 第 4 步，2B-6）。
+
+    **一個 task 做兩件事**，理由同 `maintain_partitions`：兩者是同一件維運工作
+    （「重建完成後把舊的清掉」）的兩半，拆成兩個排程只是多一條「排了卻沒有人做」
+    的可能。順序無所謂——它們清的是不同的東西，而且各自逐租戶、各自吞例外。
+    """
     purged = ChunkCleanupService().purge_all()
-    logger.info("chunk_cleanup_done", purged=purged)
-    return {"purged": purged}
+    embeddings = OldEmbeddingCleanupService().purge_all()
+    logger.info("chunk_cleanup_done", purged=purged, embeddings=embeddings)
+    return {"purged": purged, "embeddings": embeddings}
 
 
 @shared_task(name=PURGE_DELETED_TASK)
