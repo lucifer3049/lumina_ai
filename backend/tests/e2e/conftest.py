@@ -85,6 +85,10 @@ _MOCK_AI_ENV = {
     "AI_RERANK_PROVIDER": "mock",
     "AI_RERANK_MODEL": "mock-rerank",
     "AI_RERANK_API_KEY": "",
+    # 重建在重切階段會等 ETL，推不動時隔 `reindex_poll_seconds` 回來看一次（正式
+    # 預設 60 秒，因為等的是以分鐘計的整條 ETL）。e2e 的文件只有幾 KB，等 60 秒
+    # 純粹是讓 smoke 慢一分鐘——調成 2 秒，驗的機制完全相同。
+    "REINDEX_POLL_SECONDS": "2",
 }
 
 
@@ -183,9 +187,11 @@ def background_worker() -> Iterator[None]:
             "config.celery_app",
             "worker",
             "--queues",
-            # 兩條都要吃。只吃 etl 的話，smoke 第 3 步會停在 chunked 直到逾時，而
+            # 三條都要吃。只吃 etl 的話，smoke 第 3 步會停在 chunked 直到逾時，而
             # 錯誤訊息指向「ETL 未完成」——實際上 ETL 早就跑完了，沒有人接手而已。
-            "etl,embedding",
+            # `reindex` 是 2B-6 加的：少了它，重建 job 永遠停在 pending 而 API 全部
+            # 200，`test_reindex_flow.py` 會以逾時的形式紅（那正是它要擋的形狀）。
+            "etl,embedding,reindex",
             "--pool",
             "threads",
             "--loglevel",

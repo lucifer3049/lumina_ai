@@ -838,7 +838,29 @@ class KbReindexJobRepository(TenantScopedRepository[KbReindexJob]):
         return self.get_queryset().filter(kb_id=kb_id, status__in=list(statuses)).first()
 
     def update(self, job_id: uuid.UUID, **fields: object) -> int:
+        """部分更新，**並且一定推 `updated_at`**。
+
+        `updated_at` 是 `auto_now`，而那只在 `save()` 時生效——`QuerySet.update()`
+        完全不碰它（`DocumentRepository.start_new_version` 也為此手動帶時間戳）。
+        少了這一行，每一次進度回寫都不會讓 job 看起來「有動靜」，於是
+        `StuckReindexRescueService` 會把每一個**正在正常跑**的重建判成停滯——症狀是
+        「重建到一半突然失敗」，而它看起來像 provider 的問題。
+        """
+        fields.setdefault("updated_at", timezone.now())
         return self.get_queryset().filter(id=job_id).update(**fields)
+
+    def stuck_in(
+        self, statuses: Sequence[str], *, not_updated_since: datetime
+    ) -> list[KbReindexJob]:
+        """停超過門檻的 job（補償掃描的輸入）。
+
+        **時間下限不可省**：沒有它，剛送出去、訊息還在飛的 job 每一輪都會被補送一次。
+        """
+        return list(
+            self.get_queryset()
+            .filter(status__in=list(statuses), updated_at__lt=not_updated_since)
+            .order_by("updated_at")
+        )
 
     def switched_before(self, cutoff: datetime, *, limit: int) -> list[KbReindexJob]:
         """切換超過觀察期、而且還沒清過舊向量的 job（第 4 步的輸入）。

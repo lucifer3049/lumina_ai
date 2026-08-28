@@ -295,12 +295,18 @@ class KbReindexService:
 
         # 這一輪一份都沒送出去：要嘛全部送完了，要嘛卡在一份處理中的文件。
         if batch:
+            self._heartbeat(tenant_id, job.id)
             return job
 
         with tenant_context(tenant_id), unit_of_work():
             if self._documents.count_in_statuses_for_kb(job.kb_id, _STILL_PROCESSING):
                 # 還在跑。**這裡不能往前推**：重切完 ≠ 重建完，新 chunk 這時大部分
                 # 還沒有向量，而舊的已經 superseded 退出檢索。
+                #
+                # **但要留下心跳**：這段等待是合法的，而 `StuckReindexRescueService`
+                # 認的就是 `updated_at`。不推的話，一個正在正常等 ETL 的大型重建會在
+                # 門檻到期時被掃描器標成 failed。
+                self._jobs.update(job.id)
                 return job
             # 分母在**進入 embedding 階段時**才算得準——重切換掉了整批 chunk。
             self._jobs.update(
@@ -429,6 +435,15 @@ class KbReindexService:
         )
 
     # ── 輔助 ────────────────────────────────────────────────
+
+    def _heartbeat(self, tenant_id: uuid.UUID, job_id: uuid.UUID) -> None:
+        """「我還活著」——把 `updated_at` 推回現在（`KbReindexJobRepository.update`）。
+
+        重建有兩段是合法地什麼都不做：等一份處理中的文件讓開、等整批 ETL 跑完。
+        那兩段沒有心跳的話，補償掃描會把正在正常跑的重建判成停滯。
+        """
+        with tenant_context(tenant_id), unit_of_work():
+            self._jobs.update(job_id)
 
     def _require(self, kb_id: uuid.UUID) -> Any:
         """取 KB，不存在或屬於別的租戶都回同一個 404（09 §2.3 的資源類規則）。"""

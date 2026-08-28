@@ -17,15 +17,15 @@ from datetime import UTC, datetime, timedelta
 
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
-from core.tasks import enqueue_embedding, enqueue_ingestion
+from core.tasks import enqueue_embedding, enqueue_ingestion, enqueue_reindex
 from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.identity import TenantDirectoryRepository
-from repositories.knowledge import DocumentRepository
+from repositories.knowledge import DocumentRepository, KbReindexJobRepository
 
 logger = get_logger(__name__)
 
-__all__ = ["StuckDocumentRescueService"]
+__all__ = ["StuckDocumentRescueService", "StuckReindexRescueService"]
 
 # 只救這兩個狀態（模組 docstring）。狀態與任務的對應在 `_enqueue_for`——
 # 對錯邊的話，service 的狀態防呆會安靜返回，文件繼續停著，而掃描器每輪都「成功」。
@@ -83,4 +83,89 @@ class StuckDocumentRescueService:
                 total += self.rescue_tenant(tenant_id)
             except Exception:
                 logger.exception("stuck_rescue_failed", tenant_id=str(tenant_id))
+        return total
+
+
+class StuckReindexRescueService:
+    """停滯的 KB 重建 job（2B-6 缺口③）。
+
+    `enqueue_reindex` 與上面那支一樣是 best-effort，代價也一樣：job 停在 `pending`
+    而沒有任何訊息存在。**但後果嚴重一級**——`pending` 也算「進行中」，而「同一個 KB
+    只能有一個進行中的 job」是 DB 約束，所以停住的那一個會把這個 KB 的重建**永久卡
+    死**（使用者再按只會拿到 409）。
+
+    兩種停滯的處置刻意不同：
+
+    - **`pending`（還沒開始）→ 補送。** 這一版還沒有任何向量被算出來，重送最多是多查
+      一次。
+    - **做到一半 → 標 `failed`，不補送。** 補送等於讓兩個 ``advance`` 併行，而它們會
+      各自列出「還缺向量的 chunk」然後各算一次——同一批付兩次錢。標成 failed 讓使用者
+      重新發起，而已算好的向量留著（新 job 會跳過它們），一毛都不浪費。
+      這與 `StuckStreamRescueService`「就地標成中斷」是同一種處置：**沒有便宜的重送
+      方式時，就把狀態誠實地寫成終局，把決定權交回使用者。**
+    """
+
+    _REQUEUE_STATUSES = ("pending",)
+    _FAIL_STATUSES = ("rechunking", "embedding")
+
+    def __init__(
+        self,
+        *,
+        jobs: KbReindexJobRepository | None = None,
+        directory: TenantDirectoryRepository | None = None,
+    ) -> None:
+        self._jobs = jobs or KbReindexJobRepository()
+        self._directory = directory or TenantDirectoryRepository()
+
+    def rescue_tenant(self, tenant_id: uuid.UUID) -> int:
+        """處理一個租戶；回傳「補送 ＋ 標成失敗」的 job 數。"""
+        threshold = datetime.now(UTC) - timedelta(
+            seconds=get_app_settings().reindex_stuck_after_seconds
+        )
+        with tenant_context(tenant_id), unit_of_work():
+            pending = [
+                uuid.UUID(str(job.id))
+                for job in self._jobs.stuck_in(
+                    list(self._REQUEUE_STATUSES), not_updated_since=threshold
+                )
+            ]
+            stalled = [
+                (uuid.UUID(str(job.id)), str(job.status))
+                for job in self._jobs.stuck_in(
+                    list(self._FAIL_STATUSES), not_updated_since=threshold
+                )
+            ]
+            for job_id, status in stalled:
+                self._jobs.update(
+                    job_id,
+                    status="failed",
+                    error={
+                        "cause": "ReindexStalled",
+                        # 訊息會出現在使用者眼前，所以要說得出「接下來怎麼辦」。
+                        "message": "重建停滯逾時，已中止；可重新發起（已算好的向量會沿用）",
+                    },
+                    finished_at=datetime.now(UTC),
+                )
+                logger.warning(
+                    "stuck_reindex_job_failed",
+                    tenant_id=str(tenant_id),
+                    job_id=str(job_id),
+                    status=status,
+                )
+
+        for job_id in pending:
+            # 送在交易之外（同上傳路徑的規矩）。送失敗不中斷——下一輪就是重試。
+            enqueue_reindex(tenant_id=tenant_id, job_id=job_id)
+            logger.info("stuck_reindex_job_requeued", tenant_id=str(tenant_id), job_id=str(job_id))
+
+        return len(pending) + len(stalled)
+
+    def rescue_all(self) -> int:
+        """逐 active 租戶掃描（與文件的補償掃描同一個 Beat 任務）。"""
+        total = 0
+        for tenant_id in self._directory.active_tenant_ids():
+            try:
+                total += self.rescue_tenant(tenant_id)
+            except Exception:
+                logger.exception("stuck_reindex_rescue_failed", tenant_id=str(tenant_id))
         return total

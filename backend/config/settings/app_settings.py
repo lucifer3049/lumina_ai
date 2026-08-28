@@ -347,6 +347,18 @@ class AppSettings(BaseSettings):
     reindex_rollback_window_days: int = 7
     # 每個租戶每輪最多清幾個 job（同 `retention_purge_batch_size` 的分批理由）。
     reindex_purge_batch_size: int = 50
+    # 重建 worker 推不動時（重切階段在等 ETL）隔多久回來看一次。等待不佔 worker
+    # ——忙等的話，一個上千份文件的 KB 會讓一條執行緒空轉幾十分鐘。
+    #
+    # 60 秒而不是 5 秒：等的是整條 ETL（解析 + 切塊 + 向量），以分鐘計，而每 5 秒
+    # 回來一次只是把同一個查詢做 12 倍。e2e 會把它調小（見 tests/e2e/conftest.py）。
+    reindex_poll_seconds: int = 60
+    # 重建 job 多久沒動靜就算停滯（補償掃描的門檻）。
+    #
+    # **比 `etl_stuck_after_seconds` 大**：重建期間有一段是**合法地什麼都不做**
+    # （重切之後等 ETL 把文件跑回 ready），那段期間 job 靠每輪推 `updated_at` 的心跳
+    # 證明自己還活著。門檻太小的話，一個正常的大型重建會被掃描器判死。
+    reindex_stuck_after_seconds: int = 1800
 
     # ── 背景生成的行程級上限（11 §2；二次架構審計 F-04）────────
     #

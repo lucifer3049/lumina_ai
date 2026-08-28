@@ -28,7 +28,7 @@ from services.conversation.purge import DeletedConversationPurgeService
 from services.conversation.rescue import StuckStreamRescueService
 from services.knowledge.cleanup import ChunkCleanupService, OldEmbeddingCleanupService
 from services.knowledge.purge import DeletedKnowledgePurgeService
-from services.knowledge.rescue import StuckDocumentRescueService
+from services.knowledge.rescue import StuckDocumentRescueService, StuckReindexRescueService
 from services.platform.analytics import UsageRollupService
 from services.platform.maintenance import ensure_future_partitions, prune_expired_partitions
 from services.platform.reconciliation import QuotaReconciliationService
@@ -96,11 +96,20 @@ def purge_deleted() -> dict[str, Any]:
 
 @shared_task(name=RESCUE_STUCK_DOCUMENTS_TASK)
 def rescue_stuck_documents() -> dict[str, Any]:
-    """把停滯的文件補送回佇列（enqueue 是 best-effort，訊息會丟；2A-2b 收尾）。"""
+    """把停滯的文件與重建 job 撿回來（enqueue 是 best-effort，訊息會丟）。
+
+    **一個 task 做兩件事**（同 `cleanup_chunks` 與 `maintain_partitions`）：兩者是
+    同一種缺口的兩個落點——送任務送不出去時不讓使用者的請求失敗，代價是那筆工作
+    沒有人會再碰它。拆成兩個排程只是多一條「排了卻沒有人做」的可能。
+
+    重建那一支的處置與文件不同（見 `StuckReindexRescueService`）：`pending` 補送，
+    做到一半的標成 `failed`——併行的 advance 會把同一批 chunk 各算一次。
+    """
     rescued = StuckDocumentRescueService().rescue_all()
-    if rescued:
-        logger.info("stuck_rescue_done", rescued=rescued)
-    return {"rescued": rescued}
+    reindex_jobs = StuckReindexRescueService().rescue_all()
+    if rescued or reindex_jobs:
+        logger.info("stuck_rescue_done", rescued=rescued, reindex_jobs=reindex_jobs)
+    return {"rescued": rescued, "reindex_jobs": reindex_jobs}
 
 
 @shared_task(name=RESCUE_STUCK_STREAMS_TASK)

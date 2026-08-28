@@ -19,16 +19,13 @@ from typing import Any
 from celery import shared_task
 
 from config.logging import get_logger
+from config.settings.app_settings import get_app_settings
 from core.exceptions import NotFoundError
 from core.tasks import REINDEX_KB_TASK, enqueue_reindex
 from services.knowledge.reindex import KbReindexService
 from services.knowledge.reindex_plan import STATUS_COMPLETED, STATUS_FAILED
 
 logger = get_logger(__name__)
-
-# 推不動時隔多久回來看一次。重切階段等的是整條 ETL（解析 + 切塊 + 向量），以分鐘計
-# ——每 5 秒回來一次只是把同一個查詢做 12 倍。
-_POLL_SECONDS = 60
 
 # 一次 task 最多推幾輪。**不是安全上限，是公平性**：一個 KB 連續推到底的話，同一條
 # worker 執行緒在這段期間不會去看別的租戶的重建。推到上限就重排自己，位置排到隊尾。
@@ -57,7 +54,12 @@ def reindex_kb(self: Any, tenant_id: str, job_id: str) -> dict[str, Any]:
         rounds += 1
         if (view.status, view.rechunked_documents, view.embedded_chunks) == before:
             # 這一輪什麼都沒動——在等 ETL。讓出執行緒，晚一點再回來。
-            enqueue_reindex(tenant_id=tenant_uuid, job_id=job_uuid, delay_seconds=_POLL_SECONDS)
+            enqueue_reindex(
+                tenant_id=tenant_uuid,
+                job_id=job_uuid,
+                # 等的是整條 ETL，以分鐘計；e2e 會把它調小（tests/e2e/conftest.py）。
+                delay_seconds=get_app_settings().reindex_poll_seconds,
+            )
             break
     else:
         if view.status not in {STATUS_COMPLETED, STATUS_FAILED}:
