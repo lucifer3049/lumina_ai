@@ -3,7 +3,7 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 13 |
-| 版本 | v3.5 |
+| 版本 | v3.6 |
 | 日期 | 2026-08-27 |
 | 狀態 | Draft — 待審閱 |
 | 估算基準 | **1 位工程師 + AI（Claude Code）結對開發**；AI 加速 coding 與測試撰寫，但 review、整合、除錯與決策仍以人為瓶頸——時程按此重估；pw 數字保留作為工作量參考；不含需求變更緩衝（建議整體 +20%） |
@@ -409,11 +409,52 @@ DRCD 上無害是因為它是**抽取式 QA**：問句由段落本身產生，cr
 |------|------|
 | 範圍（人類核可 2026-08-28） | **重嵌入 ＋ 重切兩種都做**（原表只寫 06 §2.2 的重嵌入）；job 記在**新表** `KbReindexJob`；第 4 步走**保留窗 ＋ 既有 maintenance worker** |
 | 子項 | ① `KbReindexJob` 表（目標 model/version、進度、`switched_at`、`rechunk_cursor`）＋ RLS；**同一個 KB 只能有一個進行中的 job** 由 partial unique 擋（不是 service 的 if——使用者連點兩次時兩個請求會同時通過那個 if）；② `KnowledgeBase.indexed_knowledge_version`：「現有 chunk 是用哪一版設定切的」，`needs_reindex` ＝ 它與 `knowledge_version` 不相等；③ `services/knowledge/reindex_plan.py`（純函式：判定、狀態機、完成度）與 `reindex.py`（編排、交易邊界）分開——那幾個判斷 API／worker／清理器各要問一次；④ 四步：**第 1 步不動 KB 現行值**（目標存在 job 上）、第 2 步兩版並存（`UNIQUE(chunk, model, embedding_version)`）、第 3 步**一個 UPDATE 換三個欄位**、第 4 步保留窗（`reindex_rollback_window_days`，預設 7 天）後由既有 `cleanup_chunks` 清掉舊向量；⑤ 端點 `POST /knowledge-bases/{id}/reindex`（202，`knowledge:admin`）與 `GET`（進度，`knowledge:read`）＋ 稽核 `knowledge_base.reindex`；⑥ `KnowledgeBaseOut` 補 `needs_reindex`；⑦ 獨立的 `reindex` 佇列與 `worker/reindex_tasks.py`（推不動就重排自己，不忙等） |
-| 驗收依據（2026-08-28） | `make lint` 全綠（ruff + mypy strict 340 檔 + import-linter **9/9** + 前端 eslint／vue-tsc）；驗收測試先行 **63 條**（unit 26 + integration 22 + api 15）全紅 → 全綠；`make test` **1938 passed**（2B-5 結案時 1875，+63 全為本包的驗收測試）；`make smoke` **5 passed**。**缺口①③ 於同日補齊**（見下方兩列）：+10 條補償掃描的 integration ＋ 4 步 e2e，`make test` **1948 passed**、`make smoke` **9 passed** |
+| 驗收依據（2026-08-28） | `make lint` 全綠（ruff + mypy strict 340 檔 + import-linter **9/9** + 前端 eslint／vue-tsc）；驗收測試先行 **63 條**（unit 26 + integration 22 + api 15）全紅 → 全綠；`make test` **1938 passed**（2B-5 結案時 1875，+63 全為本包的驗收測試）；`make smoke` **5 passed**。**缺口①③④ 於同日補齊**（見下方三列）：+10 條補償掃描的 integration ＋ 4 步 e2e ＋ 9 條額度預檢（integration 8 + api 1），`make test` **1957 passed**、`make smoke` **9 passed** |
 | **實作時推翻的計畫值①：重切不遞增 embedding 版本** | 驗收測試原本釘的是「同一個模型重算也要遞增」，理由寫的是「沿用版本號會覆蓋掉現行向量」。**那個理由只對重嵌入成立**：遞增的用途是讓既有 chunk 在重算期間繼續服務檢索，而重切走的是 `DocumentService.reingest`——它產生的是**全新的 chunk 列**，舊的當場標 `superseded` 退出檢索（1B-6 起就是如此），沒有任何東西需要並存。遞增反而讓它付兩次錢：新 chunk 會由正常的 ETL→embedding 路徑用 KB **現行**版本號算一次，reindex 若以 `current+1` 為目標就得為同一批再算一次，而兩次結果一模一樣。**定案：重嵌入 `+1`，重切沿用。** |
 | **實作時推翻的計畫值②：重切與換模型不得同一個 job** | 兩者同時要時只有兩條路，而**兩條都不能接受**：(a) 先重切再換模型 → 每個 chunk 兩次真的 API 呼叫；(b) 重切前先把 KB 的模型切過去 → 還沒輪到重切的文件在整段期間查不到（一次影響整個知識庫，而不是逐份文件的那幾分鐘）。**定案：`plan_reindex` 直接拒絕這個組合**（422），請分兩次跑——先重切（沿用現行模型），完成後再發一次換模型的重建，兩個代價都沒有 |
 | 驗收測試在實作中的三處修正 | ① 重切後文件狀態原本寫 `parsing`，實際是 `uploaded`——`start_new_version` 把它送回起點，`parsing` 是 08 §2 狀態機的下一站不是落點；② provider 炸掉時原本 `pytest.raises(RuntimeError)`，實際是 Gateway 分類後的 `ProviderError`（重試耗盡才拋）；③ 改切塊參數的測試原本送 `chunk.chunk_size`，2B-5 的 `SECTIONS` 裡那一區的鍵是 `target_tokens`／`overlap_tokens`——**這一條是測試自己抓到的**：寫入端驗證回了 422 並逐欄位說明可用的鍵 |
-| 帶到 2C／後續的缺口 | ① ~~重切階段沒有端到端測試~~ ✅ **2026-08-28 結案**：`tests/e2e/test_reindex_flow.py`（4 步：上傳→改切塊參數→重建→內容仍檢索得到）併入 `make smoke`；smoke 的 worker 同步加吃 `reindex` 佇列，`reindex_poll_seconds` 在 e2e 調成 2 秒。**不比對 chunk 數**——09 §2.3 的 `GET /documents/{id}/chunks` 至今沒有實作，改以 `/rag/query` 斷言重建後仍檢索得到，那證明的更多（新 chunk 被切出來、被算成向量、且進得了候選集）。② 前端**尚無**重建的觸發與進度畫面（承 2B-5 缺口⑤，2C 的統一設定畫面）。③ ~~停在 `pending` 的 job 沒有補償掃描~~ ✅ **2026-08-28 結案**：`StuckReindexRescueService` 併入既有的 `rescue_stuck_documents` 任務。**兩種停滯的處置刻意不同**——`pending` 補送（還沒算任何向量，重送最多多查一次）；`rechunking`／`embedding` 標成 `failed` 而**不補送**（併行的 advance 會把同一批 chunk 各算一次，付兩次錢；標成 failed 讓使用者重新發起，已算好的向量會被新 job 跳過，一毛不浪費）。這比文件的同一個缺口嚴重，因為 `pending` 也算「進行中」，停住的 job 會讓那個 KB 的重建永久回 409。連帶修掉一個潛伏問題：`QuerySet.update()` **不會觸發 `auto_now`**，所以 `KbReindexJobRepository.update` 必須自己推 `updated_at`，而重切等 ETL 的那段要留心跳——否則掃描器會把每一個正常跑著的重建判死。④ **重建期間的 quota**：向量的花費會照 2A 的計量入帳（`request_id=reindex:{job_id}`），但**不預檢額度**——一次整庫重建可能把租戶的月度額度一次用完，而它是管理員按的，不是使用者的請求。⑤ 承 2B-5 的③④⑥⑦（`rag_trace` 只進 log、跨語言配對未做、租戶層 `/settings` 未做、手寫題仍 24 題等）不變 |
+| 帶到 2C／後續的缺口 | ① ~~重切階段沒有端到端測試~~ ✅ **2026-08-28 結案**：`tests/e2e/test_reindex_flow.py`（4 步：上傳→改切塊參數→重建→內容仍檢索得到）併入 `make smoke`；smoke 的 worker 同步加吃 `reindex` 佇列，`reindex_poll_seconds` 在 e2e 調成 2 秒。**不比對 chunk 數**——09 §2.3 的 `GET /documents/{id}/chunks` 至今沒有實作，改以 `/rag/query` 斷言重建後仍檢索得到，那證明的更多（新 chunk 被切出來、被算成向量、且進得了候選集）。② 前端**尚無**重建的觸發與進度畫面（承 2B-5 缺口⑤，2C 的統一設定畫面）。③ ~~停在 `pending` 的 job 沒有補償掃描~~ ✅ **2026-08-28 結案**：`StuckReindexRescueService` 併入既有的 `rescue_stuck_documents` 任務。**兩種停滯的處置刻意不同**——`pending` 補送（還沒算任何向量，重送最多多查一次）；`rechunking`／`embedding` 標成 `failed` 而**不補送**（併行的 advance 會把同一批 chunk 各算一次，付兩次錢；標成 failed 讓使用者重新發起，已算好的向量會被新 job 跳過，一毛不浪費）。這比文件的同一個缺口嚴重，因為 `pending` 也算「進行中」，停住的 job 會讓那個 KB 的重建永久回 409。連帶修掉一個潛伏問題：`QuerySet.update()` **不會觸發 `auto_now`**，所以 `KbReindexJobRepository.update` 必須自己推 `updated_at`，而重切等 ETL 的那段要留心跳——否則掃描器會把每一個正常跑著的重建判死。④ ~~重建期間的 quota 不預檢~~ ✅ **2026-08-28 裁決並結案（超額就擋下）**：`start()` 在建立 job **之前**檢查 `tokens_month`，估算 = 該 KB 現行 chunk 的 `token_count` 總和（不是 chunk 數乘平均值——chunk 長度差距很大，平均值會把一個放滿長表格的 KB 低估到擋不住；superseded 的不算，它們不會被重算）。**檢查而不預留**：`tokens_month` 的事實來源是 `usage_logs` 裡 `category="llm"` 的列（`llm_token_total`），而 embedding 記的是 `category="embedding"`——預留下去的數字**隔天會被日結對帳抹掉**（2A-2b 的鐵律：DB 蓋 Redis），而在那之前它擋著這個租戶的每一次對話。因此這道檢查的語意是「你現在就已經超額／這一次一定會超」，不是「先押著」。被擋的請求**不建 job**（同上傳路徑），429 的 `details` 帶 `needed`／`remaining`，畫面才說得出還差多少。新增 `QuotaService.check_headroom`。**併記一個本次沒有處理的前提**：embedding 的用量至今完全不進 `tokens_month`（那一欄只認 `llm`），所以這道檢查擋的是「chat 已經把額度用掉了」，而重建自己花掉的 token 仍然不會反映在額度上——要讓它反映，需要一個新的配額資源（embedding tokens）與 plan 字串的變更，那是產品面的決定，留給 2C 的設定畫面一起裁決。⑤ 承 2B-5 的③④⑥⑦（`rag_trace` 只進 log、跨語言配對未做、租戶層 `/settings` 未做、手寫題仍 24 題等）不變 |
+
+#### 2C 子工作包切分（2026-08-29，人類核可）
+
+> 上表的 2C（1.5 pw）含**兩個後端子系統**（Settings + envelope 加密、API Key）與
+> **三個前端畫面**（統一設定、稽核/用量、API Key），還要吃掉 2B 帶過來的三個缺口
+> （2B-5 的⑤⑥、2B-6 的②）。前端在此之前只有 login / knowledge / chat 三塊，
+> **管理面的版型與導覽等於從零開始**——這也是原表寫「兩頁共用同一套版型，分開做會做
+> 兩次」的理由。**估算誠實記下：切分後合計約 3.25 pw，是表上的兩倍多。**
+
+| 子項 | 內容 | 估算 |
+|------|------|------|
+| **2C-0** | 開工前定案（見下） | — |
+| **2C-1** | 租戶層 `/settings` 讀寫（三層覆寫的中間層） | 0.5 pw |
+| **2C-2** | `core/crypto.py` envelope 加密 + `/settings` 的憑證唯寫不回讀 | 0.5 pw |
+| **2C-3** | API Key：表 + CRUD + **認證路徑** | 0.75 pw |
+| **2C-4** | **統一設定畫面**（三層 + KB 參數 + 重建按鈕與進度，吃掉 2B-5⑤ 與 2B-6②） | 0.75 pw |
+| **2C-5** | 管理面版型/導覽 + 稽核與用量檢視 | 0.75 pw |
+
+相依：2C-1 → 2C-4；2C-2 → 2C-3。**最容易砍的是 2C-3**（對外整合用，自用不影響）。
+
+**2C-0 開工前定案（2026-08-29，人類裁決）**
+
+| 題目 | 裁決 | 理由 |
+|------|------|------|
+| KEK 從哪來（10 §75 寫「Secrets Manager」，而目前是單機 Compose） | **env 變數 `ENCRYPTION_KEK` + `backend/.secrets/` 檔案備援**（`make gen-kek`，與 JWT 金鑰同一個既有慣例），缺就 Fail Fast 拒絕啟動 | 上雲時把同一個變數換成 Secrets Manager 注入即可，程式不動；先接真 KMS 則本機與 CI 都得再寫一套 mock（CLAUDE.md 禁止測試打真 API） |
+| API Key 做到哪 | **完整：CRUD + 能當認證用** | 沒有認證路徑的 API Key 是一串不能用的字串；09 §2.2 那一列本來就是這個意思 |
+| 起手順序 | **2C-1** | 純後端、範圍清楚、沿用 2B-5 的參數宣告，不需要任何新決策；而它是 2C-4 的前提 |
+
+#### 2C-1 結案（2026-08-29）
+
+> 15 §4.1 的三層覆寫從 1D-5 起就寫在 `services/rag/params.py` 的 docstring 上，
+> 中間層一直標著「屬 2C，這一層還不存在」。**不生效與不存在在畫面上長得一樣**：
+> 後台填得進去、讀得回來、看得見，而問答用的還是系統預設——那正是 15 §4.1 整條決定
+> 要防的症狀。
+
+| 項目 | 內容 |
+|------|------|
+| 子項 | ① `services/platform/settings.py::TenantSettingsService`（get / update / `param_config`）；② **`read_param` 從「一個 section」改為「由具體到一般的層序」**（`layers_of`）——覆寫順序只有那一份實作，散進呼叫端的話「KB 蓋租戶」與「租戶蓋系統」會在某一處被寫反；③ 寫入端驗證**共用 2B-5 的 `SECTIONS`**（`validate_kb_config` 抽出 `validate_param_sections(prefix=...)`，租戶層用 `settings.` 前綴、KB 層維持 `config.`）；④ `quota` 區塊的寫入端檢查（資源白名單、非負整數或 `null`）——它從 2A 起就住在同一欄卻從來沒有寫入路徑；⑤ 三個讀取端接上中間層（`RetrievalService` 三處、`_chunk_config_from` 一處），並帶 per-request 快取；⑥ `GET/PATCH /settings`（`tenant:admin` × 2）＋ 稽核 `settings.update`（before/after） |
+| 驗收依據（2026-08-29） | `make lint` 全綠（ruff + mypy strict **349 檔** + import-linter 9/9 + 前端）；驗收測試先行 **44 條**（unit 17 + integration 17 + api 10）全紅 → 全綠；`make test`／`make smoke` 見下方數字 |
+| 實作時修正的一條驗收測試 | 我原本把 `top_k: -5` 寫成「壞值退回系統預設」。既有語意（1D-5 起）是**型別錯退回下一層、範圍錯夾制**，兩者混為一談會壞在相反的方向：把夾制改成退回，使用者填 1000 會安靜地變回預設（他以為調大了）；把退回改成夾制，`"很多"` 會被當成 0 或 1 去跑檢索。測試改為兩條，把那個分界寫在名字上 |
+| 帶到 2C-2／2C-4 的缺口 | ① `/settings` 目前**只有參數與配額**——provider 憑證屬 2C-2（`credential_ref` 與 envelope 加密），而 `GET` 已經先定成 `tenant:admin`，就是為了那時不必再收緊權限；② 09 §2.6 的 `GET /settings/feature-flags` 未做（本專案還沒有 flag 機制，硬做一個空端點只會讓 client 以為有）；③ 三層裡的**租戶層沒有前端**（2C-4）；④ `param_config` 的 per-request 快取在 Celery worker 內是**每個 task 一次**（worker 沒有請求邊界）——目前每份文件切塊各查一次 DB，量級可接受，KB 數量大時再評估 |
 
 ### 4.1 二次架構審計的處置（2026-08-24）
 

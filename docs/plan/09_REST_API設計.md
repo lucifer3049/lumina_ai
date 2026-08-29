@@ -87,7 +87,7 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 |--------|------|------|------|
 | GET/POST ★ | /knowledge-bases | KB 列表 / 建立 | knowledge:read / write |
 | GET/PATCH/DELETE | /knowledge-bases/{id} | 詳情 / 設定（chunk、檢索參數）/ 刪除 | read / **admin** / admin（資源級 grant 疊加） |
-| POST | /knowledge-bases/{id}/reindex | 重建（202 + job）。body 可省略；`target_model` 省略＝沿用現行模型，`rechunk` 省略＝由 `knowledge_version` 判定。**重切 ＋ 換模型的組合回 422**（2B-6，理由見 13 §4） | knowledge:admin |
+| POST | /knowledge-bases/{id}/reindex | 重建（202 + job）。body 可省略；`target_model` 省略＝沿用現行模型，`rechunk` 省略＝由 `knowledge_version` 判定。**重切 ＋ 換模型的組合回 422**；**`tokens_month` 額度不足回 429**（`details` 帶 `needed`／`remaining`；2B-6，理由見 13 §4） | knowledge:admin |
 | GET | /knowledge-bases/{id}/reindex | 最近一次重建的進度（沒跑過回 **404**——回 200 加空殼的話，前端分不出「沒重建過」與「重建完了」）。2B-6 新增 | knowledge:read |
 | GET | /knowledge-bases/{id}/documents | KB 內文件列表 | knowledge:read |
 | POST ★ | /knowledge-bases/{id}/documents | 上傳（multipart；大檔走 §3.1 分塊流程） | knowledge:write |
@@ -137,7 +137,7 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 | GET | /analytics/costs | 成本分解 | analytics:read |
 | GET | /audit-logs | 稽核查詢（分頁/過濾） | audit:read |
 | GET | /notifications · PATCH /notifications/{id}/read | 通知收件匣（列表回應含 `unread_count`） | 登入者 |
-| GET/PATCH | /settings | 租戶級設定（含 provider 憑證寫入，唯寫不回讀明文） | tenant:admin |
+| GET/PATCH | /settings | 租戶級設定：參數覆寫（`retrieval`／`chunk`，與 KB 共用同一份宣告）＋ 配額覆寫（`quota`）；**PATCH 是逐區的部分更新**，`{}` 為清空該區，違規逐欄位 422（`field` 為 `settings.<區>.<鍵>`）。**provider 憑證寫入屬 2C-2**（唯寫不回讀明文） | tenant:admin |
 | GET | /settings/feature-flags | 本租戶 flag 狀態 | 登入者 |
 | — | **/admin/**（平台管理面）| tenants CRUD、全域 model catalog、系統 flag、跨租戶用量、DLQ 重放 | platform_admin（獨立角色）|
 

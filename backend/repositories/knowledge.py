@@ -516,6 +516,23 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
         """
         return self.get_queryset().filter(kb_id=kb_id, superseded=False).count()
 
+    def token_total_for_kb(self, *, kb_id: uuid.UUID) -> int:
+        """該 KB 現行 chunk 的 token 總和——整庫重建的花費估算（2B-6 缺口④）。
+
+        **加總 `token_count` 而不是「chunk 數 × 平均值」**：那一欄是切塊時算出來的實際
+        值（1B-5 的 chunker 注入），而 chunk 長度的差距很大——用平均估的話，一個放滿
+        長表格的知識庫會被低估到擋不住。
+
+        條件與 `for_retrieval` 一致（未 superseded）：舊版 chunk 不會被重算，把它們算
+        進帳單會讓一個重跑過很多次的 KB 永遠開不了重建。
+        """
+        total = (
+            self.get_queryset()
+            .filter(kb_id=kb_id, superseded=False)
+            .aggregate(total=models.Sum("token_count"))["total"]
+        )
+        return int(total or 0)
+
     def active_for_version(self, *, document_id: uuid.UUID, doc_version: int) -> list[Chunk]:
         """一份文件**目前這一版、未 superseded** 的 chunk——embedding 的輸入（1C-3）。
 

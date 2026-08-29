@@ -214,6 +214,47 @@ class QuotaService:
             tenant_id=tenant_id, resource=resource, amount=amount, key=key, ttl_seconds=ttl
         )
 
+    def check_headroom(self, tenant_id: uuid.UUID, resource: str, amount: int) -> None:
+        """額度不夠就 raise 429，**但不預留**（2B-6：整庫重建的預檢）。
+
+        與 `check_and_reserve` 的差別只有一個字：這裡不 INCR。用在「一次要花很多、
+        而且花費會由別的路徑記帳」的動作上——整庫重建就是那種：它的用量進
+        `usage_logs` 的 `category="embedding"`，而 `tokens_month` 的事實來源是
+        `category="llm"`（`UsageLogRepository.llm_token_total`）。預留下去的數字**隔天
+        會被日結對帳抹掉**（2A-2b 的鐵律：DB 蓋 Redis），而在那之前它擋著這個租戶的
+        每一次對話——一個沒有人對得起來的計數器，方向還是錯的。
+
+        因此這條檢查的語意是「**你現在就已經超額了／這一次一定會讓你超額**，所以不
+        給開始」，不是「我先把這筆錢押著」。
+
+        `amount == 0` 一律放行：沒有東西要算的時候不該因為額度而失敗。
+        """
+        if amount <= 0:
+            return
+        limit = self.limits(tenant_id).get(resource)
+        if limit is None:
+            return
+
+        now = datetime.now(UTC)
+        if resource in _DB_BACKED:
+            used = self._db_used(tenant_id, resource)
+        else:
+            key, _ = self._key_and_ttl(tenant_id, resource, now)
+            used = int(cast("Any", get_redis().get(key)) or 0)
+
+        if used + amount > limit:
+            raise self._exceeded(
+                resource,
+                limit=limit,
+                used=used,
+                resets_at=(
+                    _period_end(resource, now) if resource in _PERIOD_MONTH | _PERIOD_DAY else None
+                ),
+                # client 要說得出「還差多少」——只給 limit/used 的話，畫面只能顯示
+                # 一句「額度不足」，而使用者不知道是差一點還是差十倍。
+                extra={"needed": amount, "remaining": max(limit - used, 0)},
+            )
+
     def commit(self, reservation: QuotaReservation, *, actual: int | None = None) -> None:
         """把預留校正為實際值（reserve/commit 的第二段）。actual 為 None＝照預留量。"""
         if actual is None or actual == reservation.amount:
@@ -387,9 +428,11 @@ class QuotaService:
         limit: int,
         used: int,
         resets_at: datetime | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> QuotaExceededError:
         details: dict[str, Any] = {"resource": resource, "limit": limit, "used": used}
         if resets_at is not None:
             details["resets_at"] = resets_at
+        details.update(extra or {})
         logger.info("quota_exceeded", **details)
         return QuotaExceededError(f"配額已用盡：{resource}（上限 {limit}）", details=details)

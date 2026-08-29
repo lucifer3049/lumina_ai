@@ -65,6 +65,7 @@ from services.knowledge.reindex_plan import (
     plan_reindex,
     ready_to_switch,
 )
+from services.platform.quota import QuotaService
 from services.platform.usage import UsageEvent, UsageService
 
 logger = get_logger(__name__)
@@ -111,6 +112,7 @@ class KbReindexService:
         embeddings: EmbeddingRepository | None = None,
         jobs: KbReindexJobRepository | None = None,
         usage: UsageService | None = None,
+        quota: QuotaService | None = None,
         document_service: DocumentService | None = None,
     ) -> None:
         # Gateway 惰性建立，理由同 `EmbeddingService`：建構 service 不該因為
@@ -122,6 +124,7 @@ class KbReindexService:
         self._embeddings = embeddings or EmbeddingRepository()
         self._jobs = jobs or KbReindexJobRepository()
         self._usage = usage or UsageService()
+        self._quota = quota or QuotaService()
         # 重切走既有的 re-ingest（冪等鍵、superseded 標記、失敗分類都在那裡）。
         # 另寫一份的話那三件事就有兩份實作，而它們遲早會漂。
         self._documents_service = document_service or DocumentService()
@@ -162,6 +165,21 @@ class KbReindexService:
             except ValueError as exc:
                 # 純函式只知道「這組參數不成立」，HTTP 語意在這一層決定（422）。
                 raise ValidationFailedError(str(exc)) from exc
+
+            # **額度預檢**（2B-6 缺口④，人類裁決 2026-08-28：超額就擋下）。整庫重建是
+            # 這套系統單次花費最大的動作——一個知識庫可能有數萬個 chunk，每一個都是一
+            # 次真的 embedding 呼叫——而按下去的那個人看不到帳單。上傳從 2A-2a 起就先
+            # 檢查再落地，這裡補上同一道。
+            #
+            # **檢查而不預留**，理由見 `QuotaService.check_headroom`：embedding 的用量
+            # 記在 `category="embedding"`，而 `tokens_month` 的事實來源只認 `llm`——
+            # 預留的數字隔天會被日結對帳抹掉，在那之前卻擋著這個租戶的每一次對話。
+            #
+            # 擋在**建立 job 之前**：被擋的請求什麼都不留（同上傳路徑），否則重建歷史
+            # 會被一堆「從來沒開始過」的失敗紀錄塞滿。
+            self._quota.check_headroom(
+                tenant_id, "tokens_month", self._chunks.token_total_for_kb(kb_id=kb_id)
+            )
 
             # 先查一次是為了讓常見情況拿到清楚的錯誤；**真正擋住併發的是下面的
             # 唯一約束**——使用者連點兩次時，兩個請求會同時通過這個 if。

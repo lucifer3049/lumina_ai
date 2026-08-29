@@ -117,6 +117,16 @@ def _seed_tenant_b() -> None:
         make_tenant(id=TENANT_B, slug=SLUG_B)
 
 
+def _exhaust_token_quota() -> None:
+    """把這個租戶當月的 token 計數器推到上限——「已經超額」的狀態。"""
+    from services.platform.quota import QuotaService
+
+    service = QuotaService()
+    limit = service.limits(TENANT_A)["tokens_month"]
+    assert limit is not None, "free plan 應該有 tokens_month 上限"
+    service.correct(TENANT_A, "tokens_month", limit)
+
+
 def _audit_entry() -> Any:
     from apps.platform.models import AuditLog
 
@@ -218,6 +228,33 @@ class TestTrigger:
         )
 
         assert response.status_code == 422
+
+
+class TestQuota:
+    """整庫重建是單次花費最大的動作——額度用盡就擋（人類裁決 2026-08-28）。
+
+    這一條驗的是 **HTTP 對映**（429 + `QUOTA_EXCEEDED` + 機器可讀的 details）；
+    估算與「檢查不預留」的語意在 `tests/integration/test_kb_reindex_quota.py`。
+    """
+
+    async def test_an_exhausted_quota_returns_429(
+        self, client: httpx.AsyncClient, tenant_a_with_roles: None
+    ) -> None:
+        kb_id = await run_orm(_kb)
+        await run_orm(_exhaust_token_quota)
+
+        response = await client.post(
+            f"/api/v1/knowledge-bases/{kb_id}/reindex",
+            json={},
+            headers=_auth(await _token(client)),
+        )
+
+        assert response.status_code == 429, response.text
+        body = response.json()
+        assert body["code"] == "QUOTA_EXCEEDED"
+        # 畫面要說得出「還差多少」，不能只有一句「額度不足」。
+        assert body["details"]["resource"] == "tokens_month"
+        assert body["details"]["needed"] > 0
 
 
 class TestPermissions:
