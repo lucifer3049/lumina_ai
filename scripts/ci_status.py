@@ -7,17 +7,24 @@ push 之後跑這一個指令盯到終局，是 CLAUDE.md Git 規則的一部分
 
 設計取捨：
 
-- **不依賴 gh CLI**：repo 是公開的，匿名 REST API 就查得到；多裝一個工具
-  就多一個「本機有、CI 教訓現場沒有」的變因（這次除錯時 gh 正好不在）。
+- **不硬性依賴 gh CLI**：多裝一個工具就多一個「本機有、CI 教訓現場沒有」的
+  變因（最初除錯時 gh 正好不在）。但**匿名只在公開 repo 成立**——GitHub 對
+  私有資源一律回 404（連 repo 存在與否都不透露），本 repo 轉私有之後這支腳本
+  就再也查不到任何 run。因此 token 分三層：環境變數 → `gh auth token` → 匿名，
+  三層都是可選的，缺席時往下退，全缺就是原本的匿名行為。
 - **對照的是本機 HEAD**：latest run 可能屬於別人剛推的 commit；答錯 commit
   的綠燈比沒有答案更糟。找不到本機 HEAD 的 run 時明講，不拿別的 run 充數。
 - **進行中就輪詢**（15s 間隔、20 分鐘上限）：這個指令的用途是「盯到終局」，
-  回一句 in_progress 就退出的話，使用者還是得自己記得回來看。
+  回一句 in_progress 就退出的話，使用者還是得自己記得回來看。**run 尚未建立
+  也一樣輪詢**（另計 90 秒）——push 到 run 出現有數十秒延遲，而典型用法就是
+  push 完立刻跑。
 """
 
 from __future__ import annotations
 
+import functools
 import json
+import os
 import re
 import subprocess
 import sys
@@ -28,6 +35,9 @@ import urllib.request
 API_TIMEOUT_S = 10  # 對外呼叫必有 timeout（CLAUDE.md）
 POLL_INTERVAL_S = 15
 POLL_BUDGET_S = 20 * 60
+# push 到 run 出現有數十秒延遲，而本指令的典型用法就是 push 完立刻跑。與上面的
+# 預算分開計：「還沒建立」與「跑太久」是兩件事，混用會讓 90 秒的等待吃掉 20 分鐘。
+CREATE_BUDGET_S = 90
 
 
 def repo_slug() -> str:
@@ -55,15 +65,48 @@ def local_head() -> str:
     ).stdout.strip()
 
 
+@functools.cache
+def token() -> str | None:
+    """token 三層：環境變數 → `gh auth token` → 匿名（None）。
+
+    私有 repo 下匿名一定 404，而 404 與「repo 打錯字」長得一模一樣——所以取不到
+    token 不在這裡失敗，改由 `api()` 在真的 404 時把兩種可能一起講出來。
+    順帶把匿名的 60 次/小時 rate limit 拉到 5000。
+    """
+    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            return value
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=API_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None  # gh 沒裝或沒登入，退回匿名
+    return result.stdout.strip() or None
+
+
 def api(path: str) -> dict:
-    request = urllib.request.Request(
-        f"https://api.github.com{path}",
-        headers={"Accept": "application/vnd.github+json"},
-    )
+    headers = {"Accept": "application/vnd.github+json"}
+    bearer = token()
+    if bearer is not None:
+        headers["Authorization"] = f"Bearer {bearer}"
+    request = urllib.request.Request(f"https://api.github.com{path}", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=API_TIMEOUT_S) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
+        # 404 在 GitHub 上是「不存在**或**你看不到」的合稱：私有 repo 對匿名請求
+        # 就回這個。少了這句提示，症狀（查不到任何 run）會被讀成「CI 沒觸發」。
+        if error.code == 404 and bearer is None:
+            raise SystemExit(
+                f"GitHub API 404（{path}）——repo 不存在，或它是私有的而目前沒有 "
+                "token。設 GITHUB_TOKEN／GH_TOKEN，或 `gh auth login` 後重跑。"
+            ) from error
         # 403 常見於匿名 rate limit（每 IP 每小時 60 次）；訊息要指得到原因。
         raise SystemExit(f"GitHub API {error.code}：{error.reason}（{path}）") from error
 
@@ -86,13 +129,26 @@ def print_jobs(slug: str, run_id: int) -> None:
 def main() -> int:
     slug = repo_slug()
     sha = local_head()
-    deadline = time.monotonic() + POLL_BUDGET_S
 
+    # 這裡輪詢的是「run 有沒有被建立」，下面那個迴圈輪詢的是「跑完了沒」。
+    # 原本這一段是 `return 3`，而 push 完立刻跑必然撞上建立延遲——那個離開碼
+    # 與「CI 真的沒觸發」完全一樣，於是每次都得靠人去 GitHub 上再看一次。
+    create_deadline = time.monotonic() + CREATE_BUDGET_S
     run = find_run(slug, sha)
-    if run is None:
-        print(f"找不到 {sha[:7]} 的 CI run——還沒 push，或 workflow 尚未觸發。")
-        return 3
+    while run is None:
+        if time.monotonic() > create_deadline:
+            print(
+                f"{sha[:7]} 等了 {CREATE_BUDGET_S} 秒仍無 CI run——確認已 push、"
+                "Actions 未被停用，且 workflow 的觸發條件涵蓋本分支。"
+            )
+            return 3
+        print(f"{sha[:7]} 的 run 尚未出現，{POLL_INTERVAL_S}s 後再查…")
+        time.sleep(POLL_INTERVAL_S)
+        run = find_run(slug, sha)
 
+    # 完成預算從 run 真的存在之後才起算——與上面的建立預算共用一個 deadline 的話，
+    # 等了 80 秒才出現的 run 只剩 18 分半可跑。
+    deadline = time.monotonic() + POLL_BUDGET_S
     while run["status"] != "completed":
         if time.monotonic() > deadline:
             print(f"輪詢超過 {POLL_BUDGET_S // 60} 分鐘仍未完成：{run['html_url']}")
