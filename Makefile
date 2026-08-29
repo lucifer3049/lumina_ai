@@ -108,7 +108,7 @@ DEMO_PASSWORD ?= demo-password-1234
 .NOTPARALLEL:
 .PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys gen-kek migrate \
         dev api api-pinned start stop restart status demo-tenant app-logs \
-        test test-unit test-integration test-api smoke verify-infra verify-provider \
+        test test-unit test-integration test-api test-k test-file test-lf \n        test-changed smoke verify-infra verify-provider \
         tei-up tei-down tei-logs eval-sample eval-retrieval eval-clean \
         deploy-up deploy-migrate deploy-down deploy-logs deploy-shutdown-drill \
         image lock-check lint lint-backend ci-status \
@@ -400,6 +400,46 @@ test-integration: ## 只跑 integration（Repository / 基礎設施；需先 mak
 
 test-api: ## 只跑 api（權限矩陣、錯誤格式、SSE 協定；需先 make up）
 	$(UV_RUN) pytest tests/api $(PYTEST_PARALLEL)
+
+# ── 測試階梯：不是每次都該跑全套 ──────────────────────────────────────────────
+#
+# 全套在 6 核上要 7 分鐘以上——~1800 條，加上 37 支 migration 在**每個 xdist worker
+# 各建一次**測試資料庫（不加 `--reuse-db` 的理由見上方）。而一次開發迴圈動得到的
+# 通常只有幾條。每改一行就跑全套的結果不是比較安全，是根本不跑。
+#
+# 由窄到寬，改一行時從最上面那個開始：
+#
+#   make test-k K=credential                  名稱含關鍵字的
+#   make test-file FILE=tests/unit/test_x.py  單一檔案
+#   make test-lf                              只重跑上次紅的
+#   make test-changed                         依 git diff 推出受影響的測試檔
+#   make test-unit                            unit 層（不需 make up）
+#   make test                                 全套
+#
+# **窄目標一律不是安全網**：`-k` 與 `--lf` 只看得見你已經想到的東西，`test-changed`
+# 靠檔名對應（見 scripts/changed_tests.py），三者都漏得掉「A 改了、B 壞了」。
+# CLAUDE.md 的「任務結束必跑」指的仍是 `make test` ＋ `make smoke`，push 前那一次
+# 不能省——這一段縮短的是中間的迴圈，不是最後那道關。
+
+test-k: ## 只跑名稱含 K 的測試（例：make test-k K=credential）
+	@test -n "$(K)" || { echo "用法：make test-k K=<關鍵字>"; exit 2; }
+	$(UV_RUN) pytest -k "$(K)" $(PYTEST_PARALLEL)
+
+# 單檔**不開 xdist**：worker 的行程啟動與建庫成本要各付一次，一個檔案的量攤不掉它。
+test-file: ## 只跑指定檔案（例：make test-file FILE=tests/unit/test_crypto.py）
+	@test -n "$(FILE)" || { echo "用法：make test-file FILE=tests/<層>/test_x.py"; exit 2; }
+	$(UV_RUN) pytest $(FILE)
+
+# 上次全綠時 pytest 會因為「沒有東西可收集」以 5 退出——那不是失敗，攔下來講白話，
+# 否則修完最後一條紅燈的獎勵是一個看起來像壞掉的 make 錯誤。
+test-lf: ## 只重跑上次失敗的測試（修紅燈的迴圈用）
+	@$(UV_RUN) pytest --last-failed --last-failed-no-failures=none $(PYTEST_PARALLEL); 	code=$$?; 	if [ $$code -eq 5 ]; then echo "上次沒有紅燈，沒有東西要重跑。"; exit 0; fi; 	exit $$code
+
+# BASE 可指定比較基準：`make test-changed BASE=origin/main` 是「這條分支改過的全部」，
+# 不給就是工作區（含未追蹤的新測試檔）。
+test-changed: ## 只跑與改動相關的測試檔（啟發式；BASE=<ref> 可比較整條分支）
+	@files="$$(python3 scripts/changed_tests.py $(if $(BASE),--base $(BASE),))"; 	if [ -z "$$files" ]; then 		echo "推不出相關的測試檔——改動可能不在 backend/ 之下，或只動到文件。"; 		exit 0; 	fi; 	echo "選中："; echo "$$files" | sed 's/^/  /'; 	$(UV_RUN) pytest $$files $(PYTEST_PARALLEL)
+
 
 # smoke **不在 make test 裡**（pyproject 的 testpaths 排除 tests/e2e）：它要起一個
 # 真的 uvicorn 子行程並連開發資料庫，前置條件比其他三層多（make up + make migrate
