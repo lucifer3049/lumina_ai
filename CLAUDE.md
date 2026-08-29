@@ -93,7 +93,8 @@ FastAPI / Django / Vue 生態的實務標準，且本 repo 自初始 commit 起�
 - 依 `docs/plan/13` 的 Phase 與工作包（1A、1B…）順序開發；一次任務對齊一個工作包，完成即停，等人類 review。**禁止連續自主推進多個工作包。**
 - **驗收測試先行**：任務開始時先依 DoD 產出驗收測試，等人類確認測試內容後才實作，實作至測試通過為止。
 - **每次任務結束必跑 E2E smoke suite**（`make smoke`：登入→上傳→ready→問答→引用）；smoke 不過視同任務未完成。
-- 開發**過程中**用窄目標（`make test-changed` / `test-lf` / `test-k`，見下方常用指令）；它們是啟發式，**不是安全網**——結束前的 `make test` ＋ `make smoke` 那一次不能省。
+- 開發**過程中**用窄目標（`make test-changed` / `test-lf` / `test-k`，見下方常用指令）；它們是啟發式，**不是安全網**——結束前的全套 ＋ `make smoke` 那一次不能省。
+- **全套目前要分三層跑**：`make test-unit && make test-integration && make test-api`（2026-08-29 實測 2039 passed，與 CI 的分階段一致）。`make test` 把三層併成單一 pytest session，已知會紅 36 條（`etl/extract/sandbox.py` 的 `run_isolated` 拿到 forkserver 的 `ConnectionRefusedError`，穩定重現，非環境殘留），那是**待單獨任務卡處理的已知缺口**（`docs/plan/13` §4 的 2C-2 結案表），不是這次改壞的；但它也不是跳過全套的藉口——分三層那一次照跑。
 - 每個工作包的 DoD 在 13 內定義；測試不過、DoD 未達不得標記完成。
 - 設計文件與實作衝突時：**停下並回報差異**，由人類決定改文件或改實作；不要擅自偏離文件。
 - 文件值（top_k、timeout、TTL 等參數）是起始點，調整需在 PR 說明中標注並引用依據（評測/壓測數據）。
@@ -117,10 +118,13 @@ DoD 測試：<測試檔路徑或「本次先產出」>
 
 ```bash
 make up            # 啟動完整開發環境（Docker Compose）
-make test          # 全部測試（~7 分鐘；任務結束與 push 前各必跑一次）
+# 全套（~7 分鐘；任務結束與 push 前各必跑一次）。**分三層跑**，理由見上方開發流程：
+make test-unit && make test-integration && make test-api
 make lint          # ruff + mypy + import-linter
 make migrate       # Django migration
-pnpm gen:api       # 前端重新產生 OpenAPI client（後端 schema 變更後必跑）
+# 後端 schema 變更後必跑。**兩段都要**：`gen:api` 讀的是 repo 根目錄的 openapi.json，
+# 單跑它只會用舊契約重產一次，看到 no diff 而以為同步了，等 CI 的 openapi-check 才紅。
+make openapi && make gen-api
 
 # 開發迴圈用的窄目標（由窄到寬，改一行時從最上面開始）：
 make test-k K=credential                  # 名稱含關鍵字

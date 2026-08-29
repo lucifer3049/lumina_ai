@@ -108,7 +108,8 @@ DEMO_PASSWORD ?= demo-password-1234
 .NOTPARALLEL:
 .PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys gen-kek migrate \
         dev api api-pinned start stop restart status demo-tenant app-logs \
-        test test-unit test-integration test-api test-k test-file test-lf \n        test-changed smoke verify-infra verify-provider \
+        test test-unit test-integration test-api test-k test-file test-lf \
+        test-changed smoke verify-infra verify-provider \
         tei-up tei-down tei-logs eval-sample eval-retrieval eval-clean \
         deploy-up deploy-migrate deploy-down deploy-logs deploy-shutdown-drill \
         image lock-check lint lint-backend ci-status \
@@ -381,7 +382,14 @@ else
 PYTEST_PARALLEL = -n $(PYTEST_XDIST_N)
 endif
 
-test: ## 執行全部測試（需先 make up）；平行度可用 PYTEST_XDIST_N 覆寫，=1 為序列
+# **已知缺口（2026-08-29，未處理）**：三層併成單一 pytest session 跑會紅 36 條——
+# `etl/extract/sandbox.py` 的 `run_isolated` 在 `process.start()` 拿到 forkserver 的
+# `ConnectionRefusedError`，連坐 test_ingestion／test_notification_events／
+# test_embedding_pipeline。**穩定重現**，與環境殘留無關（13 §4 的 2C-2 結案表）。
+# 在那張任務卡處理之前，全套請跑 `make test-unit && make test-integration && make
+# test-api`（2026-08-29 實測 2039 passed），與 CI 的分階段一致；本目標保留原樣，
+# 是因為改動它屬於那張卡的範圍，而不是順手改掉紅燈的證據。
+test: ## 全部測試單一 session（**目前已知紅 36 條**，見上方；全套請改跑分三層）
 	$(UV_RUN) pytest $(PYTEST_PARALLEL)
 
 # 分層目標對應 02 §2 的測試四層；CI 分階段跑（unit 最快，壞掉時最好定位）。
@@ -437,8 +445,13 @@ test-lf: ## 只重跑上次失敗的測試（修紅燈的迴圈用）
 
 # BASE 可指定比較基準：`make test-changed BASE=origin/main` 是「這條分支改過的全部」，
 # 不給就是工作區（含未追蹤的新測試檔）。
+#
+# **選檔腳本失敗必須紅**：`files="$$(...)"` 的離開碼就是命令替換的離開碼，所以下面
+# 那個 `||` 不是裝飾。少了它，腳本掛掉（例：BASE 指到本機沒 fetch 過的 ref，git diff
+# 直接非零）會得到空輸出，與「沒有相關測試」長得一模一樣，於是 make 報 exit 0——一條
+# 測試都沒跑的假綠，而假綠比紅燈難察覺得多。
 test-changed: ## 只跑與改動相關的測試檔（啟發式；BASE=<ref> 可比較整條分支）
-	@files="$$(python3 scripts/changed_tests.py $(if $(BASE),--base $(BASE),))"; 	if [ -z "$$files" ]; then 		echo "推不出相關的測試檔——改動可能不在 backend/ 之下，或只動到文件。"; 		exit 0; 	fi; 	echo "選中："; echo "$$files" | sed 's/^/  /'; 	$(UV_RUN) pytest $$files $(PYTEST_PARALLEL)
+	@files="$$(python3 scripts/changed_tests.py $(if $(BASE),--base $(BASE),))" || { echo "選檔腳本失敗（原因見上一行）——這不是「沒有相關測試」，不要當成綠燈。"; exit 1; }; if [ -z "$$files" ]; then echo "推不出相關的測試檔——改動不在 backend/ 之下，或只動到文件。"; exit 0; fi; echo "選中："; echo "$$files" | sed 's/^/  /'; $(UV_RUN) pytest $$files $(PYTEST_PARALLEL)
 
 
 # smoke **不在 make test 裡**（pyproject 的 testpaths 排除 tests/e2e）：它要起一個
@@ -618,7 +631,9 @@ lint: lint-backend fe-lint ## 後端 + 前端全部靜態檢查（前端需先 m
 # push 之後必跑（CLAUDE.md Git 規則）。存在的理由：CI 曾連紅四次（run 57–60）無人
 # 察覺——test_ci_pipeline.py 只防「步驟缺漏」，防不了「內容真的紅」，而 GitHub 的
 # email 通知太容易被淹沒。跑在 in_progress 時會輪詢到完成為止（上限 20 分鐘）。
-# 不依賴 gh CLI：repo 是公開的，走匿名 REST API 即可。
+# 不**硬性**依賴 gh CLI，但也不再能匿名跑：repo 已轉私有，而 GitHub 對私有資源一律
+# 回 404（連存在與否都不透露），匿名查不到任何 run。token 分三層（GITHUB_TOKEN／
+# GH_TOKEN → `gh auth token` → 匿名），缺席時往下退；細節見 scripts/ci_status.py 開頭。
 ci-status: ## 查最近 push 的 CI 結果（進行中會輪詢至完成；紅燈時列出失敗的 job/step）
 	python3 scripts/ci_status.py
 
