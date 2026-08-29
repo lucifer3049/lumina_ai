@@ -725,6 +725,25 @@ export interface components {
             /** Items */
             items: components["schemas"]["CostBucketOut"][];
         };
+        /**
+         * CredentialOut
+         * @description 憑證的**遮罩**（09 §2.6「唯寫不回讀明文」，2C-2）。
+         *
+         *     這裡刻意只有三個欄位，而且沒有一個放得下金鑰：名字（哪一把）、末四碼（是不是我
+         *     以為的那一把）、更新時間（上次換是什麼時候）。**存在本身就是「已設定」**——
+         *     另開一個 `configured` 布林欄位的話，它與「這一列在不在」遲早會不一致。
+         */
+        CredentialOut: {
+            /** Hint */
+            hint: string;
+            /** Name */
+            name: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** DocumentListOut */
         DocumentListOut: {
             /** Items */
@@ -1197,6 +1216,8 @@ export interface components {
         };
         /** TenantSettingsOut */
         TenantSettingsOut: {
+            /** Credentials */
+            credentials?: components["schemas"]["CredentialOut"][];
             /** Settings */
             settings?: {
                 [key: string]: unknown;

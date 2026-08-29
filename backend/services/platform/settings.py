@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from config.logging import get_logger
@@ -36,15 +36,26 @@ from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.identity import TenantRepository
 from services.knowledge.kb_config import SECTIONS, validate_param_sections
+from services.platform.credentials import CREDENTIAL_NAMES, CredentialService, CredentialView
 from services.platform.quota import RESOURCES
 
 logger = get_logger(__name__)
 
-__all__ = ["PARAM_SECTIONS", "QUOTA_SECTION", "TenantSettingsService", "TenantSettingsView"]
+__all__ = [
+    "CREDENTIALS_SECTION",
+    "PARAM_SECTIONS",
+    "QUOTA_SECTION",
+    "TenantSettingsService",
+    "TenantSettingsView",
+]
 
 # 這一層可寫的區塊：參數兩區（與 KB 共用宣告）＋ 配額一區。
 PARAM_SECTIONS = tuple(SECTIONS)
 QUOTA_SECTION = "quota"
+# 憑證**不存在 `tenant.settings` 裡**（2C-2）：那一欄會整份回給前端，也會被
+# `param_config` 讀去解析參數。這個區塊只是 PATCH 的入口，值一律轉手給
+# `CredentialService` 加密落地，然後從 settings 裡消失。
+CREDENTIALS_SECTION = "credentials"
 
 
 class TenantSettingsInvalidError(ValidationFailedError):
@@ -61,15 +72,27 @@ class TenantSettingsInvalidError(ValidationFailedError):
 @dataclass(frozen=True)
 class TenantSettingsView:
     settings: dict[str, Any]
+    # 憑證的**遮罩**（名稱、末四碼、更新時間）——明文永遠不在這裡（09 §2.6）。
+    credentials: list[CredentialView] = field(default_factory=list)
 
 
 class TenantSettingsService:
-    def __init__(self, *, tenants: TenantRepository | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tenants: TenantRepository | None = None,
+        credentials: CredentialService | None = None,
+    ) -> None:
         self._tenants = tenants or TenantRepository()
+        self._credentials = credentials or CredentialService()
 
     def get(self, tenant_id: uuid.UUID) -> TenantSettingsView:
+        """設定 + **憑證的遮罩**（名稱、末四碼、更新時間）。明文沒有任何回讀路徑。"""
         with tenant_context(tenant_id), unit_of_work():
-            return TenantSettingsView(settings=dict(self._require(tenant_id).settings or {}))
+            settings = dict(self._require(tenant_id).settings or {})
+        return TenantSettingsView(
+            settings=settings, credentials=self._credentials.describe(tenant_id)
+        )
 
     def update(self, tenant_id: uuid.UUID, patch: Mapping[str, Any] | None) -> TenantSettingsView:
         """逐區的部分更新：沒送到的區塊原封不動。
@@ -81,7 +104,15 @@ class TenantSettingsService:
         **驗證在寫任何一區之前**：擋在後面的話，一個被拒的請求會留下「這一區改了、
         那一區沒改」的半套狀態，而使用者收到的是 422。
         """
-        validated = self._validate(patch)
+        validated, credentials = self._validate(patch)
+        # **憑證先落地，而且走的是另一張表**（2C-2）：`tenant.settings` 會整份回給
+        # 前端、也會被 `param_config` 讀去解析參數，明文進去就是同時對三個地方外流。
+        for name, secret in credentials.items():
+            if secret is None:
+                self._revoke(tenant_id, name)
+            else:
+                self._credentials.put(tenant_id, name, secret.strip())
+
         with tenant_context(tenant_id), unit_of_work():
             tenant = self._require(tenant_id)
             before = dict(tenant.settings or {})
@@ -90,9 +121,18 @@ class TenantSettingsService:
             # 與這次變更之間隔著幾天——那時唯一查得到「誰、什麼時候、從什麼改成
             # 什麼」的地方就是稽核（2A-4）。before 兩邊都要，只記 after 的話看得到
             # 「現在是多少」，看不到「本來是多少」。
-            audit.describe(before=before, after=merged)
+            #
+            # **憑證只記名字不記值**：`platform_auditlog` 是刻意不可刪改的（05 §3.5），
+            # 金鑰寫進去就收不回來。而「誰在什麼時候換掉了哪一把」正是最該留的那一列，
+            # 所以也不能整段不記。
+            audit.describe(
+                before=before,
+                after={**merged, **_credential_audit(credentials)},
+            )
             self._tenants.update_settings(tenant_id, merged)
-            return TenantSettingsView(settings=merged)
+            return TenantSettingsView(
+                settings=merged, credentials=self._credentials.describe(tenant_id)
+            )
 
     def param_config(self, tenant_id: uuid.UUID) -> dict[str, Any]:
         """給讀取端用的那一半：**只有參數區**，不含配額（日後也不含憑證，2C-2）。
@@ -114,16 +154,30 @@ class TenantSettingsService:
             )
         )
 
+    def _revoke(self, tenant_id: uuid.UUID, name: str) -> None:
+        """撤銷一把憑證。**已經不存在時什麼都不做**：PATCH 是宣告式的——使用者說的是
+        「這一把不要了」，而不是「刪掉那一列」；重送一次就 404 的話，一個重試會變成
+        錯誤，而狀態其實已經是他要的樣子。"""
+        try:
+            self._credentials.delete(tenant_id, name)
+        except NotFoundError:
+            logger.info("credential_already_absent", tenant_id=str(tenant_id), name=name)
+
     # ── 內部 ────────────────────────────────────────────────
 
-    def _validate(self, patch: Mapping[str, Any] | None) -> dict[str, Any]:
+    def _validate(self, patch: Mapping[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
         if patch is None:
-            return {}
+            return {}, {}
         if not isinstance(patch, Mapping):
             raise TenantSettingsInvalidError([{"field": "settings", "message": "必須是物件"}])
 
         quota = patch.get(QUOTA_SECTION, _MISSING)
-        rest = {name: value for name, value in patch.items() if name != QUOTA_SECTION}
+        credentials = patch.get(CREDENTIALS_SECTION, _MISSING)
+        rest = {
+            name: value
+            for name, value in patch.items()
+            if name not in (QUOTA_SECTION, CREDENTIALS_SECTION)
+        }
 
         errors: list[dict[str, str]] = []
         cleaned: dict[str, Any] = {}
@@ -132,7 +186,7 @@ class TenantSettingsService:
                 rest,
                 prefix="settings",
                 error=TenantSettingsInvalidError,
-                also_known=(QUOTA_SECTION,),
+                also_known=(QUOTA_SECTION, CREDENTIALS_SECTION),
             )
         except TenantSettingsInvalidError as invalid:
             errors += list(invalid.details.get("errors", []))
@@ -144,9 +198,12 @@ class TenantSettingsService:
             else:
                 cleaned[QUOTA_SECTION] = dict(quota)
 
+        if credentials is not _MISSING:
+            errors += _validate_credentials(credentials)
+
         if errors:
             raise TenantSettingsInvalidError(errors)
-        return cleaned
+        return cleaned, ({} if credentials is _MISSING else dict(credentials))
 
     def _require(self, tenant_id: uuid.UUID) -> Any:
         """租戶不存在就 404。
@@ -178,17 +235,63 @@ def _validate_quota(raw: Any) -> list[dict[str, str]]:
 
     errors: list[dict[str, str]] = []
     for key, value in raw.items():
-        field = f"settings.{QUOTA_SECTION}.{key}"
+        where = f"settings.{QUOTA_SECTION}.{key}"
         if str(key) not in RESOURCES:
             errors.append(
-                {"field": field, "message": f"不是可設定的配額；可用的有 {'、'.join(RESOURCES)}"}
+                {"field": where, "message": f"不是可設定的配額；可用的有 {'、'.join(RESOURCES)}"}
             )
             continue
         if value is None:
             # 明確的「這個租戶不限制」（`resolve_limits`）。
             continue
         if isinstance(value, bool) or not isinstance(value, int):
-            errors.append({"field": field, "message": f"必須是整數或 null（收到 {value!r}）"})
+            errors.append({"field": where, "message": f"必須是整數或 null（收到 {value!r}）"})
         elif value < 0:
-            errors.append({"field": field, "message": f"不得為負數（收到 {value!r}）"})
+            errors.append({"field": where, "message": f"不得為負數（收到 {value!r}）"})
     return errors
+
+
+def _validate_credentials(raw: Any) -> list[dict[str, str]]:
+    """憑證：鍵是白名單裡的名字，值是非空字串（設定）或 `None`（撤銷）。
+
+    **名字打錯會存進去、在畫面上看得見，而沒有任何東西會去讀它**——與 2B-5 擋
+    `retreival` 是同一種錯誤，只是這一次錯的東西是「provider 拿不到金鑰」。
+
+    空字串同樣要擋：存得進去、畫面顯示「已設定」，而每一次呼叫 provider 都是 401。
+    """
+    if not isinstance(raw, Mapping):
+        return [{"field": f"settings.{CREDENTIALS_SECTION}", "message": "必須是物件"}]
+
+    errors: list[dict[str, str]] = []
+    for key, value in raw.items():
+        where = f"settings.{CREDENTIALS_SECTION}.{key}"
+        if str(key) not in CREDENTIAL_NAMES:
+            errors.append(
+                {
+                    "field": where,
+                    "message": f"不是可設定的憑證；可用的有 {'、'.join(CREDENTIAL_NAMES)}",
+                }
+            )
+            continue
+        if value is None:
+            # 明確的「撤銷這一把」，與「這次沒送」分得開。
+            continue
+        # **訊息不得帶上收到的值**（鐵則 9）：它就是那把金鑰。
+        if not isinstance(value, str) or not value.strip():
+            errors.append({"field": where, "message": "必須是非空字串，或 null（撤銷）"})
+    return errors
+
+
+def _credential_audit(credentials: Mapping[str, Any]) -> dict[str, Any]:
+    """稽核上的憑證變更：**只有名字與動作**。
+
+    值一律不進去（鐵則 9、10 §5）。整段不記也不行——「誰換掉了 provider 金鑰」是這張
+    表最該有的一列之一。
+    """
+    if not credentials:
+        return {}
+    return {
+        CREDENTIALS_SECTION: {
+            name: ("revoked" if value is None else "updated") for name, value in credentials.items()
+        }
+    }

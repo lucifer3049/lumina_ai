@@ -8,9 +8,18 @@ from decimal import Decimal
 from typing import cast
 
 from django.db import IntegrityError, models, transaction
+from django.db.models import QuerySet
 from django.utils import timezone
 
-from apps.platform.models import AuditLog, Notification, QuotaCounter, UsageDaily, UsageLog
+from apps.platform.models import (
+    AuditLog,
+    Credential,
+    Notification,
+    QuotaCounter,
+    TenantDataKey,
+    UsageDaily,
+    UsageLog,
+)
 from core.tenant import get_current_tenant_id
 from core.uow import unit_of_work
 from repositories.base import TenantScopedRepository, cursor_key, split_page
@@ -420,3 +429,55 @@ class NotificationRepository(TenantScopedRepository[Notification]):
             return False
         rows.filter(read_at__isnull=True).update(read_at=timezone.now())
         return True
+
+
+class TenantDataKeyRepository(TenantScopedRepository[TenantDataKey]):
+    """per-tenant 的 DEK（10 §5、2C-2）。一個租戶一列，PK 就是 tenant。"""
+
+    model = TenantDataKey
+
+    def get_queryset(self) -> QuerySet[TenantDataKey]:
+        """PK 是 `tenant`，而基底過濾的是 `tenant_id` 欄位——兩者在這張表上同名，
+        因此沿用基底即可；覆寫只是為了讓型別對得上。"""
+        return super().get_queryset()
+
+    def get(self) -> TenantDataKey | None:
+        return self.get_queryset().first()
+
+    def create_if_absent(self, *, wrapped_key: bytes) -> TenantDataKey:
+        """建立；已經有了就回既有的那一列。
+
+        **靠 PK 擋併發而不是先查再建**：兩個請求各產生一把的話，後寫入的會蓋掉先前
+        那把，而先前那把加密過的憑證從此解不開——沒有任何錯誤訊息，症狀出現在下一次
+        呼叫 provider 時。
+        """
+        row, _ = TenantDataKey.objects.get_or_create(
+            tenant_id=get_current_tenant_id(operation="TenantDataKeyRepository.create_if_absent"),
+            defaults={"wrapped_key": wrapped_key},
+        )
+        return row
+
+
+class CredentialRepository(TenantScopedRepository[Credential]):
+    """加密憑證（10 §5）。**這一層看不到明文**——密文由 Service 封裝好才進來。"""
+
+    model = Credential
+
+    def get(self, name: str) -> Credential | None:
+        return self.get_queryset().filter(name=name).first()
+
+    def list_all(self) -> list[Credential]:
+        return list(self.get_queryset().order_by("name"))
+
+    def upsert(self, *, name: str, ciphertext: bytes, hint: str) -> Credential:
+        """同名覆寫（`uq_credential_tenant_name`）。"""
+        row, _ = Credential.objects.update_or_create(
+            tenant_id=get_current_tenant_id(operation="CredentialRepository.upsert"),
+            name=name,
+            defaults={"ciphertext": ciphertext, "hint": hint},
+        )
+        return row
+
+    def delete(self, name: str) -> int:
+        deleted, _ = self.get_queryset().filter(name=name).delete()
+        return int(deleted)

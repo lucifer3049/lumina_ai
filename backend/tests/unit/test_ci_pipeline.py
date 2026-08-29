@@ -286,10 +286,13 @@ def test_migration_drift_check_still_exists(workflow: dict[str, Any]) -> None:
 # 而它在缺金鑰時 Fail Fast（services/identity/tokens.py：不自動產生暫時金鑰，
 # 否則「忘了掛金鑰」的部署會照樣起得來，症狀是使用者隨機被登出）。
 _NEEDS_JWT_KEYS = ("pytest", "export_openapi.py")
-_JWT_KEY_TARGET = "gen-jwt-keys"
+# **兩把金鑰，同一個洞**（2C-2 加上 KEK）：JWT 缺檔時 app 起不來；KEK 缺檔時
+# 憑證那幾條測試會在解密的那一刻炸，而兩者都只在 CI 上發生——本機的 `.secrets/`
+# 是第一次開發時產生的，之後一直躺在 gitignore 裡。
+_KEY_TARGETS = ("gen-jwt-keys", "gen-kek")
 
 
-def test_jobs_that_build_the_app_generate_jwt_keys(workflow: dict[str, Any]) -> None:
+def test_jobs_that_build_the_app_generate_every_key(workflow: dict[str, Any]) -> None:
     """凡是會建 app 或跑測試的 job，都必須先產生 JWT 金鑰——而且要在那之前。
 
     **這條是補一個真的踩過的洞**：1A-3 把 JWT 認證接上去之後，CI 的三個 job 同時
@@ -315,16 +318,17 @@ def test_jobs_that_build_the_app_generate_jwt_keys(workflow: dict[str, Any]) -> 
         if needs_at is None:
             continue
 
-        keys_at = next((index for index, run in enumerate(runs) if _JWT_KEY_TARGET in run), None)
+        for target in _KEY_TARGETS:
+            keys_at = next((index for index, run in enumerate(runs) if target in run), None)
 
-        assert keys_at is not None, (
-            f"job `{name}` 會建立 app 或跑測試，但沒有 `make {_JWT_KEY_TARGET}`——"
-            "金鑰缺檔是 Fail Fast，整個 job 會在 import 期就死"
-        )
-        assert keys_at < needs_at, (
-            f"job `{name}` 的 `make {_JWT_KEY_TARGET}` 排在需要金鑰的步驟之後（"
-            f"第 {keys_at + 1} 步 vs 第 {needs_at + 1} 步）"
-        )
+            assert keys_at is not None, (
+                f"job `{name}` 會建立 app 或跑測試，但沒有 `make {target}`——"
+                "金鑰缺檔是 Fail Fast，整個 job 會在需要它的那一刻死"
+            )
+            assert keys_at < needs_at, (
+                f"job `{name}` 的 `make {target}` 排在需要金鑰的步驟之後（"
+                f"第 {keys_at + 1} 步 vs 第 {needs_at + 1} 步）"
+            )
 
 
 def test_pnpm_is_invoked_from_inside_the_frontend_directory() -> None:

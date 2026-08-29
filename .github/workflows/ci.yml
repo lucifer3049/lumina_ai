@@ -64,7 +64,7 @@ jobs:
       # 因此連「不連 DB 的 unit 層」也需要這一步：OpenAPI 契約漂移檢查會建 app。
       # 1A-3 引入 JWT 時漏掉，CI 自那次起整片紅（由 test_ci_pipeline.py 補上守門）。
       - name: 產生 JWT 簽章金鑰
-        run: make gen-jwt-keys
+        run: make gen-jwt-keys gen-kek
 
       # 獨立一步而非藏在 lint 裡：鎖檔過期是「改了依賴卻沒提交 lock」的訊號，
       # 值得在 CI 上一眼看到是哪一步紅的。
@@ -100,7 +100,7 @@ jobs:
 
       # 理由見 quality job 的同名步驟。integration/api 兩層會實際簽發與驗證 token。
       - name: 產生 JWT 簽章金鑰
-        run: make gen-jwt-keys
+        run: make gen-jwt-keys gen-kek
 
       # 與本機完全相同的一鍵流程：起服務 → statement_timeout → bucket 初始化
       - name: 起基礎設施
@@ -148,7 +148,7 @@ jobs:
 
       # 理由見 quality job 的同名步驟。本 job 的 openapi-check 會重新匯出契約＝建 app。
       - name: 產生 JWT 簽章金鑰
-        run: make gen-jwt-keys
+        run: make gen-jwt-keys gen-kek
 
       - name: 安裝前端相依
         run: make fe-install
@@ -179,7 +179,7 @@ jobs:
       # backend/.dockerignore 漏列 `.secrets/`，所有人本機建的 image 都把 ES256 私鑰
       # 烘了進去，CI 卻一次都沒紅過。守門要能失敗才算守門。
       - name: 產生 JWT 簽章金鑰（讓 trivy 的 secret 掃描有東西可掃）
-        run: make gen-jwt-keys
+        run: make gen-jwt-keys gen-kek
 
       - name: 建置 backend image
         run: make image BACKEND_IMAGE="${BACKEND_IMAGE}"

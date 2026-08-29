@@ -382,6 +382,31 @@
         "title": "CostsOut",
         "type": "object"
       },
+      "CredentialOut": {
+        "description": "憑證的**遮罩**（09 §2.6「唯寫不回讀明文」，2C-2）。\n\n這裡刻意只有三個欄位，而且沒有一個放得下金鑰：名字（哪一把）、末四碼（是不是我\n以為的那一把）、更新時間（上次換是什麼時候）。**存在本身就是「已設定」**——\n另開一個 `configured` 布林欄位的話，它與「這一列在不在」遲早會不一致。",
+        "properties": {
+          "hint": {
+            "title": "Hint",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "hint",
+          "updated_at"
+        ],
+        "title": "CredentialOut",
+        "type": "object"
+      },
       "DocumentListOut": {
         "properties": {
           "items": {
@@ -1449,6 +1474,13 @@
       },
       "TenantSettingsOut": {
         "properties": {
+          "credentials": {
+            "items": {
+              "$ref": "#/components/schemas/CredentialOut"
+            },
+            "title": "Credentials",
+            "type": "array"
+          },
           "settings": {
             "additionalProperties": true,
             "title": "Settings",

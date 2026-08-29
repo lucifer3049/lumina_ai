@@ -3,7 +3,7 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 13 |
-| 版本 | v3.6 |
+| 版本 | v3.7 |
 | 日期 | 2026-08-27 |
 | 狀態 | Draft — 待審閱 |
 | 估算基準 | **1 位工程師 + AI（Claude Code）結對開發**；AI 加速 coding 與測試撰寫，但 review、整合、除錯與決策仍以人為瓶頸——時程按此重估；pw 數字保留作為工作量參考；不含需求變更緩衝（建議整體 +20%） |
@@ -455,6 +455,19 @@ DRCD 上無害是因為它是**抽取式 QA**：問句由段落本身產生，cr
 | 驗收依據（2026-08-29） | `make lint` 全綠（ruff + mypy strict **349 檔** + import-linter 9/9 + 前端）；驗收測試先行 **44 條**（unit 17 + integration 17 + api 10）全紅 → 全綠；`make test`／`make smoke` 見下方數字 |
 | 實作時修正的一條驗收測試 | 我原本把 `top_k: -5` 寫成「壞值退回系統預設」。既有語意（1D-5 起）是**型別錯退回下一層、範圍錯夾制**，兩者混為一談會壞在相反的方向：把夾制改成退回，使用者填 1000 會安靜地變回預設（他以為調大了）；把退回改成夾制，`"很多"` 會被當成 0 或 1 去跑檢索。測試改為兩條，把那個分界寫在名字上 |
 | 帶到 2C-2／2C-4 的缺口 | ① `/settings` 目前**只有參數與配額**——provider 憑證屬 2C-2（`credential_ref` 與 envelope 加密），而 `GET` 已經先定成 `tenant:admin`，就是為了那時不必再收緊權限；② 09 §2.6 的 `GET /settings/feature-flags` 未做（本專案還沒有 flag 機制，硬做一個空端點只會讓 client 以為有）；③ 三層裡的**租戶層沒有前端**（2C-4）；④ `param_config` 的 per-request 快取在 Celery worker 內是**每個 task 一次**（worker 沒有請求邊界）——目前每份文件切塊各查一次 DB，量級可接受，KB 數量大時再評估 |
+
+#### 2C-2 結案（2026-08-29）
+
+> 10 §5 的「欄位級加密」從 Phase 0 起就寫在文件上，而在此之前**沒有任何加密程式碼**
+> ——`/settings` 到 2C-1 為止也還沒有地方放憑證。這一包把兩者一起補上。
+
+| 項目 | 內容 |
+|------|------|
+| 子項 | ① `core/crypto.py`：KEK 載入（**env `ENCRYPTION_KEK` 優先、`.secrets/` 檔案備援**，兩者皆缺時在第一次用到的地方 Fail Fast 並指出 `make gen-kek`）＋ AES-256-GCM 的 `seal`／`open_sealed`（nonce 與密文一起存）；② `platform_tenantdatakey`：per-tenant 的 DEK，**以 KEK 包起來存**，一個租戶一列（PK 是 tenant，靠它擋併發重建）；③ `platform_credential`：`(tenant, name)` 唯一、只存密文與**末四碼**、無軟刪除；兩張表都開 RLS（獨立一支 migration，理由同 2B-6 的 0008）；④ `CredentialService`（put／get_secret／describe／delete，白名單 `CREDENTIAL_NAMES`）；⑤ `/settings` 的 `credentials` 區：寫得進、**讀回來只有遮罩**（名稱／末四碼／更新時間），`null` 是撤銷；⑥ `make gen-kek` ＋ **CI 的金鑰守門從一把擴成兩把**（`test_ci_pipeline` 的 `_KEY_TARGETS`） |
+| 驗收依據（2026-08-29） | `make lint` 全綠（ruff + mypy strict **354 檔** + import-linter 9/9 + 前端）；驗收測試先行 **38 條**（unit 11 + integration 15 + api 12）全紅 → 全綠；`make test`／`make smoke` 見下方數字 |
+| **三道外流防線**（每一條都對應「東西已經外流、而一切看起來正常」） | ① **回應**不得帶明文——GET 與 PATCH 的回應都只有遮罩（多數 client 會把 PATCH 的回應直接顯示在畫面上，所以寫入的回應也算回讀）；② **稽核**不得帶明文——2C-1 的 `settings.update` 記的是整份 before/after，憑證若走同一條路，金鑰會逐字落進 `platform_auditlog`，而那張表是刻意不可刪改的；改成只記「哪一把、更新還是撤銷」；③ **不進 `tenant.settings`**——那一欄會整份回給前端、也會被 `param_config` 讀去解析參數，存進去就是前兩條同時失守 |
+| 設計取捨 | **envelope 而不是「直接用 KEK 加密」**：後者程式一樣會動，代價在輪替 KEK 的那一天——要把每一列憑證解開再重新加密，而不是重包 N 把 DEK。租戶數遠少於憑證數，差距只會愈拉愈大。`kek_version` 欄位先留著（輪替時要分辨「這把 DEK 是用哪一代 KEK 包的」），**但本包不實作輪替流程** |
+| 帶到 2C-3／後續的缺口 | ① **KEK 輪替沒有流程**（欄位有、指令沒有）：換 KEK 目前等於資料遺失，`make gen-kek` 因此刻意不覆蓋既有檔案。② 憑證**還沒有人讀**——`get_secret` 沒有呼叫端，AI Gateway 仍從 `app_settings` 取金鑰（租戶自帶金鑰屬 Phase 3 的 model_configs／`credential_ref`）；③ 名稱白名單只有三個 provider，2D 的同步來源憑證進來時要一起加；④ **沒有「驗證這把金鑰能用」的動作**：設定畫面按下儲存只代表存進去了，第一次真的失敗要等到有人問問題（2C-4 可加一個 test 按鈕）；⑤ 09 §2.6 的 `GET /settings/feature-flags` 仍未做（承 2C-1） |
 
 ### 4.1 二次架構審計的處置（2026-08-24）
 

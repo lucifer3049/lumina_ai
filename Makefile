@@ -106,7 +106,7 @@ DEMO_PASSWORD ?= demo-password-1234
 # 的前置們平行跑，migrate 會在 postgres 就緒前連線、API 會在金鑰落地前啟動。
 # 本檔是指令選單，平行化沒有收益，整份關掉最直接。
 .NOTPARALLEL:
-.PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys migrate \
+.PHONY: help up down logs psql psql-app db-timeouts minio-init gen-jwt-keys gen-kek migrate \
         dev api api-pinned start stop restart status demo-tenant app-logs \
         test test-unit test-integration test-api smoke verify-infra verify-provider \
         tei-up tei-down tei-logs eval-sample eval-retrieval eval-clean \
@@ -172,6 +172,18 @@ minio-init: ## 建立 bucket、開啟版本化、關閉匿名存取（冪等）
 # 為什麼不讓程式在啟動時自動產生：那會讓「忘了掛金鑰」的部署照樣起得來，而每次
 # 重啟金鑰就換一組，症狀是使用者隨機被登出，根因極難查。缺檔時 Fail Fast 比較好。
 JWT_KEY_DIR ?= $(BACKEND)/.secrets
+
+gen-kek: ## 產生本機用的欄位級加密主金鑰 KEK（已存在則不覆蓋）
+	@mkdir -p $(JWT_KEY_DIR)
+	@if [ -f $(JWT_KEY_DIR)/encryption.kek ]; then \
+		echo "已存在 $(JWT_KEY_DIR)/encryption.kek，未覆蓋（要重產請先手動刪除）"; \
+	else \
+		openssl rand -base64 32 > $(JWT_KEY_DIR)/encryption.kek; \
+		chmod 600 $(JWT_KEY_DIR)/encryption.kek; \
+		echo "已產生 $(JWT_KEY_DIR)/encryption.kek"; \
+	fi
+# **重產等於資料遺失**：已經加密的憑證是用舊 KEK 包的 DEK 加密的，換一把之後全部
+# 解不開，而症狀是 provider 回 401——看起來像金鑰過期。所以這裡不覆蓋。
 
 gen-jwt-keys: ## 產生本機用的 ES256 金鑰對（已存在則不覆蓋）
 	@mkdir -p $(JWT_KEY_DIR)

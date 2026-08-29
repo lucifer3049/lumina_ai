@@ -8,13 +8,32 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
+class CredentialOut(BaseModel):
+    """憑證的**遮罩**（09 §2.6「唯寫不回讀明文」，2C-2）。
+
+    這裡刻意只有三個欄位，而且沒有一個放得下金鑰：名字（哪一把）、末四碼（是不是我
+    以為的那一把）、更新時間（上次換是什麼時候）。**存在本身就是「已設定」**——
+    另開一個 `configured` 布林欄位的話，它與「這一列在不在」遲早會不一致。
+    """
+
+    name: str
+    # 末四碼。前四碼會洩漏種類與環境（`sk-live-`），見 `Credential` 的 docstring。
+    hint: str
+    updated_at: datetime
+
+
 class TenantSettingsOut(BaseModel):
     settings: dict[str, Any] = Field(default_factory=dict)
+    # **與 `settings` 分開的欄位**：憑證不住在 `tenant.settings` 裡（那一欄會整份
+    # 回給前端、也會被參數解析讀去），分開才使「settings 裡永遠沒有秘密」成為一條
+    # 看得見的規則，而不是一句註解。
+    credentials: list[CredentialOut] = Field(default_factory=list)
 
 
 class TenantSettingsUpdateIn(BaseModel):

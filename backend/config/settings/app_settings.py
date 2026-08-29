@@ -70,6 +70,17 @@ class AppSettings(BaseSettings):
     # 目前只有一把金鑰，但 token 一律帶 kid（見 services/identity/tokens.py）。
     jwt_active_kid: str = "dev-1"
 
+    # ── 欄位級加密的主金鑰（10 §5、2C-2）──
+    # **env 優先、檔案備援**（2C-0 定案）：部署環境注入 `ENCRYPTION_KEK`（32 bytes 的
+    # base64），本機由 `make gen-kek` 產生到 `.secrets/`。這裡只放**檔案**那一半的
+    # 路徑——env 那一半由 `core/crypto.load_kek` 直接讀 `os.environ`，因為它是
+    # `SecretStr` 也遮不住的東西：一旦進了 settings 物件就會跟著它到處走（log、
+    # 例外、`repr()` 的每一個角落），而金鑰只該在解密的那一瞬間出現在記憶體裡。
+    #
+    # 兩者都沒有時在**第一次用到**的地方 Fail Fast，而不是啟動就炸——與 JWT 金鑰同
+    # 一個慣例，理由見 `services/identity/tokens.py::get_token_codec`。
+    encryption_kek_path: Path = REPO_ROOT / "backend" / ".secrets" / "encryption.kek"
+
     # ── 登入防護（10 §2.1）──
     login_max_attempts: int = 5
     login_lockout_seconds: int = 900  # 15 分鐘

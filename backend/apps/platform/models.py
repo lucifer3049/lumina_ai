@@ -246,3 +246,66 @@ class Notification(models.Model):
 
     def __str__(self) -> str:
         return f"Notification({self.type})"
+
+
+class TenantDataKey(models.Model):
+    """每個租戶一把資料加密金鑰（DEK），**以 KEK 包起來存**（10 §5，2C-2）。
+
+    envelope 的中間層就是這張表。少了它（憑證直接用 KEK 加密）程式一樣會動，代價在
+    **輪替 KEK 的那一天**才出現：那時要把每一列憑證解開再重新加密，而不是重包 N 把
+    DEK。租戶數遠少於憑證數，這個差距只會愈拉愈大。
+
+    `kek_version` 現在恆為 1。**先留欄位**是因為輪替時要能分辨「這把 DEK 是用哪一代
+    KEK 包的」——事後加欄位到已經有密文的表，等於得先猜。
+
+    一個租戶一列（`tenant` 是 PK）：兩列的話，`get_secret` 得決定用哪一把，而那個
+    決定遲早會挑到不對的那把——症狀是「某些憑證解不開」。
+    """
+
+    tenant = models.OneToOneField(
+        Tenant, on_delete=models.PROTECT, related_name="data_key", primary_key=True
+    )
+    # AES-256-GCM(KEK, DEK)：nonce 與密文一起存（見 core/crypto.seal）。
+    wrapped_key = models.BinaryField()
+    kek_version = models.IntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "platform_tenantdatakey"
+
+    def __str__(self) -> str:
+        return f"TenantDataKey({self.tenant_id})"
+
+
+class Credential(models.Model):
+    """一筆加密憑證（provider API key、同步來源密碼…；10 §5、05 §3.3 的 `credential_ref`）。
+
+    **只存密文與末四碼**。末四碼是為了讓畫面認得出「這是哪一把」；存前四碼的話，
+    `sk-live-` 這類前綴等於洩漏了種類與環境（live/test），而那正是攻擊者最想先知道的。
+
+    `name` 是白名單裡的識別字（見 `services/platform/credentials.py`），
+    `(tenant, name)` 唯一——換金鑰是覆寫而不是新增一列，理由同上：兩列之後就得決定
+    「哪一列才算數」，而挑錯的症狀是「換了 key 還是 401」。
+
+    **沒有軟刪除**：撤銷就是撤銷。留著密文的唯一用途是還原一把使用者認為已經作廢的
+    金鑰，那與撤銷的語意相反。
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="credentials")
+    name = models.TextField()
+    ciphertext = models.BinaryField()
+    # 末四碼。**不是任何形式的驗證依據**，只給人看。
+    hint = models.TextField(default="", blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "platform_credential"
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "name"], name="uq_credential_tenant_name"),
+        ]
+
+    def __str__(self) -> str:
+        # **絕不含密文或 hint 以外的內容**：這個字串會進 log 與例外訊息（鐵則 9）。
+        return f"Credential({self.name})"

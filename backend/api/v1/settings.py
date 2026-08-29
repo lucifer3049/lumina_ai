@@ -20,9 +20,9 @@ from fastapi import APIRouter, Depends
 from api.dependencies.auth import Principal
 from api.dependencies.permissions import RequireScope
 from api.schemas.problem import ERROR_RESPONSES
-from api.schemas.settings import TenantSettingsOut, TenantSettingsUpdateIn
+from api.schemas.settings import CredentialOut, TenantSettingsOut, TenantSettingsUpdateIn
 from core.db import run_orm
-from services.platform.settings import TenantSettingsService
+from services.platform.settings import TenantSettingsService, TenantSettingsView
 
 router = APIRouter(tags=["settings"], responses=ERROR_RESPONSES)
 _service = TenantSettingsService()
@@ -38,7 +38,7 @@ async def get_settings(
     要嘛每次顯示空白——而空白與「沒有覆寫」在畫面上長得一樣（同 2B-5 的 KB `config`）。
     """
     view = await run_orm(_service.get, principal.tenant_id)
-    return TenantSettingsOut(settings=view.settings)
+    return _out(view)
 
 
 @router.patch("/settings", operation_id="settings_update")
@@ -52,4 +52,17 @@ async def update_settings(
     一份參數宣告，兩套的話同一個參數會在一邊填得進去、另一邊填不進去。
     """
     view = await run_orm(_service.update, principal.tenant_id, payload.settings)
-    return TenantSettingsOut(settings=view.settings)
+    return _out(view)
+
+
+def _out(view: TenantSettingsView) -> TenantSettingsOut:
+    """**逐欄位列**，不把 dataclass 原樣丟出去（同 2B-5 的 `trace` 摘要）：那樣的話，
+    任何人日後在 `CredentialView` 上加一個欄位（下一個就是密文）都會自動流到 client。
+    """
+    return TenantSettingsOut(
+        settings=view.settings,
+        credentials=[
+            CredentialOut(name=item.name, hint=item.hint, updated_at=item.updated_at)
+            for item in view.credentials
+        ],
+    )

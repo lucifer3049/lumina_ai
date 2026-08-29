@@ -137,7 +137,7 @@ Tenant 解析：JWT/API Key 內含 tenant 綁定，**不接受 client 自報 ten
 | GET | /analytics/costs | 成本分解 | analytics:read |
 | GET | /audit-logs | 稽核查詢（分頁/過濾） | audit:read |
 | GET | /notifications · PATCH /notifications/{id}/read | 通知收件匣（列表回應含 `unread_count`） | 登入者 |
-| GET/PATCH | /settings | 租戶級設定：參數覆寫（`retrieval`／`chunk`，與 KB 共用同一份宣告）＋ 配額覆寫（`quota`）；**PATCH 是逐區的部分更新**，`{}` 為清空該區，違規逐欄位 422（`field` 為 `settings.<區>.<鍵>`）。**provider 憑證寫入屬 2C-2**（唯寫不回讀明文） | tenant:admin |
+| GET/PATCH | /settings | 租戶級設定：參數覆寫（`retrieval`／`chunk`，與 KB 共用同一份宣告）＋ 配額覆寫（`quota`）；**PATCH 是逐區的部分更新**，`{}` 為清空該區，違規逐欄位 422（`field` 為 `settings.<區>.<鍵>`）。**provider 憑證**（`credentials` 區，2C-2）：寫得進、**讀回來只有遮罩**（名稱／末四碼／更新時間），`null` 為撤銷；名稱是白名單，違規同樣逐欄位 422 | tenant:admin |
 | GET | /settings/feature-flags | 本租戶 flag 狀態 | 登入者 |
 | — | **/admin/**（平台管理面）| tenants CRUD、全域 model catalog、系統 flag、跨租戶用量、DLQ 重放 | platform_admin（獨立角色）|
 
