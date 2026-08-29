@@ -27,7 +27,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -40,9 +40,11 @@ __all__ = [
     "SECTIONS",
     "KbConfigInvalidError",
     "ParamSpec",
+    "layers_of",
     "read_param",
     "section_of",
     "validate_kb_config",
+    "validate_param_sections",
 ]
 
 # **保護 DB 的硬上限，不是使用者可調的東西**（15 §4.1 的例外條款）。`top_k` 直接進
@@ -133,6 +135,18 @@ class KbConfigInvalidError(ValidationFailedError):
 
 
 def validate_kb_config(config: Any) -> dict[str, Any]:
+    """KB config 的寫入端驗證（2B-5）。前綴固定 ``config.``——`KnowledgeBaseOut` 的
+    `config` 欄位就叫這個名字，而 2C-4 的畫面靠 `field` 標到對的輸入框。"""
+    return validate_param_sections(config, prefix="config", error=KbConfigInvalidError)
+
+
+def validate_param_sections(
+    config: Any,
+    *,
+    prefix: str,
+    error: Callable[[list[dict[str, str]]], Exception],
+    also_known: Sequence[str] = (),
+) -> dict[str, Any]:
     """使用者送來的 config → 原樣的 config，或 :class:`KbConfigInvalidError`。
 
     **不補預設值、不夾制。** 兩者都是讀取端的職責：
@@ -148,7 +162,8 @@ def validate_kb_config(config: Any) -> dict[str, Any]:
     if config is None:
         return {}
     if not isinstance(config, Mapping):
-        raise KbConfigInvalidError([_error("config", "必須是物件")])
+        raise error([_error(prefix, "必須是物件")])
+    known = (*SECTIONS, *also_known)
 
     errors: list[dict[str, str]] = []
     cleaned: dict[str, Any] = {}
@@ -158,26 +173,26 @@ def validate_kb_config(config: Any) -> dict[str, Any]:
             # 打錯一個字母（`retreival`）是這一層最主要要擋的東西：它是合法的 JSON，
             # 存得進去、讀得回來、在設定畫面上看得見——只是永遠不生效。
             errors.append(
-                _error(f"config.{name}", f"不是可設定的區塊；可用的有 {_listed(SECTIONS)}")
+                _error(f"{prefix}.{name}", f"不是可設定的區塊；可用的有 {'、'.join(known)}")
             )
             continue
         if not isinstance(raw, Mapping):
-            errors.append(_error(f"config.{name}", "必須是物件"))
+            errors.append(_error(f"{prefix}.{name}", "必須是物件"))
             continue
         cleaned[str(name)] = dict(raw)
-        errors += _validate_section(str(name), raw, specs)
+        errors += _validate_section(str(name), raw, specs, prefix=prefix)
 
     if errors:
-        raise KbConfigInvalidError(errors)
+        raise error(errors)
     return cleaned
 
 
 def _validate_section(
-    name: str, section: Mapping[Any, Any], specs: Mapping[str, ParamSpec]
+    name: str, section: Mapping[Any, Any], specs: Mapping[str, ParamSpec], *, prefix: str
 ) -> list[dict[str, str]]:
     errors: list[dict[str, str]] = []
     for key, value in section.items():
-        field = f"config.{name}.{key}"
+        field = f"{prefix}.{name}.{key}"
         spec = specs.get(str(key))
         if spec is None:
             # 兩區的鍵不共用命名空間：`{"retrieval": {"target_tokens": 512}}` 放過去
@@ -208,7 +223,7 @@ def _reject_reason(
     if spec.kind == "float" and not isinstance(value, int | float):
         return f"必須是數字（收到 {value!r}）"
 
-    high = _ceiling(spec, section=section, specs=specs)
+    high = _ceiling(spec, sections=[section], specs=specs)
     if spec.low is not None and value < spec.low:
         return f"必須介於 {_shown(spec.low)} 與 {_shown(high)} 之間（收到 {value!r}）"
     if high is not None and value > high:
@@ -223,12 +238,19 @@ def _reject_reason(
 def read_param(
     specs: Mapping[str, ParamSpec],
     key: str,
-    section: Mapping[str, Any],
+    sections: Sequence[Mapping[str, Any]],
     settings: Any,
     *,
     on_rejected: Callable[[str, Any], None],
 ) -> Any:
-    """**讀取端**：KB 覆寫 → 夾在上下限內的值；壞值退回系統預設。
+    """**讀取端**：由具體到一般逐層找 → 夾在上下限內的值；找不到就用系統預設。
+
+    `sections` 的順序是**最具體的在前**（KB → 租戶）。15 §4.1 的覆寫順序只該有一份
+    實作，而它就在這個迴圈裡——散進三個呼叫端的話，「KB 蓋租戶」與「租戶蓋系統」會
+    在某一處被寫反，而那不會有任何錯誤訊息。
+
+    **壞值退回的是下一層，不是最底層**：租戶設了 80、KB 填錯成 `"很多"` 時該用 80。
+    一路退到系統預設等於「填錯一個 KB 的值，整個租戶的設定跟著失效」。
 
     與 :func:`validate_kb_config` 共用同一份 `specs`，這正是這個模組存在的理由。
 
@@ -237,26 +259,37 @@ def read_param(
     留下線索——不記的話，一個打錯的值會安靜地表現成「後台改了沒有反應」。
     """
     spec = specs[key]
-    default = getattr(settings, spec.default_attr)
-    if key not in section:
-        return default
+    for section in sections:
+        if key not in section:
+            continue
+        value = section[key]
+        accepted = _accept(spec, value, sections=sections, specs=specs, settings=settings)
+        if accepted is None:
+            on_rejected(key, value)
+            continue
+        return accepted
+    return getattr(settings, spec.default_attr)
 
-    value = section[key]
+
+def _accept(
+    spec: ParamSpec,
+    value: Any,
+    *,
+    sections: Sequence[Mapping[str, Any]],
+    specs: Mapping[str, ParamSpec],
+    settings: Any,
+) -> Any | None:
+    """合法就回**夾制後**的值，不合法回 `None`（由呼叫端決定退到哪一層）。"""
     if spec.kind == "choice":
-        if isinstance(value, str) and value in (spec.choices or ()):
-            return value
-        on_rejected(key, value)
-        return default
+        return value if isinstance(value, str) and value in (spec.choices or ()) else None
 
     if isinstance(value, bool) or not isinstance(value, int | float):
-        on_rejected(key, value)
-        return default
+        return None
     if spec.kind == "int" and not isinstance(value, int):
-        on_rejected(key, value)
-        return default
+        return None
 
     number = float(value) if spec.kind == "float" else int(value)
-    high = _ceiling(spec, section=section, specs=specs, settings=settings)
+    high = _ceiling(spec, sections=sections, specs=specs, settings=settings)
     if spec.low is not None:
         number = max(spec.low, number)
     if high is not None:
@@ -270,10 +303,20 @@ def section_of(config: Mapping[str, Any] | None, name: str) -> Mapping[str, Any]
     return raw if isinstance(raw, Mapping) else {}
 
 
+def layers_of(name: str, *configs: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
+    """把幾份 config 的同一區收成「由具體到一般」的層序（2C-1）。
+
+    呼叫端寫 ``layers_of("retrieval", kb_config, tenant_config)``——順序即優先序，
+    而不是物件的形狀決定的。傳 `None` 或該區不是物件時那一層就不存在（讀取端不因此
+    失敗，同 `section_of`）。
+    """
+    return [section_of(config, name) for config in configs if section_of(config, name)]
+
+
 def _ceiling(
     spec: ParamSpec,
     *,
-    section: Mapping[Any, Any],
+    sections: Sequence[Mapping[str, Any]],
     specs: Mapping[str, ParamSpec],
     settings: Any | None = None,
 ) -> int | float | None:
@@ -291,9 +334,12 @@ def _ceiling(
 
     other = specs[spec.high_of]
     if settings is not None:
-        effective = read_param(specs, spec.high_of, section, settings, on_rejected=_ignored)
+        effective = read_param(specs, spec.high_of, sections, settings, on_rejected=_ignored)
     else:
-        raw = section.get(spec.high_of)
+        raw = next(
+            (s[spec.high_of] for s in sections if spec.high_of in s),
+            None,
+        )
         effective = (
             raw
             if isinstance(raw, int) and not isinstance(raw, bool)

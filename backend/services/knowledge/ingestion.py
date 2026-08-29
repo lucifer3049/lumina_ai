@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,8 +50,9 @@ from repositories.knowledge import (
     KnowledgeBaseRepository,
 )
 from services.knowledge.failures import error_payload
-from services.knowledge.kb_config import SECTIONS, read_param, section_of
+from services.knowledge.kb_config import SECTIONS, layers_of, read_param
 from services.platform.notifications import NotificationService
+from services.platform.settings import TenantSettingsService
 
 logger = get_logger(__name__)
 
@@ -109,12 +111,16 @@ class IngestionService:
         chunks: ChunkRepository | None = None,
         jobs: EtlJobRepository | None = None,
         notifications: NotificationService | None = None,
+        tenant_settings: TenantSettingsService | None = None,
     ) -> None:
         self._documents = documents or DocumentRepository()
         self._knowledge_bases = knowledge_bases or KnowledgeBaseRepository()
         self._chunks = chunks or ChunkRepository()
         self._jobs = jobs or EtlJobRepository()
         self._notifications = notifications or NotificationService()
+        # 三層覆寫的中間層（2C-1）。切塊參數與檢索參數走同一條解析，否則使用者
+        # 會發現有些設定改得動、有些改不動。
+        self._tenant_settings = tenant_settings or TenantSettingsService()
 
     def ingest(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> IngestionResult:
         """跑完 Extract → Clean → Chunk。
@@ -357,7 +363,9 @@ class IngestionService:
                 doc_version=document.doc_version,
                 storage_key=document.storage_key,
                 media_type=document.mime_type,
-                chunk_config=_chunk_config_from(kb.config),
+                chunk_config=_chunk_config_from(
+                    kb.config, self._tenant_settings.param_config(tenant_id)
+                ),
             )
 
     def _artifact_key(self, target: _Target) -> str:
@@ -425,8 +433,10 @@ class IngestionService:
         return STAGE_EXTRACT
 
 
-def _chunk_config_from(config: dict[str, Any]) -> ChunkConfig:
-    """KB config → `ChunkConfig`（06 §2.1：策略與參數由 KB 決定）。
+def _chunk_config_from(
+    config: dict[str, Any], tenant_config: Mapping[str, Any] | None = None
+) -> ChunkConfig:
+    """租戶設定 + KB config → `ChunkConfig`（06 §2.1、15 §4.1 的三層，2C-1）。
 
     只認得自己支援的鍵，其餘忽略：KB config 是使用者可寫的 JSON，把未知的鍵直接
     展開成建構參數會讓一個打錯的欄位變成 TypeError，而那發生在 worker 裡。
@@ -446,10 +456,12 @@ def _chunk_config_from(config: dict[str, Any]) -> ChunkConfig:
     有些改不動。
     """
     specs = SECTIONS["chunk"]
-    section = section_of(config, "chunk")
+    # 層序與檢索側同一個函式決定（最具體的在前）——切塊三層、檢索兩層的話，使用者會
+    # 發現有些設定改得動、有些改不動，而兩者在同一個畫面上（2C-4）。
+    sections = layers_of("chunk", config, tenant_config)
     settings = get_app_settings()
     values = {
-        key: read_param(specs, key, section, settings, on_rejected=_chunk_param_rejected)
+        key: read_param(specs, key, sections, settings, on_rejected=_chunk_param_rejected)
         for key in specs
     }
     return ChunkConfig(**values)

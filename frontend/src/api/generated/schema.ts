@@ -450,6 +450,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Settings
+         * @description 目前的租戶層覆寫。
+         *
+         *     **讀得回來很重要**：只能寫不能讀的話，設定畫面要嘛自己記一份（會與 DB 漂），
+         *     要嘛每次顯示空白——而空白與「沒有覆寫」在畫面上長得一樣（同 2B-5 的 KB `config`）。
+         */
+        get: operations["settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Settings
+         * @description 逐區的部分更新（沒送到的區塊原封不動；``{}`` 是清空該區）。
+         *
+         *     驗證與錯誤形狀在 Service（`settings.<區>.<鍵>` 逐欄位 422）——與 KB config 走同
+         *     一份參數宣告，兩套的話同一個參數會在一邊填得進去、另一邊填不進去。
+         */
+        patch: operations["settings_update"];
+        trace?: never;
+    };
     "/api/v1/tenants/current": {
         parameters: {
             query?: never;
@@ -1164,6 +1194,26 @@ export interface components {
             slug: string;
             /** Status */
             status: string;
+        };
+        /** TenantSettingsOut */
+        TenantSettingsOut: {
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * TenantSettingsUpdateIn
+         * @description ``None`` = 這次沒送（不是「清空」）。
+         *
+         *     清空是逐區的明確 ``{}``（`{"retrieval": {}}`），與「這次沒動這一區」分得開——
+         *     整份取代的話，畫面上存一個分頁會清掉另一個分頁，而 API 回 200。
+         */
+        TenantSettingsUpdateIn: {
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * TenantUpdateIn
@@ -3097,6 +3147,122 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RagQueryOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantSettingsOut"];
+                };
+            };
+            /** @description 請求格式錯誤 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 不存在或無權可見 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 語意驗證失敗 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description 內部錯誤 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    settings_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TenantSettingsUpdateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantSettingsOut"];
                 };
             };
             /** @description 請求格式錯誤 */

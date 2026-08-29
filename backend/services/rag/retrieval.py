@@ -23,6 +23,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from typing import Any
 
 from ai.gateway import AIGateway, build_gateway
 from config.logging import get_logger
@@ -38,6 +39,7 @@ from rag.trace import RagTrace, TraceBuilder
 from rag.trace import emit as emit_trace
 from repositories.knowledge import ChunkRepository, EmbeddingRepository, KnowledgeBaseRepository
 from services.knowledge.embedding import model_for
+from services.platform.settings import TenantSettingsService
 from services.rag.params import MAX_TOP_K, RagParams, resolve_rag_params
 
 logger = get_logger(__name__)
@@ -110,6 +112,7 @@ class RetrievalService:
         knowledge_bases: KnowledgeBaseRepository | None = None,
         embeddings: EmbeddingRepository | None = None,
         chunks: ChunkRepository | None = None,
+        tenant_settings: TenantSettingsService | None = None,
     ) -> None:
         # Gateway 惰性建立，理由同 EmbeddingService：`build_gateway()` 會解析 provider
         # 名稱，而未實作的 provider 直接 raise——建構 service 本身不該因此失敗。
@@ -117,6 +120,9 @@ class RetrievalService:
         self._knowledge_bases = knowledge_bases or KnowledgeBaseRepository()
         self._embeddings = embeddings or EmbeddingRepository()
         self._chunks = chunks or ChunkRepository()
+        # 三層覆寫的中間層（2C-1）。讀取有 per-request 快取，一次問答問好幾次
+        # 檢索參數也只查一次 DB。
+        self._tenant_settings = tenant_settings or TenantSettingsService()
 
     @property
     def gateway(self) -> AIGateway:
@@ -151,7 +157,7 @@ class RetrievalService:
         if kb is None:
             raise NotFoundError("知識庫不存在")
 
-        params = resolve_rag_params(kb.config)
+        params = resolve_rag_params(kb.config, tenant_config=self._tenant_config(tenant_id))
         limit = params.top_k if top_k is None else top_k
         if not 1 <= limit <= MAX_TOP_K:
             raise ValueError(f"top_k 必須介於 1 與 {MAX_TOP_K} 之間")
@@ -204,7 +210,9 @@ class RetrievalService:
         if not available:
             return RetrievalOutcome(chunks=[])
 
-        params = resolve_rag_params(available[0].config)
+        params = resolve_rag_params(
+            available[0].config, tenant_config=self._tenant_config(tenant_id)
+        )
         builder = TraceBuilder(mode or params.retrieval_mode)
         # **同一個模型只算一次向量。** 查詢向量與 KB 無關，只與模型有關；每個 KB 各
         # 算一次等於同一段文字付 N 次錢，而結果完全相同。不能無條件只算一次的原因是
@@ -270,11 +278,23 @@ class RetrievalService:
         沒有可用的 KB 時回系統預設——那時也不會有檢索，取值只是為了讓呼叫端不必
         處理 `None`。
         """
+        tenant_config = self._tenant_config(tenant_id)
         for kb_id in kb_ids:
             kb = self._find_kb(tenant_id, kb_id)
             if kb is not None:
-                return resolve_rag_params(kb.config)
-        return resolve_rag_params(None)
+                return resolve_rag_params(kb.config, tenant_config=tenant_config)
+        # 沒有可用的 KB 時仍要疊租戶層：`query_history_turns` 這類參數與 KB 無關，
+        # 少了它，一場沒掛 KB 的對話會用系統預設而不是租戶調過的值。
+        return resolve_rag_params(None, tenant_config=tenant_config)
+
+    def _tenant_config(self, tenant_id: uuid.UUID) -> dict[str, Any]:
+        """租戶層的參數覆寫。**取不到就當作沒有覆寫**——設定讀不出來時讓整條檢索
+        失敗的話，一次 DB 抖動會表現成「問答壞了」，而正確的降級是回到系統預設。"""
+        try:
+            return self._tenant_settings.param_config(tenant_id)
+        except Exception:
+            logger.warning("tenant_settings_unavailable", tenant_id=str(tenant_id), exc_info=True)
+            return {}
 
     # ── 內部 ────────────────────────────────────────────────────
 

@@ -40,6 +40,7 @@ EXPECTED_ACTIONS = {
     "auth_logout": ("auth.logout", "session", None),
     # 設定變更（04 §8.3）
     "tenants_update_current": ("tenant.update", "tenant", None),
+    "settings_update": ("settings.update", "tenant", None),
     # KB／文件（04 §8.3 明列刪除；建立與改設定一併記——「這個 KB 哪來的」
     # 與「誰刪的」是同一次調查的兩半）
     "knowledge_bases_create": ("knowledge_base.create", "knowledge_base", None),

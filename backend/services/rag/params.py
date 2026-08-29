@@ -26,7 +26,7 @@ from typing import Any
 
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
-from services.knowledge.kb_config import MAX_TOP_K, SECTIONS, read_param, section_of
+from services.knowledge.kb_config import MAX_TOP_K, SECTIONS, layers_of, read_param
 
 logger = get_logger(__name__)
 
@@ -58,17 +58,24 @@ class RagParams:
     query_history_turns: int
 
 
-def resolve_rag_params(kb_config: Mapping[str, Any] | None) -> RagParams:
-    """系統預設 + KB 覆寫 → `RagParams`。
+def resolve_rag_params(
+    kb_config: Mapping[str, Any] | None,
+    *,
+    tenant_config: Mapping[str, Any] | None = None,
+) -> RagParams:
+    """系統預設 → 租戶覆寫 → KB 覆寫 → `RagParams`（15 §4.1 的三層，2C-1 接上中間層）。
 
-    租戶層（09 §2.6）屬 2C：接上時在這裡多疊一層，呼叫端一行都不必動——那正是把
-    解析集中在一個函式裡的目的。
+    層序由 `layers_of` 決定（**最具體的在前**），逐鍵解析在 `read_param`——覆寫順序
+    只有那一份實作。散進呼叫端的話，「KB 蓋租戶」與「租戶蓋系統」會在某一處被寫反，
+    而那不會有任何錯誤訊息。
+
+    `tenant_config` 省略時的行為與 2C-1 之前**逐字相同**：沒有中間層就是兩層。
     """
     settings = get_app_settings()
-    section = section_of(kb_config, _SECTION)
+    sections = layers_of(_SECTION, kb_config, tenant_config)
     specs = SECTIONS[_SECTION]
     values: dict[str, Any] = {
-        key: read_param(specs, key, section, settings, on_rejected=_rejected) for key in specs
+        key: read_param(specs, key, sections, settings, on_rejected=_rejected) for key in specs
     }
     return RagParams(**values)
 

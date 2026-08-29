@@ -65,6 +65,8 @@ AUDIT_ACTIONS: dict[str, AuditSpec] = {
     "auth_change_password": AuditSpec("user.change_password", "user", None),
     "auth_logout": AuditSpec("auth.logout", "session", None),
     "tenants_update_current": AuditSpec("tenant.update", "tenant", None),
+    # 2C-1：租戶層參數改變的是**所有人**問到的答案，而症狀與變更之間隔著幾天。
+    "settings_update": AuditSpec("settings.update", "tenant", None),
     "knowledge_bases_create": AuditSpec("knowledge_base.create", "knowledge_base", None),
     "knowledge_bases_update": AuditSpec("knowledge_base.update", "knowledge_base", "kb_id"),
     "knowledge_bases_delete": AuditSpec("knowledge_base.delete", "knowledge_base", "kb_id"),

@@ -410,6 +410,7 @@ def create_app() -> FastAPI:
     from api.v1.knowledge import router as knowledge_router
     from api.v1.notifications import router as notifications_router
     from api.v1.rag import router as rag_router
+    from api.v1.settings import router as settings_router
     from api.v1.tenants import router as tenants_router
     from api.v1.users import router as users_router
 
@@ -427,6 +428,7 @@ def create_app() -> FastAPI:
     app.include_router(analytics_router, prefix="/api/v1")
     app.include_router(audit_router, prefix="/api/v1")
     app.include_router(notifications_router, prefix="/api/v1")
+    app.include_router(settings_router, prefix="/api/v1")
     _install_problem_schema(app)
 
     return app

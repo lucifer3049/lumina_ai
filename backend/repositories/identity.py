@@ -123,6 +123,14 @@ class TenantRepository(TenantScopedRepository[Tenant]):
     def rename(self, name: str) -> None:
         self.get_queryset().update(name=name)
 
+    def update_settings(self, tenant_id: uuid.UUID, settings: dict[str, object]) -> int:
+        """整份寫回租戶設定（09 §2.6 的 /settings，2C-1）。
+
+        **逐區的合併在 Service 做，不在這裡**：repository 看到的永遠是「最終長相」。
+        兩邊都做合併的話，其中一邊遲早會把某一區蓋掉，而那不會有任何錯誤訊息。
+        """
+        return self.get_queryset().filter(id=tenant_id).update(settings=settings)
+
 
 class TenantDirectoryRepository:
     """slug → tenant_id 的查詢。**唯一一個不繼承 TenantScopedRepository 的 repository。**
