@@ -102,11 +102,19 @@ def api(path: str) -> dict:
     except urllib.error.HTTPError as error:
         # 404 在 GitHub 上是「不存在**或**你看不到」的合稱：私有 repo 對匿名請求
         # 就回這個。少了這句提示，症狀（查不到任何 run）會被讀成「CI 沒觸發」。
-        if error.code == 404 and bearer is None:
-            raise SystemExit(
-                f"GitHub API 404（{path}）——repo 不存在，或它是私有的而目前沒有 "
-                "token。設 GITHUB_TOKEN／GH_TOKEN，或 `gh auth login` 後重跑。"
-            ) from error
+        #
+        # **不能只在匿名時提示**：有 token 而看不到才是私有 repo 下最常見的那一種
+        # （token 過期、fine-grained token 少了 Actions: read、或 `gh auth token`
+        # 給的是別台 GHE 的 token），GitHub 一樣回 404。把那個情況丟回泛用訊息，
+        # 等於把提示留給最不需要它的人。所以一律攔 404，只依有無 token 換說法。
+        if error.code == 404:
+            hint = (
+                "而目前沒有 token。設 GITHUB_TOKEN／GH_TOKEN，或 `gh auth login` 後重跑。"
+                if bearer is None
+                else "而目前這個 token 看不到它——過期、權限不含 Actions: read、或它屬於"
+                "另一個 GitHub 主機。換一個 token 或 `gh auth login` 後重跑。"
+            )
+            raise SystemExit(f"GitHub API 404（{path}）——repo 不存在，或它是私有的{hint}") from error
         # 403 常見於匿名 rate limit（每 IP 每小時 60 次）；訊息要指得到原因。
         raise SystemExit(f"GitHub API {error.code}：{error.reason}（{path}）") from error
 
