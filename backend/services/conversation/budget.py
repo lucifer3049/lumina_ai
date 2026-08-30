@@ -26,7 +26,7 @@ from typing import Any
 from config.settings.app_settings import get_app_settings
 from core.db import run_orm
 from etl.tokens import estimate_tokens
-from services.platform.quota import QuotaExceededError, QuotaReservation, QuotaService
+from services.platform.quota import QuotaReservation, QuotaService
 
 __all__ = ["TurnBudget", "TurnReservations", "token_reserve_for"]
 
@@ -84,7 +84,12 @@ class TurnBudget:
             stream = self._quota.check_and_reserve(tenant_id, "streams", 1)
             if stream:
                 acquired.append(stream)
-        except QuotaExceededError:
+        except BaseException:
+            # 不只 QuotaExceededError：第二、三關也會因 Redis／DB 故障丟出基礎設施
+            # 例外，而那條路徑上前面的關已經扣掉了。不清理的話沒有任何症狀——使用者
+            # 看到 500、重試就過，洩漏的預留卻要等期別翻頁才消失，tokens_month 的窗
+            # 是一個月。清理本身失敗（Redis 整個掛了）就讓原例外照拋：兩筆都進不去
+            # 時，帳面反而是平的。
             self.release(TurnReservations(all=tuple(acquired)))
             raise
         return TurnReservations(all=tuple(acquired), tokens=tokens, stream=stream)

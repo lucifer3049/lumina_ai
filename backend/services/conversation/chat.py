@@ -46,6 +46,7 @@ from core.exceptions import DomainError, ErrorCode, NotFoundError, ProviderError
 from core.streams import StreamBuffer
 from core.tenant import tenant_context
 from core.uow import unit_of_work
+from etl.tokens import estimate_tokens
 from rag.citation import assemble_citations
 from rag.trace import emit as emit_trace
 from repositories.conversation import ConversationRepository, MessageRepository
@@ -243,18 +244,70 @@ class ChatService:
             )
 
             stop_checked_at = time.monotonic()
-            async for delta in self.gateway.stream_chat(request):
-                now = time.monotonic()
-                if now - stop_checked_at >= STOP_POLL_SECONDS:
-                    stop_checked_at = now
-                    if await buffer.stop_requested():
-                        # 使用者自己按的停止**不是錯誤**：他剛剛得到的正是他要的結果。
-                        # 送 error 的話前端會顯示一個紅色的失敗訊息（09 §1.3）。
-                        await self._complete(
+            # `aclosing` 而不是裸的 `async for`：stop／error／done 都以 return 提前
+            # 離開迴圈，不包的話被棄置的 generator（連同 provider 的 HTTP 連線）要等
+            # GC 才關——gateway 契約明講這條鏈上的每一層都要包（ai/gateway 同款）。
+            # 對地端 provider 而言，晾著的那段時間 GPU 還在替沒有人要的回答產 token。
+            async with contextlib.aclosing(self.gateway.stream_chat(request)) as deltas:
+                async for delta in deltas:
+                    now = time.monotonic()
+                    if now - stop_checked_at >= STOP_POLL_SECONDS:
+                        stop_checked_at = now
+                        if await buffer.stop_requested():
+                            # **先關上游再收尾**：收尾要做 DB 與多趟 Redis 往返，晚關
+                            # 的每一毫秒 provider 都還在計費／佔 GPU。
+                            await deltas.aclose()
+                            # 使用者自己按的停止**不是錯誤**：他剛剛得到的正是他要的
+                            # 結果。送 error 的話前端會顯示一個紅色的失敗訊息（09
+                            # §1.3）。usage 此時必然還沒到（provider 在 done 前才送），
+                            # 帳改用估算補——token 已經產生費用，與有沒有講完無關。
+                            await self._complete(
+                                buffer,
+                                turn,
+                                tenant_id,
+                                finish_reason="stopped",
+                                status="interrupted",
+                                text=text,
+                                usage=usage or self._estimated_usage(prepared, text),
+                                model=model,
+                                prompt_version=prompt_version,
+                                prepared=prepared,
+                            )
+                            return
+                    if isinstance(delta, TextDelta):
+                        text.append(delta.text)
+                        await buffer.append("delta", {"text": delta.text})
+                    elif isinstance(delta, UsageDelta):
+                        model = delta.model or model
+                        usage = {
+                            "prompt_tokens": delta.prompt_tokens,
+                            "completion_tokens": delta.billable_output_tokens,
+                            # 單價表屬 2A（05 §3.3 的 model_configs）。填 0 會讓成本
+                            # 統計把這次呼叫當成免費，所以留 None：「還不知道」與
+                            # 「不用錢」是兩件事。
+                            "cost": None,
+                        }
+                        await buffer.append("usage", dict(usage))
+                    elif isinstance(delta, ToolCallDelta):
+                        # 3A 才有真的工具；型別現在就對得上，事件因此不必等那時才加。
+                        await buffer.append(
+                            "tool_call",
+                            {
+                                "name": delta.name,
+                                "params_preview": delta.arguments,
+                                "status": delta.status,
+                            },
+                        )
+                    elif isinstance(delta, ErrorDelta):
+                        # 分水嶺之後的中斷（1D-3a）：已交付的內容留著。usage 不必補估
+                        # ——gateway 的 `interrupted()` 在 error 前一定先補一筆。
+                        await self._fail(
                             buffer,
                             turn,
                             tenant_id,
-                            finish_reason="stopped",
+                            code=delta.code,
+                            message=delta.message,
+                            retryable=delta.retryable,
                             status="interrupted",
                             text=text,
                             usage=usage,
@@ -263,60 +316,19 @@ class ChatService:
                             prepared=prepared,
                         )
                         return
-                if isinstance(delta, TextDelta):
-                    text.append(delta.text)
-                    await buffer.append("delta", {"text": delta.text})
-                elif isinstance(delta, UsageDelta):
-                    model = delta.model or model
-                    usage = {
-                        "prompt_tokens": delta.prompt_tokens,
-                        "completion_tokens": delta.billable_output_tokens,
-                        # 單價表屬 2A（05 §3.3 的 model_configs）。填 0 會讓成本統計
-                        # 把這次呼叫當成免費，所以留 None：「還不知道」與「不用錢」
-                        # 是兩件事。
-                        "cost": None,
-                    }
-                    await buffer.append("usage", dict(usage))
-                elif isinstance(delta, ToolCallDelta):
-                    # 3A 才有真的工具；型別現在就對得上，事件因此不必等那時才加。
-                    await buffer.append(
-                        "tool_call",
-                        {
-                            "name": delta.name,
-                            "params_preview": delta.arguments,
-                            "status": delta.status,
-                        },
-                    )
-                elif isinstance(delta, ErrorDelta):
-                    # 分水嶺之後的中斷（1D-3a）：已交付的內容留著。
-                    await self._fail(
-                        buffer,
-                        turn,
-                        tenant_id,
-                        code=delta.code,
-                        message=delta.message,
-                        retryable=delta.retryable,
-                        status="interrupted",
-                        text=text,
-                        usage=usage,
-                        model=model,
-                        prompt_version=prompt_version,
-                        prepared=prepared,
-                    )
-                    return
-                elif isinstance(delta, DoneDelta):
-                    await self._complete(
-                        buffer,
-                        turn,
-                        tenant_id,
-                        finish_reason=delta.finish_reason,
-                        text=text,
-                        usage=usage,
-                        model=model,
-                        prompt_version=prompt_version,
-                        prepared=prepared,
-                    )
-                    return
+                    elif isinstance(delta, DoneDelta):
+                        await self._complete(
+                            buffer,
+                            turn,
+                            tenant_id,
+                            finish_reason=delta.finish_reason,
+                            text=text,
+                            usage=usage,
+                            model=model,
+                            prompt_version=prompt_version,
+                            prepared=prepared,
+                        )
+                        return
         except asyncio.CancelledError:
             # 關機時被 `drain()` 取消（11 §196）。**要留下痕跡再走**：不留的話，使用者
             # 的畫面停在半句話、而資料庫裡那一則永遠是 `streaming`——重整也不會變，
@@ -427,6 +439,34 @@ class ChatService:
 
     # ── 內部 ────────────────────────────────────────────────────
 
+    def _estimated_usage(
+        self, prepared: PreparedTurn | None, text: Sequence[str]
+    ) -> dict[str, Any]:
+        """provider 還沒回報 usage 就結束時的估算——目前只有 stop 這一條路。
+
+        gateway 對「講到一半斷線」已經會補估算（`_StreamState.estimated_usage`），
+        唯獨 stop 是**我們主動棄讀**：generator 被關掉，補的那一筆永遠到不了。不估的
+        話這一輪 usage_logs 沒有帳、token 預留整筆退回，而 provider 按產出計價（地端
+        則是 GPU 真的燒了那段時間）——反覆「長問題＋快講完時 stop」就能繞過月度配額。
+
+        用 `estimate_tokens`（與預留同一把尺，CJK 感知）而不是 gateway 的 chars//4：
+        commit 校正的是這裡預留的量，兩邊用同一種估法，帳才對得攏。
+
+        一個字都沒產生就停（text 空）不估：prompt 那一點量不值得記一筆估算帳，
+        維持整筆退回的原行為。
+        """
+        if prepared is None or not any(text):
+            return {}
+        return {
+            "prompt_tokens": sum(
+                estimate_tokens(message.content) for message in prepared.request.messages
+            ),
+            "completion_tokens": estimate_tokens("".join(text)),
+            "cost": None,
+            # 與 `UsageDelta.estimated` 同義：查帳時分得出「量的」與「估的」。
+            "estimated": True,
+        }
+
     async def _complete(
         self,
         buffer: StreamBuffer,
@@ -457,34 +497,42 @@ class ChatService:
             prompt_version=prompt_version,
             citations=citations,
         )
-        # usage_logs 落地（2A-1）。在 `done` **之前**：done 是前端停止讀取的訊號，也是
-        # 測試查帳的時點，排在它後面的話「串流結束了、帳還沒到」是常態而不是異常。
-        # record 不往外拋（旁路原則，services/platform/usage.py），且自帶交易——
-        # 不會污染 _persist 已經收尾的寫入。中止的回合 usage 可能是空的（provider
-        # 還沒回報就停了），那時沒有數字可記，跳過而不是記一列 0。
-        if usage:
-            await run_orm(
-                self._usage.record,
-                tenant_id,
-                UsageEvent(
-                    category="llm",
-                    model=model,
-                    prompt_tokens=int(usage.get("prompt_tokens") or 0),
-                    completion_tokens=int(usage.get("completion_tokens") or 0),
-                    request_id=str(turn.message_id),
-                    user_id=turn.user_id,
-                    conversation_id=turn.conversation_id,
-                ),
+        # **持久化之後是單向閥**：訊息已經是 completed 的事實，這之後的 Redis／DB
+        # 抖動不得往上拋——拋出去會落進 `_generate` 的 except，`_fail` 把一則完整
+        # 交付的回答改寫成 failed，且 `QuotaService.commit` 是非冪等的 incrby，第二次
+        # settle 會把校正量套用兩遍。吞下的代價（done 事件可能沒送到、settle 失敗時
+        # 預留量等期別翻頁才歸零）都遠輕於帳被改寫，且 client 靠重連／refetch 補得回。
+        try:
+            # usage_logs 落地（2A-1）。在 `done` **之前**：done 是前端停止讀取的訊
+            # 號，也是測試查帳的時點，排在它後面的話「串流結束了、帳還沒到」是常態
+            # 而不是異常。record 不往外拋（旁路原則，services/platform/usage.py），
+            # 且自帶交易——不會污染 _persist 已經收尾的寫入。usage 為空（一個字都
+            # 沒產生就停）時沒有數字可記，跳過而不是記一列 0。
+            if usage:
+                await run_orm(
+                    self._usage.record,
+                    tenant_id,
+                    UsageEvent(
+                        category="llm",
+                        model=model,
+                        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+                        completion_tokens=int(usage.get("completion_tokens") or 0),
+                        request_id=str(turn.message_id),
+                        user_id=turn.user_id,
+                        conversation_id=turn.conversation_id,
+                    ),
+                )
+            await self._budget.settle_tokens(turn.token_reservation, usage)
+            await self._emit_citations(buffer, prepared, citations)
+            await buffer.append(
+                "done", {"message_id": str(turn.message_id), "finish_reason": finish_reason}
             )
-        await self._budget.settle_tokens(turn.token_reservation, usage)
-        await self._emit_citations(buffer, prepared, citations)
-        await buffer.append(
-            "done", {"message_id": str(turn.message_id), "finish_reason": finish_reason}
-        )
-        # 終局事件已送出——把緩衝區的壽命從 5 分鐘縮到 `stream_settled_ttl_seconds`
-        # （二次架構審計 L1）。**必須在最後一個 append 之後**：append 每次都把 TTL
-        # 重設回 5 分鐘。
-        await buffer.settle()
+            # 終局事件已送出——把緩衝區的壽命從 5 分鐘縮到 `stream_settled_ttl_seconds`
+            # （二次架構審計 L1）。**必須在最後一個 append 之後**：append 每次都把 TTL
+            # 重設回 5 分鐘。
+            await buffer.settle()
+        except Exception:
+            logger.exception("chat_finalize_degraded", message_id=str(turn.message_id))
         logger.info(
             "chat_turn_completed",
             message_id=str(turn.message_id),
@@ -537,12 +585,20 @@ class ChatService:
             citations=citations,
             error={"code": str(code), "cause": cause} if cause else {"code": str(code)},
         )
-        await self._budget.settle_tokens(turn.token_reservation, usage)
-        await self._emit_citations(buffer, prepared, citations)
-        await buffer.append("error", {"code": str(code), "title": message, "retryable": retryable})
-        # 同 `_complete`：終局事件之後縮短緩衝區壽命（L1）。失敗的回合同樣可能有
-        # 一個正在重連的 client——它要看得到那則 error，而不是一個 409。
-        await buffer.settle()
+        # 同 `_complete` 的單向閥：狀態已持久化，之後的收尾失敗不得再走一次收尾
+        # ——`_fail` 被 `_generate` 的 except 再包一層時，這裡拋出去就是第二次
+        # settle（double-settle）加一次狀態改寫。
+        try:
+            await self._budget.settle_tokens(turn.token_reservation, usage)
+            await self._emit_citations(buffer, prepared, citations)
+            await buffer.append(
+                "error", {"code": str(code), "title": message, "retryable": retryable}
+            )
+            # 同 `_complete`：終局事件之後縮短緩衝區壽命（L1）。失敗的回合同樣可能有
+            # 一個正在重連的 client——它要看得到那則 error，而不是一個 409。
+            await buffer.settle()
+        except Exception:
+            logger.exception("chat_finalize_degraded", message_id=str(turn.message_id))
         logger.warning(
             "chat_turn_failed",
             message_id=str(turn.message_id),

@@ -140,6 +140,4 @@ class TestTheRebuildLeftNothingBehind:
         不符），而那是一個半套的 schema——比失敗更糟的是它在**部分**環境成功（空庫的
         CI 綠燈、有資料的開發機紅燈），於是問題看起來像機器的問題。
         """
-        assert Embedding.objects.count() == 0, (
-            "migration 之後仍有舊向量——它們的維度與新欄位對不上"
-        )
+        assert Embedding.objects.count() == 0, "migration 之後仍有舊向量——它們的維度與新欄位對不上"

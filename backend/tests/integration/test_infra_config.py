@@ -222,9 +222,7 @@ def test_the_two_tei_containers_do_not_share_a_port() -> None:
     }
 
     assert ports["tei"] and ports["tei-embed"], "兩個 TEI 都必須明確宣告 port"
-    assert not set(ports["tei"]) & set(ports["tei-embed"]), (
-        f"兩個 TEI 容器共用 port：{ports}"
-    )
+    assert not set(ports["tei"]) & set(ports["tei-embed"]), f"兩個 TEI 容器共用 port：{ports}"
 
 
 def test_dotenv_is_gitignored() -> None:
