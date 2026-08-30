@@ -16,8 +16,11 @@ provider（`RERANK_PROVIDERS`，port 8080，cross-encoder）與一個 embedding 
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, get_args
 
 import httpx
@@ -167,7 +170,16 @@ class TestVerifyProviderScript:
     """
 
     def test_tei_is_accepted_for_both_capabilities(self) -> None:
-        from scripts.verify_provider import RERANK_PROVIDERS
+        # 走檔案路徑而非 `import scripts.verify_provider`：`scripts/` 刻意不是
+        # Python 套件（沒有 `__init__.py`），直接 import 會讓 mypy 對同一個檔案
+        # 解析出兩個模組名（`verify_provider` 與 `scripts.verify_provider`），
+        # `make lint-backend` 整個斷掉。形式沿用 `test_eval_runner.py` 的 runner。
+        script = Path(__file__).resolve().parents[2] / "scripts" / "verify_provider.py"
+        spec = importlib.util.spec_from_file_location("_verify_provider", script)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
 
-        assert "tei" in RERANK_PROVIDERS, "rerank 那一路不該因為這一包而消失"
+        assert "tei" in module.RERANK_PROVIDERS, "rerank 那一路不該因為這一包而消失"
         assert "tei" in VENDORS, "embedding 那一路走的是 VENDORS 的分支"
