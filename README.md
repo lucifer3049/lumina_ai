@@ -93,9 +93,14 @@ Node.js 22 LTS + pnpm（ADR-007；建議用 [nvm](https://github.com/nvm-sh/nvm)
 啟用，版本由 `frontend/package.json` 的 `packageManager` 欄位決定）。
 
 > ⚠️ **Windows 使用者一律進 WSL2 操作，不要從 Windows 側（PowerShell / Git Bash）執行
-> `make`、`uv`、`pytest`、`pnpm`。** 同一份 `backend/.venv` 被兩個平台交替使用時，uv 會偵測到
+> `make`、`uv`、`pytest`、`pnpm`。** 同一份 venv 被兩個平台交替使用時，uv 會偵測到
 > 「對面平台建的 venv」而整個砍掉重建，且在 Windows 檔案鎖下常砍到一半失敗、留下不可用
 > 的殘骸。Makefile 與 pytest conftest 都設有守門，非 Linux 環境會直接拒絕並說明原因。
+>
+> venv 位在 `~/.venvs/lumina-backend`（**repo 樹之外**，由 Makefile 的
+> `UV_PROJECT_ENVIRONMENT` 指定）：實測 venv 放在 repo 裡時，即使守門健在，Windows 側
+> 經 `\\wsl.localhost` 碰 repo（git、檔案總管）仍足以讓它半毀。手動跑 `uv run` 請一律
+> 經 make 目標，直接在 `backend/` 下跑會在 repo 裡另長一份 `.venv`。
 
 ```bash
 git clone https://github.com/lucifer3049/lumina_ai.git

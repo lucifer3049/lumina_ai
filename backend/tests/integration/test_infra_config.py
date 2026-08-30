@@ -153,6 +153,80 @@ def test_the_reranker_serves_the_model_the_settings_expect() -> None:
     )
 
 
+# ── 地端 embedding：第二個 TEI 容器（W1）───────────────────────────
+#
+# 與 rerank 的 tei 是**兩個容器**：同一個映像、不同的 --model-id、不同的 port。
+# 下面四條與上面 rerank 的四條一字對應——它們守的是同一組會安靜失敗的事，而
+# 「rerank 那邊已經對了」不能推論出這邊也對（compose 是兩段各自獨立的 YAML）。
+
+
+def test_the_embedding_service_is_behind_a_profile() -> None:
+    """同 rerank：沒有 profile 的話，`make up --wait` 會在沒有 GPU 的機器上卡死。"""
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    tei_embed = compose.get("services", {}).get("tei-embed")
+
+    assert tei_embed is not None, "compose 缺少 tei-embed service（W1）"
+    assert tei_embed.get("profiles"), "tei-embed 沒有 profile——沒有 GPU 的機器會卡住"
+
+
+def test_the_embedding_service_asks_for_a_gpu() -> None:
+    """要不到 GPU 就是 CPU 推論。**這裡的症狀與 rerank 不同、而且更難發現**：
+    rerank 慢會被 1.2s 的預算跳過（至少排序看得出沒變），embedding 慢只是 ETL 變久
+    ——一份 500 頁的 PDF 從幾分鐘變成幾小時，而每一批都成功，沒有任何錯誤。"""
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    tei_embed = compose["services"]["tei-embed"]
+    devices = (
+        tei_embed.get("deploy", {}).get("resources", {}).get("reservations", {}).get("devices", [])
+    )
+
+    assert any("gpu" in (device.get("capabilities") or []) for device in devices), (
+        "tei-embed 沒有保留 GPU——會安靜地退成 CPU 推論"
+    )
+
+
+def test_the_embedding_service_masks_the_bundled_cuda_compat_driver() -> None:
+    """WSL2 上少了這一行，容器**拿得到 GPU 卻用不到**（2026-08-24 對 rerank 實測定位，
+    同一個映像因此同一個坑）。漏抄這一行的代價見上一條：沒有錯誤，只有慢。"""
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    tei_embed = compose["services"]["tei-embed"]
+    mounts = tei_embed.get("tmpfs") or []
+    rendered = [mounts] if isinstance(mounts, str) else list(mounts)
+
+    assert any("/usr/local/cuda/compat" in mount for mount in rendered), (
+        "tei-embed 沒有蓋掉映像自帶的 CUDA compat 目錄——WSL2 上會安靜地退成 CPU"
+    )
+
+
+def test_the_embedding_service_serves_bge_m3() -> None:
+    """容器裡實際載入哪個模型只寫在 command 裡，而 `AI_EMBEDDING_MODEL` 只是我們記帳
+    用的名字。兩邊漂掉時，向量是另一個模型產的——**維度可能還剛好一樣**（1024 是常見
+    值），於是寫得進去、查得出來、只是答案變差。"""
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    tei_embed = compose["services"]["tei-embed"]
+    command = tei_embed.get("command")
+    rendered = " ".join(command) if isinstance(command, list) else str(command or "")
+
+    assert "bge-m3" in rendered, "tei-embed 載入的不是 bge-m3（06 §3.4 的多語 embedding）"
+    assert "reranker" not in rendered, (
+        "tei-embed 載入的是 reranker——cross-encoder 沒有 /v1/embeddings 的語意"
+    )
+
+
+def test_the_two_tei_containers_do_not_share_a_port() -> None:
+    """**同一個名字、兩個容器**。共用 port 的話，embedding 會打到載入 cross-encoder
+    的那一個——回來的不是 404，是一個形狀不同的回應，於是錯誤出現在解析層。"""
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    ports = {
+        name: [str(port) for port in (compose["services"][name].get("ports") or [])]
+        for name in ("tei", "tei-embed")
+    }
+
+    assert ports["tei"] and ports["tei-embed"], "兩個 TEI 都必須明確宣告 port"
+    assert not set(ports["tei"]) & set(ports["tei-embed"]), (
+        f"兩個 TEI 容器共用 port：{ports}"
+    )
+
+
 def test_dotenv_is_gitignored() -> None:
     """真值檔不進版控；`.env.example` 必須例外放行。"""
     rules = [line.strip() for line in GITIGNORE.read_text(encoding="utf-8").splitlines()]

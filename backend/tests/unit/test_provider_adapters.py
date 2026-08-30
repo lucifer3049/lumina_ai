@@ -116,8 +116,8 @@ class TestVendorRegistry:
 
         assert configurable - {"mock"} == set(VENDORS)
 
-    def test_the_five_vendors_are_present(self) -> None:
-        assert set(VENDORS) == {"gemini", "openai", "openrouter", "nvidia", "ollama"}
+    def test_the_six_vendors_are_present(self) -> None:
+        assert set(VENDORS) == {"gemini", "openai", "openrouter", "nvidia", "ollama", "tei"}
 
     @pytest.mark.parametrize("vendor", sorted(VENDORS))
     def test_no_credentials_are_baked_into_the_table(self, vendor: str) -> None:
@@ -136,11 +136,11 @@ class TestVendorRegistry:
 
     @pytest.mark.parametrize("vendor", sorted(VENDORS))
     def test_remote_vendors_use_tls(self, vendor: str) -> None:
-        """本機的 Ollama 以外，一律 https——金鑰會跟著每一次請求送出去。"""
+        """本機的兩家（Ollama、自架 TEI）以外，一律 https——金鑰會跟著每一次請求送出去。"""
         spec = VENDORS[vendor]
 
-        if vendor == "ollama":
-            assert spec.requires_api_key is False, "本機 Ollama 不該要求金鑰"
+        if vendor in {"ollama", "tei"}:
+            assert spec.requires_api_key is False, f"本機的 {vendor} 不該要求金鑰"
         else:
             assert spec.base_url.startswith("https://"), f"{vendor} 不是 https"
             assert spec.requires_api_key is True

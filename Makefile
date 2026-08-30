@@ -25,6 +25,17 @@ ifeq ($(filter Linux Darwin,$(UNAME_S)),)
 $(error 本專案在 Linux / WSL2 / macOS 開發（偵測到：$(UNAME_S)）。從 Windows 側執行 uv 會毀掉 backend/.venv，請進 WSL2)
 endif
 
+# ── venv 移出 repo 樹（2026-08-30）───────────────────────────────────
+# backend/.venv 留在 repo 裡時曾三度半毀（bin/python 消失、symlink 懸空）：兩次緊接
+# 在 Windows 側對 //wsl.localhost/ 路徑做 git 操作之後，一次在純 WSL 連跑兩個 make
+# 目標之間——上方守門擋得住「Windows 側跑 uv」，擋不住 Windows 檔案總管／git／
+# 編輯器經 9P 碰到 repo 樹的間接效應。把 venv 移到 $HOME/.venvs/（repo 樹之外），
+# Windows 側的任何 repo 操作從此構不成威脅；順帶讓 uvicorn 與 inotify 不再需要
+# 繞開 backend/ 底下 98.5% 的檔案。CI（ubuntu）與 macOS 同樣適用，路徑都存在。
+# **只在 make 的世界生效**：手動 `uv run` 請一律經 make 目標，否則會在 backend/
+# 底下又長出一份 .venv（無害但混淆；.gitignore 仍擋著它）。
+export UV_PROJECT_ENVIRONMENT := $(HOME)/.venvs/lumina-backend
+
 # --env-file：compose 與 backend 共用 repo 根的 .env（唯一來源，見 .env.example）
 COMPOSE := docker compose --env-file .env -f docker/compose.yml
 BACKEND := backend
@@ -382,14 +393,13 @@ else
 PYTEST_PARALLEL = -n $(PYTEST_XDIST_N)
 endif
 
-# **已知缺口（2026-08-29，未處理）**：三層併成單一 pytest session 跑會紅 36 條——
-# `etl/extract/sandbox.py` 的 `run_isolated` 在 `process.start()` 拿到 forkserver 的
-# `ConnectionRefusedError`，連坐 test_ingestion／test_notification_events／
-# test_embedding_pipeline。**穩定重現**，與環境殘留無關（13 §4 的 2C-2 結案表）。
-# 在那張任務卡處理之前，全套請跑 `make test-unit && make test-integration && make
-# test-api`（2026-08-29 實測 2039 passed），與 CI 的分階段一致；本目標保留原樣，
-# 是因為改動它屬於那張卡的範圍，而不是順手改掉紅燈的證據。
-test: ## 全部測試單一 session（**目前已知紅 36 條**，見上方；全套請改跑分三層）
+# 2C-2 記載的「混層跑紅 36 條 forkserver ConnectionRefusedError」已於 2026-08-30
+# 查明解除：根因不在 sandbox 也不在測試，而是 repo 內的 backend/.venv 會被外力半毀
+# （症狀窗內單跑 integration 也紅 26 條、乾淨重建照紅；venv 移出 repo 樹後混層
+# 2044/2045 綠）。詳見上方 UV_PROJECT_ENVIRONMENT 段落。全套仍建議分三層跑（與 CI
+# 對齊）；混層曾觀察到 1 條順序相依的 flake（test_kb_reindex_endpoints 的 202 測試，
+# 單獨跑綠），遇到先單獨重跑確認再說。
+test: ## 全部測試單一 session（全套建議改跑分三層，與 CI 對齊；見上方註解）
 	$(UV_RUN) pytest $(PYTEST_PARALLEL)
 
 # 分層目標對應 02 §2 的測試四層；CI 分階段跑（unit 最快，壞掉時最好定位）。
@@ -426,7 +436,7 @@ test-api: ## 只跑 api（權限矩陣、錯誤格式、SSE 協定；需先 make
 #
 # **窄目標一律不是安全網**：`-k` 與 `--lf` 只看得見你已經想到的東西，`test-changed`
 # 靠檔名對應（見 scripts/changed_tests.py），三者都漏得掉「A 改了、B 壞了」。
-# CLAUDE.md 的「任務結束必跑」指的仍是 `make test` ＋ `make smoke`，push 前那一次
+# CLAUDE.md 的「任務結束必跑」指的仍是全套（分三層）＋ `make smoke`，push 前那一次
 # 不能省——這一段縮短的是中間的迴圈，不是最後那道關。
 
 test-k: ## 只跑名稱含 K 的測試（例：make test-k K=credential）
