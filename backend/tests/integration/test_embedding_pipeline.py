@@ -619,6 +619,70 @@ class TestStaleTasks:
         assert result.embedded_count == 0
         assert provider.calls == []
 
+    def test_a_reingest_between_load_and_first_write_is_not_overwritten(
+        self, tenants: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """re-ingest 擠進「入口檢查之後、第一次寫入之前」的窗（2026-08-30 深度審查）。
+
+        入口的狀態防呆看到的還是 chunked，於是它放行；沒有寫入端守門的話，舊任務
+        接著把 v2 的文件寫成 embedding→ready——一份 active chunks 為零、狀態卻是
+        ready 的文件，而 rescue 視 ready 為終局、永不救援。
+        """
+        provider = _CountingProvider()
+        document_id = _ingested(TENANT_A)
+        service = _service(provider)
+
+        original_begin = EmbeddingService._begin
+
+        def begin_after_reingest(
+            self: EmbeddingService, tenant_id: uuid.UUID, target: Any
+        ) -> uuid.UUID:
+            # target 已載入（看到 chunked/v1）之後、第一次寫入之前，使用者按了重跑。
+            DocumentService().reingest(TENANT_A, document_id)
+            return original_begin(self, tenant_id, target)
+
+        monkeypatch.setattr(EmbeddingService, "_begin", begin_after_reingest)
+
+        result = service.embed_document(TENANT_A, document_id)
+
+        with tenant_scope(TENANT_A):
+            document = Document.objects.get(id=document_id)
+        assert document.status == "uploaded", "舊任務不得把 re-ingest 後的文件推進狀態"
+        assert document.doc_version == 2
+        assert result.embedded_count == 0
+        assert provider.calls == [], "世界已前進，舊任務不該再花任何一次 API 呼叫"
+
+    def test_a_version_bump_during_embedding_blocks_the_ready_promotion(
+        self, tenants: None
+    ) -> None:
+        """向量算到一半世界前進（版本 +1、chunks superseded、狀態重設）：收尾的
+        ready 寫入必須整筆落空——這正是審查發現的「永久 READY 但零 chunks」競態。
+
+        併發 writer 以 repository 直接模擬（production 裡它是逾時豁免後的強制
+        re-ingest 交易）；已算好的向量留在 DB 不回滾，新版本會自己跳過（冪等鍵）。
+        """
+        document_id = _chunked_document(TENANT_A, chunk_count=2)
+
+        class _BumpingProvider(_CountingProvider):
+            def embed(
+                self, texts: list[str], *, model: str, timeout_seconds: float
+            ) -> ProviderEmbedding:
+                if not self.calls:  # 只在第一批觸發一次
+                    from repositories.knowledge import ChunkRepository, DocumentRepository
+
+                    with tenant_scope(TENANT_A):
+                        ChunkRepository().supersede_for_document(document_id)
+                        DocumentRepository().start_new_version(document_id, doc_version=2)
+                return super().embed(texts, model=model, timeout_seconds=timeout_seconds)
+
+        result = _service(_BumpingProvider()).embed_document(TENANT_A, document_id)
+
+        with tenant_scope(TENANT_A):
+            document = Document.objects.get(id=document_id)
+        assert document.status == "uploaded", "收尾不得把新版本標成 ready"
+        assert document.doc_version == 2
+        assert result.stats.get("skipped") == "superseded_mid_flight"
+
     def test_a_redelivered_task_on_a_ready_document_is_harmless(self, tenants: None) -> None:
         """已經 ready 的文件被重送一次：不重算、也不改狀態（at-least-once 的常態）。"""
         provider = _CountingProvider()

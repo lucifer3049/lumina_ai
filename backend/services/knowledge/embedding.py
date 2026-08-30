@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ai.gateway import AIGateway, build_gateway
+from common.document_status import EMBEDDABLE_STATUSES, DocumentStatus
 from config.logging import get_logger
 from core.exceptions import NotFoundError, ProviderError
 from core.redis import get_redis, tenant_key
@@ -50,19 +51,12 @@ logger = get_logger(__name__)
 
 STAGE_EMBED = "embed"
 
-STATUS_CHUNKED = "chunked"
-STATUS_EMBEDDING = "embedding"
-STATUS_READY = "ready"
-STATUS_FAILED = "failed"
-
-# 只有這幾個狀態該進 embedding（08 §2：``chunked → embedding → ready``）。
-#
-# **這是一道防呆，不是樂觀鎖**。訊息可能比它描述的世界舊：文件在 chunked 時排了
-# embedding，使用者接著按 re-ingest（那時 chunked 是允許重跑的），於是 doc_version
-# 變成 2 而新版的 chunk 還沒切出來。那個舊訊息這時進來會看到「這一版沒有 chunk 要
-# 算」，然後把文件標成 ready——一份零向量、狀態卻是完成的文件。ETL 稍後會把它蓋回
-# 去，所以它自己會好，但那段期間檢索查得到它、而它什麼都答不出來。
-_EMBEDDABLE_STATUSES = frozenset({STATUS_CHUNKED, STATUS_EMBEDDING, STATUS_READY})
+# 狀態值與「哪些狀態可進 embedding」都出自 `common.document_status`（2026-08-30
+# 收斂）：入口的 `EMBEDDABLE_STATUSES` 判斷是防呆——訊息可能比它描述的世界舊
+# （文件在 chunked 時排了 embedding，使用者接著按 re-ingest，doc_version +1 而新版
+# chunk 還沒切出來）。防呆擋不住「檢查之後世界才前進」，那一半由**寫入端**的
+# `set_status(expected_status=…, expected_doc_version=…)` 守——舊任務的收尾寫入
+# 會整筆落空，而不是把一份零 chunk 的文件標成 ready。
 
 _JOB_SUCCEEDED = "succeeded"
 _JOB_FAILED = "failed"
@@ -137,8 +131,8 @@ class EmbeddingService:
         要算」更糟——那會把文件標成 ready，而它一個向量都沒有。
         """
         target = self._load_target(tenant_id, document_id)
-        if target.status not in _EMBEDDABLE_STATUSES:
-            # 訊息比世界舊（見 `_EMBEDDABLE_STATUSES`）。**什麼都不碰**就回傳：ETL
+        if target.status not in EMBEDDABLE_STATUSES:
+            # 訊息比世界舊（見模組頂部的守門說明）。**什麼都不碰**就回傳：ETL
             # 正在重跑這份文件，它跑完會自己再排一次 embedding。
             logger.info(
                 "embedding_skipped_stale_task",
@@ -155,7 +149,17 @@ class EmbeddingService:
         job_id = self._begin(tenant_id, target)
 
         with tenant_context(tenant_id), unit_of_work():
-            self._documents.set_status(target.document_id, status=STATUS_EMBEDDING, error=None)
+            # 帶 expected_*：入口檢查與這一行之間 re-ingest 可能已經發生（版本 +1、
+            # 狀態重設）。落空（0 列）代表世界前進了——這個任務手上的一切都是舊的。
+            moved = self._documents.set_status(
+                target.document_id,
+                status=DocumentStatus.EMBEDDING,
+                error=None,
+                expected_status=EMBEDDABLE_STATUSES,
+                expected_doc_version=target.doc_version,
+            )
+        if not moved:
+            return self._skip_stale(target, at="enter_embedding")
 
         try:
             embedded, tokens, batches, reported_model = self._embed_pending(tenant_id, target)
@@ -191,7 +195,19 @@ class EmbeddingService:
             )
 
         with tenant_context(tenant_id), unit_of_work():
-            self._documents.set_status(target.document_id, status=STATUS_READY, error=None)
+            # **這一行是「零 chunk 卻 ready」競態的關門處**（2026-08-30 深度審查）：
+            # 生成向量期間文件被 re-ingest 的話，這裡的 doc_version 對不上、寫入落空
+            # ——舊任務不得把新版本（chunks 還沒切出來）標成 ready。已算好的向量留在
+            # DB 不回滾：新版本的 embedding 會自己跳過已存在的（冪等鍵），沒有浪費。
+            promoted = self._documents.set_status(
+                target.document_id,
+                status=DocumentStatus.READY,
+                error=None,
+                expected_status=(DocumentStatus.EMBEDDING,),
+                expected_doc_version=target.doc_version,
+            )
+        if not promoted:
+            return self._skip_stale(target, at="promote_ready")
 
         # 08 §2 的終點——「可以問了」的那一刻，也是唯一值得通知使用者的一刻
         # （chunked 對他沒有意義）。同一批上傳會被收合成一則（2A-5）。
@@ -209,7 +225,7 @@ class EmbeddingService:
         )
         return EmbeddingResult(
             document_id=target.document_id,
-            status=STATUS_READY,
+            status=DocumentStatus.READY,
             embedded_count=embedded,
             stats=stats,
         )
@@ -230,7 +246,19 @@ class EmbeddingService:
             "attempts": attempts,
         }
         with tenant_context(tenant_id), unit_of_work():
-            self._documents.set_status(document_id, status=STATUS_FAILED, error=error)
+            # 只蓋還停在 chunked／embedding 的：重試等待期間文件可能已被 re-ingest
+            # （狀態重設回 uploaded、版本 +1），那時這個結論屬於舊版本——標上去會把
+            # 一份正在重跑的文件蓋成 failed。手上沒有版本快照（本路徑只有 id），
+            # 以狀態作守門；ready 也不蓋（重送舊訊息不得把完成的文件改成失敗）。
+            marked = self._documents.set_status(
+                document_id,
+                status=DocumentStatus.FAILED,
+                error=error,
+                expected_status=(DocumentStatus.CHUNKED, DocumentStatus.EMBEDDING),
+            )
+        if not marked:
+            logger.info("embedding_exhausted_but_stale", document_id=str(document_id))
+            return
         logger.error(
             "embedding_retries_exhausted",
             document_id=str(document_id),
@@ -395,7 +423,15 @@ class EmbeddingService:
         error = {"stage": STAGE_EMBED, **error_payload(exc), "retryable": False}
         self._fail_job(tenant_id, job_id, exc)
         with tenant_context(tenant_id), unit_of_work():
-            self._documents.set_status(target.document_id, status=STATUS_FAILED, error=error)
+            # 守門同 ready 那一行：re-ingest 之後這個結論屬於舊版本，不蓋新世界。
+            marked = self._documents.set_status(
+                target.document_id,
+                status=DocumentStatus.FAILED,
+                error=error,
+                expected_doc_version=target.doc_version,
+            )
+        if not marked:
+            return self._skip_stale(target, at="mark_failed")
         logger.warning(
             "embedding_failed",
             document_id=str(target.document_id),
@@ -405,9 +441,28 @@ class EmbeddingService:
         self._notifications.notify_document_failed(tenant_id, target.document_id, error=error)
         return EmbeddingResult(
             document_id=target.document_id,
-            status=STATUS_FAILED,
+            status=DocumentStatus.FAILED,
             embedded_count=0,
             stats={"error": error},
+        )
+
+    def _skip_stale(self, target: _Target, *, at: str) -> EmbeddingResult:
+        """收尾寫入落空（expected_* 對不上）＝世界已經前進：什麼都不碰、原樣退場。
+
+        新版本的 ETL 鏈會自己再排一次 embedding；這裡多做任何一步（通知、標狀態）
+        都是替一個已經不存在的版本發言。
+        """
+        logger.info(
+            "embedding_superseded_mid_flight",
+            document_id=str(target.document_id),
+            doc_version=target.doc_version,
+            at=at,
+        )
+        return EmbeddingResult(
+            document_id=target.document_id,
+            status=str(target.status),
+            embedded_count=0,
+            stats={"skipped": "superseded_mid_flight", "at": at},
         )
 
 

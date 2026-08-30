@@ -25,6 +25,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from common.document_status import DocumentStatus
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
 from core.exceptions import (
@@ -60,10 +61,7 @@ STAGE_EXTRACT = "extract"
 STAGE_CLEAN = "clean"
 STAGE_CHUNK = "chunk"
 
-STATUS_PARSING = "parsing"
-STATUS_CLEANED = "cleaned"
-STATUS_CHUNKED = "chunked"
-STATUS_FAILED = "failed"
+# 狀態值出自 `common.document_status`（2026-08-30 收斂，理由見該模組 docstring）。
 
 _JOB_SUCCEEDED = "succeeded"
 _JOB_FAILED = "failed"
@@ -157,7 +155,7 @@ class IngestionService:
             "attempts": attempts,
         }
         with tenant_context(tenant_id), unit_of_work():
-            self._documents.set_status(document_id, status=STATUS_FAILED, error=error)
+            self._documents.set_status(document_id, status=DocumentStatus.FAILED, error=error)
         logger.error(
             "ingestion_retries_exhausted",
             document_id=str(document_id),
@@ -188,7 +186,9 @@ class IngestionService:
 
     def _run(self, tenant_id: uuid.UUID, target: _Target) -> IngestionResult:
         with tenant_context(tenant_id), unit_of_work():
-            self._documents.set_status(target.document_id, status=STATUS_PARSING, error=None)
+            self._documents.set_status(
+                target.document_id, status=DocumentStatus.PARSING, error=None
+            )
 
         cleaned, clean_stats = self._materialise_cleaned(tenant_id, target)
 
@@ -196,12 +196,16 @@ class IngestionService:
         # 好幾分鐘，而使用者與維運看到的是同一個字——分不出「還在解析」與「解析完了
         # 正在切塊」。兩者的處置不同（前者等，後者若卡住是 chunker 的問題）。
         with tenant_context(tenant_id), unit_of_work():
-            self._documents.set_status(target.document_id, status=STATUS_CLEANED, error=None)
+            self._documents.set_status(
+                target.document_id, status=DocumentStatus.CLEANED, error=None
+            )
 
         chunks = self._chunk_stage(tenant_id, target, cleaned)
 
         with tenant_context(tenant_id), unit_of_work():
-            self._documents.set_status(target.document_id, status=STATUS_CHUNKED, error=None)
+            self._documents.set_status(
+                target.document_id, status=DocumentStatus.CHUNKED, error=None
+            )
 
         # **交棒給 embedding 佇列**（06 §2 的 Q2），在 chunk 提交之後才送：worker 可能
         # 在 COMMIT 之前就開始處理，而它查到的是零個 chunk——那會把文件標成 ready，
@@ -218,7 +222,7 @@ class IngestionService:
         )
         return IngestionResult(
             document_id=target.document_id,
-            status=STATUS_CHUNKED,
+            status=DocumentStatus.CHUNKED,
             chunk_count=len(chunks),
             stats=stats,
         )
@@ -403,7 +407,9 @@ class IngestionService:
         stage = self._failing_stage(tenant_id, target)
         error = {"stage": stage, **error_payload(exc), "retryable": False}
         with tenant_context(tenant_id), unit_of_work():
-            self._documents.set_status(target.document_id, status=STATUS_FAILED, error=error)
+            self._documents.set_status(
+                target.document_id, status=DocumentStatus.FAILED, error=error
+            )
         logger.warning(
             "ingestion_failed",
             document_id=str(target.document_id),
@@ -413,7 +419,7 @@ class IngestionService:
         self._notifications.notify_document_failed(tenant_id, target.document_id, error=error)
         return IngestionResult(
             document_id=target.document_id,
-            status=STATUS_FAILED,
+            status=DocumentStatus.FAILED,
             chunk_count=0,
             stats={"error": error},
         )

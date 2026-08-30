@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypedDict
@@ -48,6 +48,7 @@ from apps.knowledge.models import (
     KbReindexJob,
     KnowledgeBase,
 )
+from common.document_status import DocumentStatus
 from core.tenant import get_current_tenant_id
 from repositories.base import SoftDeletableRepository, TenantScopedRepository
 
@@ -269,19 +270,33 @@ class DocumentRepository(SoftDeletableRepository[Document]):
             .filter(id=document_id)
             .update(
                 doc_version=doc_version,
-                status="uploaded",
+                status=DocumentStatus.UPLOADED,
                 error=None,
                 updated_at=timezone.now(),
             )
         )
 
     def set_status(
-        self, document_id: uuid.UUID, *, status: str, error: dict[str, object] | None = None
+        self,
+        document_id: uuid.UUID,
+        *,
+        status: str,
+        error: dict[str, object] | None = None,
+        expected_status: Collection[str] | None = None,
+        expected_doc_version: int | None = None,
     ) -> int:
         """狀態機推進（08 §2）。``error`` 顯式傳 None 會清掉上一次的失敗紀錄。
 
         走 ``update`` 而不是讀出來改再存：ETL 與使用者的請求可能同時碰同一列，
         read-modify-write 會把對方的改動蓋掉（例如把已軟刪的文件寫回未刪）。
+
+        **``expected_status`` / ``expected_doc_version`` 是寫入端的競態守門**
+        （2026-08-30 深度審查）：背景任務手上的目標可能比世界舊——文件在任務執行中
+        被 re-ingest（doc_version +1、chunks superseded、狀態重設）時，舊任務的收尾
+        寫入必須**整筆落空**而不是照寫。少了這道門，舊任務會把一份 active chunks 為
+        零的文件標成 ready，而 rescue 視 ready 為終局、永不救援——文件永久「完成」
+        但檢索不到任何內容。條件放進 UPDATE 的 WHERE（單一語句、原子），不是先查再
+        寫；呼叫端以回傳的列數判斷有沒有寫中（0 = 世界已經前進，什麼都別做）。
 
         **``updated_at`` 要自己寫**：``auto_now`` 是 `save()` 的行為，``update()``
         不會觸發它。少了這一行，一份文件從上傳到 ready 的整段處理過程中
@@ -289,11 +304,12 @@ class DocumentRepository(SoftDeletableRepository[Document]):
         的補償掃描、re-ingest 的卡死豁免）量到的其實是「這份文件多久以前被建立」
         ——一份剛切完塊的大文件會被誤判成停滯，而真正卡在 parsing 的反而看起來很新。
         """
-        return (
-            self.get_queryset()
-            .filter(id=document_id)
-            .update(status=status, error=error, updated_at=timezone.now())
-        )
+        queryset = self.get_queryset().filter(id=document_id)
+        if expected_status is not None:
+            queryset = queryset.filter(status__in=list(expected_status))
+        if expected_doc_version is not None:
+            queryset = queryset.filter(doc_version=expected_doc_version)
+        return queryset.update(status=status, error=error, updated_at=timezone.now())
 
 
 # 全文檢索的查詢（06 §3.1、05 §5.3）。**四個地方錯了都不會報錯**，見 `search_fts`。
@@ -394,7 +410,7 @@ class ChunkRepository(TenantScopedRepository[Chunk]):
         它是最後的退路。順序是先向量後 chunk——`Embedding.chunk` 是 PROTECT，反過來
         會被 DB 擋下（那個擋是對的：它保證這裡永遠不會只刪一半）。
         """
-        chunks = self.get_queryset().filter(superseded=True, document__status="ready")
+        chunks = self.get_queryset().filter(superseded=True, document__status=DocumentStatus.READY)
         Embedding.objects.filter(chunk__in=chunks).delete()
         deleted, _ = chunks.delete()
         return deleted

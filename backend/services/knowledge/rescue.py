@@ -15,6 +15,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
+from common.document_status import RESCUABLE_STATUSES, DocumentStatus
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
 from core.tasks import enqueue_embedding, enqueue_ingestion, enqueue_reindex
@@ -22,20 +23,30 @@ from core.tenant import tenant_context
 from core.uow import unit_of_work
 from repositories.identity import TenantDirectoryRepository
 from repositories.knowledge import DocumentRepository, KbReindexJobRepository
+from services.knowledge.reindex_plan import (
+    STATUS_EMBEDDING as STATUS_REINDEX_EMBEDDING,
+)
+from services.knowledge.reindex_plan import (
+    STATUS_FAILED as STATUS_REINDEX_FAILED,
+)
+from services.knowledge.reindex_plan import (
+    STATUS_PENDING,
+    STATUS_RECHUNKING,
+)
 
 logger = get_logger(__name__)
 
 __all__ = ["StuckDocumentRescueService", "StuckReindexRescueService"]
 
-# 只救這兩個狀態（模組 docstring）。狀態與任務的對應在 `_enqueue_for`——
-# 對錯邊的話，service 的狀態防呆會安靜返回，文件繼續停著，而掃描器每輪都「成功」。
-_RESCUE_STATUSES = ("uploaded", "chunked")
+# 只救 `RESCUABLE_STATUSES`（common.document_status；理由見模組 docstring）。
+# 狀態與任務的對應在 `_enqueue_for`——對錯邊的話，service 的狀態防呆會安靜返回，
+# 文件繼續停著，而掃描器每輪都「成功」。
 
 
 def _enqueue_for(status: str) -> Callable[..., str | None]:
     # 呼叫時才查模組全域（不用 import 期抓參照的 dict）：測試要能以 monkeypatch
     # 攔截 enqueue_*，而 dict 裡的舊參照攔不到。
-    return enqueue_ingestion if status == "uploaded" else enqueue_embedding
+    return enqueue_ingestion if status == DocumentStatus.UPLOADED else enqueue_embedding
 
 
 class StuckDocumentRescueService:
@@ -58,7 +69,7 @@ class StuckDocumentRescueService:
             stuck = [
                 (uuid.UUID(str(document.id)), str(document.status))
                 for document in self._documents.stuck_in(
-                    list(_RESCUE_STATUSES), not_updated_since=threshold
+                    list(RESCUABLE_STATUSES), not_updated_since=threshold
                 )
             ]
         rescued = 0
@@ -105,8 +116,10 @@ class StuckReindexRescueService:
       方式時，就把狀態誠實地寫成終局，把決定權交回使用者。**
     """
 
-    _REQUEUE_STATUSES = ("pending",)
-    _FAIL_STATUSES = ("rechunking", "embedding")
+    # 值出自 `reindex_plan`（那個狀態機的唯一定義處），不在這裡手寫字串——
+    # 兩邊漂掉時，卡在漏列狀態的 job 會永遠沒人救，而掃描器每輪都「成功」。
+    _REQUEUE_STATUSES = (STATUS_PENDING,)
+    _FAIL_STATUSES = (STATUS_RECHUNKING, STATUS_REINDEX_EMBEDDING)
 
     def __init__(
         self,
@@ -138,7 +151,7 @@ class StuckReindexRescueService:
             for job_id, status in stalled:
                 self._jobs.update(
                     job_id,
-                    status="failed",
+                    status=STATUS_REINDEX_FAILED,
                     error={
                         "cause": "ReindexStalled",
                         # 訊息會出現在使用者眼前，所以要說得出「接下來怎麼辦」。

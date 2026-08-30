@@ -18,6 +18,7 @@ from typing import Any
 from django.db import IntegrityError
 from django.utils import timezone
 
+from common.document_status import IN_PROGRESS_STATUSES, DocumentStatus
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
 from core import audit
@@ -36,19 +37,8 @@ from services.platform.quota import QuotaService
 
 logger = get_logger(__name__)
 
-# ETL 進行中的狀態（08 §2）。這幾個狀態下重跑會讓兩個 job 寫同一份文件。
-#
-# ``cleaned`` 也算進行中：它是「解析完、正在切塊」，下一步就會寫 chunk。漏掉它的話，
-# 使用者在那幾秒內按重跑會讓兩個 job 同時寫同一份文件的 chunk，而先寫完的那個會被
-# 另一個的「先刪同版本殘留」清掉——結果是隨機少一半內容，兩邊都不報錯。
-#
-# ``chunked`` **不算**：那時 chunk 已經寫完，重跑是安全的，而它同時是 embedding 沒有
-# 被觸發時唯一的恢復入口（見 `EmbeddingService` 對 doc_version 的守門）。
-_IN_PROGRESS_STATUSES = {"parsing", "cleaned", "embedding"}
-
-# 停住時可以靠重排恢復的兩個狀態——它們的共通點是「該有一則訊息，而它不在」。
-_STATUS_UPLOADED = "uploaded"
-_STATUS_CHUNKED = "chunked"
+# 狀態集合出自 `common.document_status`（2026-08-30 收斂）：哪些算「進行中」（重跑
+# 會出現兩個 writer，409 擋掉）、哪些「可補送」——連同各自的理由都定義在那裡。
 
 
 @dataclass(frozen=True)
@@ -221,9 +211,9 @@ class DocumentService:
         )
         with tenant_context(tenant_id), unit_of_work():
             document = self._require(document_id)
-            if document.status in _IN_PROGRESS_STATUSES and document.updated_at > stale_before:
+            if document.status in IN_PROGRESS_STATUSES and document.updated_at > stale_before:
                 raise ConflictError("文件正在處理中，請等它結束再重跑")
-            if document.status in _IN_PROGRESS_STATUSES:
+            if document.status in IN_PROGRESS_STATUSES:
                 logger.warning(
                     "reingest_forced_on_stale_document",
                     document_id=str(document_id),
@@ -264,7 +254,7 @@ class DocumentService:
         cutoff = timezone.now() - timedelta(minutes=stale_after_minutes)
         with tenant_context(tenant_id), unit_of_work():
             stuck = self._documents.stuck_in(
-                [_STATUS_UPLOADED, _STATUS_CHUNKED], not_updated_since=cutoff
+                [DocumentStatus.UPLOADED, DocumentStatus.CHUNKED], not_updated_since=cutoff
             )
             found = [(uuid.UUID(str(doc.id)), str(doc.status)) for doc in stuck]
 
@@ -272,7 +262,7 @@ class DocumentService:
             return found
 
         for document_id, status in found:
-            if status == _STATUS_UPLOADED:
+            if status == DocumentStatus.UPLOADED:
                 enqueue_ingestion(tenant_id=tenant_id, document_id=document_id)
             else:
                 enqueue_embedding(tenant_id=tenant_id, document_id=document_id)

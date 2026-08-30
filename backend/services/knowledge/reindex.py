@@ -36,6 +36,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from ai.gateway import AIGateway, build_gateway
+from common.document_status import STILL_PROCESSING_STATUSES
 from config.logging import get_logger
 from core import audit
 from core.exceptions import ConflictError, NotFoundError, ValidationFailedError
@@ -78,8 +79,9 @@ RECHUNK_BATCH_SIZE = 50
 
 # re-ingest 之後還在跑的狀態——重切階段要等它們全部離開這一組才進 embedding。
 # ``failed`` 不在其中：壞檔會永遠停在那裡，而一份壞檔不該讓整個 KB 的重建卡死
-# （它的舊 chunk 已經 superseded，本來就不在檢索裡）。
-_STILL_PROCESSING = frozenset({"uploaded", "parsing", "cleaned", "chunked", "embedding"})
+# （它的舊 chunk 已經 superseded，本來就不在檢索裡）。定義出自
+# `common.document_status`（＝所有非終局，新增中間狀態時自動正確）。
+_STILL_PROCESSING = STILL_PROCESSING_STATUSES
 
 
 @dataclass(frozen=True)
