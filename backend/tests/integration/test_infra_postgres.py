@@ -23,7 +23,7 @@ from django.db import connection, connections
 REQUIRED_EXTENSIONS = {"vector", "pgroonga"}
 
 # 05 §3.2：embeddings.vector 的維度與型別（day-1 即 halfvec）。
-EMBEDDING_DIM = 1536
+EMBEDDING_DIM = 1024
 
 
 @pytest.mark.django_db
@@ -89,7 +89,7 @@ def test_rls_enabled_tables_are_actually_enforced() -> None:
 
 @pytest.mark.django_db(databases=["admin"])
 def test_halfvec_column_and_hnsw_index_are_usable() -> None:
-    """halfvec(1536) 欄位 + HNSW `halfvec_cosine_ops` 索引可建、可查（05 §3.2、§4）。
+    """halfvec(1024) 欄位 + HNSW `halfvec_cosine_ops` 索引可建、可查（05 §3.2、§4）。
 
     參數 m=16 / ef_construction=64 取自 05 §4 索引策略表——這裡連參數一起建，
     是為了讓「pgvector 版本太舊不支援 halfvec ops」在 Phase 0 就爆，

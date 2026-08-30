@@ -111,9 +111,12 @@ class AppSettings(BaseSettings):
     # 落在最安全的一邊——漏設環境變數時得到的是假向量而不是一筆真帳單。
     # 1C-5：五家真 provider。全部提供 OpenAI 相容的 `/v1/embeddings`，因此共用一個
     # adapter（`ai/gateway/providers/openai_compatible.py` 的 VENDORS 表）。
-    ai_embedding_provider: Literal["mock", "gemini", "openai", "openrouter", "nvidia", "ollama"] = (
-        "mock"
-    )
+    # W1 加上第六家 `tei`：自架的 HuggingFace TEI（`make tei-embed-up`），與 rerank 的
+    # TEI 是**兩個容器**——同一個映像、不同的 `--model-id`、不同的 port。它沒有金鑰
+    # 概念（見 VENDORS 的那一列），所以下面那組金鑰設定對它是空的也沒關係。
+    ai_embedding_provider: Literal[
+        "mock", "gemini", "openai", "openrouter", "nvidia", "ollama", "tei"
+    ] = "mock"
     # **只有一組金鑰**：同一時間只有一家在服務 embedding（同一個 KB 的向量必須來自
     # 同一個模型，否則距離沒有意義），所以設定「正在用的那一家」就夠了。
     # `None` 是合法的——本機 Ollama 沒有金鑰概念；缺金鑰而那家需要時，
@@ -123,9 +126,13 @@ class AppSettings(BaseSettings):
     # （本機 / 區網 / 容器內），而那不該逼人去改程式碼。
     ai_embedding_base_url: str = ""
     ai_embedding_model: str = "mock-embedding"
-    # 維度要與 05 §3.2 的 `halfvec(1536)` 一致。放進設定是因為換模型就會換維度，
-    # 而那時 migration 與這裡必須一起改——兩邊對不上時 INSERT 會被 DB 擋下。
-    ai_embedding_dimensions: int = 1536
+    # 維度要與 `apps/knowledge/models.py` 的 `halfvec(N)` 一致。放進設定是因為換模型
+    # 就會換維度，而那時 migration 與這裡必須一起改——兩邊對不上時 INSERT 會被 DB 擋下。
+    #
+    # **W1 起是 1024（`BAAI/bge-m3`）**，欄位寬度由 `knowledge/0009` 同步改掉。那一次是
+    # 不可逆的全庫重建：06 §2.2 的四步重嵌入靠新舊兩版並存，而 halfvec 是固定寬度的
+    # 欄位型別，1024 與 1536 塞不進同一欄，所以「並存」在**換維度**時不成立。
+    ai_embedding_dimensions: int = 1024
     # 06 §4 的 timeout 分三段（連線 10s / TTFT 30s / 整體 120s）是給串流用的；
     # embedding 是一次性呼叫，只需要整體上限。批次 64 筆的 API 呼叫通常 < 5s。
     ai_embedding_timeout_seconds: float = 30.0
@@ -353,7 +360,7 @@ class AppSettings(BaseSettings):
     # 而那是整庫重算的錢與時間。
     #
     # 7 天而不是軟刪除的 30 天：重建的品質退步在幾天內就會被使用者反映出來（答得
-    # 比以前差），而它佔的是**向量**——每個 chunk 一份 1536 維 halfvec，留一整個月
+    # 比以前差），而它佔的是**向量**——每個 chunk 一份 1024 維 halfvec，留一整個月
     # 等於把整個知識庫的向量存兩份存一個月。
     reindex_rollback_window_days: int = 7
     # 每個租戶每輪最多清幾個 job（同 `retention_purge_batch_size` 的分批理由）。

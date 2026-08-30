@@ -121,7 +121,8 @@ DEMO_PASSWORD ?= demo-password-1234
         dev api api-pinned start stop restart status demo-tenant app-logs \
         test test-unit test-integration test-api test-k test-file test-lf \
         test-changed smoke verify-infra verify-provider \
-        tei-up tei-down tei-logs eval-sample eval-retrieval eval-clean \
+        tei-up tei-down tei-logs tei-embed-up tei-embed-down tei-embed-logs \
+        eval-sample eval-retrieval eval-clean \
         deploy-up deploy-migrate deploy-down deploy-logs deploy-shutdown-drill \
         image lock-check lint lint-backend ci-status \
         fe-install fe-lint fe-test fe-build fe-dev openapi gen-api openapi-check \
@@ -162,6 +163,18 @@ tei-down: ## 停止本機 rerank 服務（保留模型快取）
 
 tei-logs: ## 追蹤 rerank 服務日誌（模型載入進度看這裡）
 	$(COMPOSE) --profile gpu logs -f tei
+
+# **與上面三個是不同的容器**（W1）：同一個映像、不同的模型與 port。分開起停是因為
+# 兩者的用途不同——只跑 ETL 的人不需要 rerank，只調排序的人不需要 embedding，而在
+# 一張卡上同時載兩個模型是實實在在的顯存。
+tei-embed-up: ## 啟動本機 embedding 服務（TEI + bge-m3；需 NVIDIA GPU）
+	$(COMPOSE) --profile gpu up -d --wait tei-embed
+
+tei-embed-down: ## 停止本機 embedding 服務（保留模型快取）
+	$(COMPOSE) --profile gpu stop tei-embed
+
+tei-embed-logs: ## 追蹤 embedding 服務日誌（模型載入進度看這裡）
+	$(COMPOSE) --profile gpu logs -f tei-embed
 
 # 兩個 psql 入口，因為「用哪個角色連進去」會改變你看到的東西：superuser 豁免
 # RLS 與所有權限檢查，用它查資料會看到 policy 之外的全貌——排查隔離問題時

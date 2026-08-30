@@ -1,8 +1,9 @@
-"""OpenAI 相容的 embedding adapter —— 五家共用一個實作（06 §4、02 §2、1C-5）。
+"""OpenAI 相容的 embedding adapter —— 六家共用一個實作（06 §4、02 §2、1C-5、W1）。
 
-Gemini、OpenAI、OpenRouter、NVIDIA NIM、Ollama **全部**提供 OpenAI 格式的
+Gemini、OpenAI、OpenRouter、NVIDIA NIM、Ollama、自架 TEI **全部**提供 OpenAI 格式的
 `POST /embeddings`。差別只有三件事，而三件事都是資料而不是程式：位址、要不要金鑰、
-支不支援 `dimensions` 參數。因此這裡是「一個實作 × 一張表」——加一家廠商是加一列。
+支不支援 `dimensions` 參數。因此這裡是「一個實作 × 一張表」——加一家廠商是加一列
+（W1 的 `tei` 就是這樣加進來的：一列資料，沒有第二個實作）。
 
 寫成五個檔案的代價很具體：五份會各自漂，而漏改的那一份只在切換到那家時才會走到，
 也就是沒有人測的時候。**這與 02 §2 的「每家一個檔案」不同**，理由是那五個檔案會各只有
@@ -82,8 +83,9 @@ class VendorSpec:
 
 VENDORS: dict[str, VendorSpec] = {
     # Gemini Embedding 2：預設 3072，支援 128–3072 的 Matryoshka 截斷，且截斷後會
-    # 自動正規化（`gemini-embedding-001` 不會，見 `_unit`）。1536 在 MTEB 上與 3072
-    # 同分，因此挑 1536 對品質沒有代價。
+    # 自動正規化（`gemini-embedding-001` 不會，見 `_unit`）。截到 1024（W1 起的欄位
+    # 寬度）在 MTEB 上與 3072 幾乎同分，所以要得動這一家的維度不必付品質的代價——
+    # **也正因為它要得動，換維度時它不必換模型**，而固定維度的那幾家沒有這個餘裕。
     "gemini": VendorSpec(
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         requires_api_key=True,
@@ -107,8 +109,9 @@ VENDORS: dict[str, VendorSpec] = {
         requires_api_key=True,
         supports_dimensions=True,
     ),
-    # NVIDIA NIM：nv-embedqa-e5-v5 等模型維度固定 1024，因此在 halfvec(1536) 之下
-    # 目前用不了（Gateway 的維度守門會擋，並說得出兩邊的數字）。多維度支援排後續工作包。
+    # NVIDIA NIM：nv-embedqa-e5-v5 等模型維度固定 1024。**W1 把欄位改成 1024 之後，
+    # 這一家從「守門擋著」變成可用**（在此之前 Gateway 的維度守門會擋下每一批）——
+    # 那是換維度的副作用，不是有人驗過它：`make verify-provider PROVIDER=nvidia` 沒跑過。
     "nvidia": VendorSpec(
         base_url="https://integrate.api.nvidia.com/v1",
         requires_api_key=True,
@@ -117,6 +120,21 @@ VENDORS: dict[str, VendorSpec] = {
     # 本機推論，沒有金鑰概念。位址隨部署而異，由 `ai_embedding_base_url` 覆寫。
     "ollama": VendorSpec(
         base_url="http://127.0.0.1:11434/v1",
+        requires_api_key=False,
+        supports_dimensions=False,
+    ),
+    # 自架的 HuggingFace TEI（W1）：`make tei-embed-up` 起的那個容器，模型
+    # `BAAI/bge-m3`（1024 維、多語，與已在跑的 `bge-reranker-v2-m3` 同家族同 tokenizer）。
+    #
+    # **`tei` 這個名字在這個 repo 裡指兩個不同的容器**：rerank 的 cross-encoder 在
+    # `RERANK_PROVIDERS`／`TEI_DEFAULT_BASE_URL`（8080），embedding 的 bi-encoder 在
+    # 這裡（8081）。位址寫混的話 `/v1/embeddings` 會打到載入 reranker 的那一個——
+    # 回來的不是 404，是一個形狀不同的回應，於是錯誤出現在解析層，看起來像模型壞了。
+    #
+    # `supports_dimensions=False`：bge-m3 的維度固定 1024，TEI 收到不認得的
+    # `dimensions` 會退整批（422），而 ETL 的退避重試每一次都會得到同樣的結果。
+    "tei": VendorSpec(
+        base_url="http://127.0.0.1:8081/v1",
         requires_api_key=False,
         supports_dimensions=False,
     ),
@@ -226,7 +244,7 @@ class OpenAICompatibleProvider(_VendorClient):
 
         payload: dict[str, Any] = {"model": model, "input": list(texts)}
         if self._dimensions is not None and self._spec.supports_dimensions:
-            # **不送的話 Gemini 回 3072**，而欄位是 halfvec(1536)：寫入會被 DB 擋下，
+            # **不送的話 Gemini 回 3072**，而欄位是 halfvec(1024)：寫入會被 DB 擋下，
             # 而錯誤指向 INSERT——看不出原因在幾層之外一個沒送出去的參數。
             payload["dimensions"] = self._dimensions
 

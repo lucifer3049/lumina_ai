@@ -315,9 +315,61 @@ services:
       # 穩態重啟只需數十秒，這個值不會讓真的故障被藏住。
       start_period: 60m
 
+  # Embedding 服務（W1）：**同一個映像、第二個容器**，跑 `BAAI/bge-m3`（1024 維、
+  # 多語）。與上面那個 `tei` 的差別只有 `--model-id` 與 port——所有關於 GPU、profile、
+  # compat 目錄、start_period 的理由都與上面逐字相同，因此不重複；改一邊時請一起看。
+  #
+  # **為什麼不共用一個容器**：TEI 一個行程只載一個模型，而 rerank 是 cross-encoder、
+  # embedding 是 bi-encoder，兩者連端點語意都不同（`/rerank` 對 `/v1/embeddings`）。
+  # 共用一個 port 的話，embedding 打過去不會得到 404，而是一個形狀不同的回應——錯誤
+  # 於是出現在 adapter 的解析層，看起來像「模型壞了」。
+  #
+  # **選 bge-m3 的理由是它與 `bge-reranker-v2-m3` 同家族同 tokenizer**（06 §3.4 要求
+  # 兩邊都必須多語）：檢索與 rerank 對「一段文字有多長」的看法一致，截斷點才對得上。
+  tei-embed:
+    image: ghcr.io/huggingface/text-embeddings-inference:120-1.9
+    profiles: ["gpu"]
+    command:
+      - --model-id
+      - BAAI/bge-m3
+      # 超過模型上限的輸入截斷而不是退回整批。**embedding 這一路比 rerank 更需要它**：
+      # 退整批的話，一份文件裡有一個過長的 chunk 就會讓整批 422，而 ETL 的退避重試
+      # 每一次都會得到同樣的結果——症狀是「某些文件永遠處理不完」。
+      - --auto-truncate
+    # 要不到 GPU 就是 CPU 推論。**這裡的症狀與 rerank 不同、而且更難發現**：rerank 慢
+    # 會被 11 §4 的 1.2s 預算跳過（至少排序看得出沒變），embedding 慢只是 ETL 變久——
+    # 一份 500 頁的 PDF 從幾分鐘變成幾小時，而每一批都成功，沒有任何錯誤。
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # 理由與上面 `tei` 的同一行完全相同（2026-08-24 對 rerank 實測定位）：不蓋掉映像
+    # 自帶的 CUDA forward-compat 驅動，這個容器在 WSL2 上**拿得到 GPU 卻用不到**，
+    # 而它會安靜地退成 CPU。換到原生 Linux 而驅動較舊的機器要拿掉這一行。
+    tmpfs:
+      - /usr/local/cuda/compat
+    ports:
+      - "127.0.0.1:${TEI_EMBED_PORT}:80"
+    volumes:
+      # **與 rerank 分開的 volume**：兩個容器載的是不同的模型，共用一份 /data 只是讓
+      # 兩個下載流程去搶同一組鎖檔，換不到任何空間（權重不重疊）。
+      - teiembeddata:/data
+    healthcheck:
+      # 同 `tei`：`/health` 只在模型真的可以推論之後才回 200，所以 `--wait` 等到的是
+      # 「載完了」而不是「行程起來了」。bge-m3 的權重約 2.2 GiB，第一次要下載。
+      test: ["CMD", "curl", "-fsS", "http://localhost/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 60m
+
 volumes:
   pgdata:
   redisdata:
   miniodata:
   teidata:
+  teiembeddata:
   pgbouncer-config:

@@ -73,7 +73,7 @@ _MOCK_AI_ENV = {
     "AI_EMBEDDING_PROVIDER": "mock",
     "AI_EMBEDDING_MODEL": "mock-embedding",
     "AI_EMBEDDING_API_KEY": "",
-    "AI_EMBEDDING_DIMENSIONS": "1536",
+    "AI_EMBEDDING_DIMENSIONS": "1024",
     "AI_CHAT_PROVIDER": "mock",
     "AI_CHAT_MODEL": "mock-chat",
     "AI_CHAT_API_KEY": "",

@@ -196,9 +196,14 @@ class Embedding(TimestampedModel):
     代價是精度只到小數點後三位左右——寫入時 pgvector 自動轉換，讀回來的值會與寫進去的
     略有差異，那是預期行為。
 
-    維度寫死 1536 是因為 migration 需要字面值，而它必須與 `ai_embedding_dimensions`
-    一致（`tests/integration/test_embeddings.py` 對帳）。換 embedding 模型時兩者要一起
-    改，並走 05 §5.6 的遷移流程——維度不同的向量無法共存於同一欄。
+    維度寫死 1024 是因為 migration 需要字面值，而它必須與 `ai_embedding_dimensions`
+    一致（`tests/integration/test_embeddings.py` 對帳）。換 embedding 模型時兩者要一起改。
+
+    **1536 → 1024 是 W1 做的一次不可逆全庫重建**（`0009_embedding_1024`，模型
+    `BAAI/bge-m3`）。05 §5.6／06 §2.2 的「新版本算完 → 原子切換 → 清理舊版」是為**換
+    模型**寫的，它默默假設了維度不變：上面那個唯一鍵讓兩版並存，而 halfvec 是固定寬度
+    的欄位型別——1024 與 1536 塞不進同一欄，所以並存在換維度時不成立。下一次再換維度
+    仍然是同一種代價：清空、改欄位、重建（重建走 2B-6 的 KB reindex）。
 
     ``deleted_at`` 繼承自 `TimestampedModel` 但**沒有軟刪除流程**：版本化資料不可變
     （05 §1），舊版本由清理 job 硬刪。欄位留著只為讓所有表形狀一致。
@@ -210,7 +215,7 @@ class Embedding(TimestampedModel):
     # provider 回報的實際模型（含別名解析後的版本），不是請求時寫的那個字串。
     model = models.TextField()
     embedding_version = models.IntegerField(default=1)
-    vector = HalfVectorField(dimensions=1536)
+    vector = HalfVectorField(dimensions=1024)
 
     class Meta:
         constraints = [
