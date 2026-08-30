@@ -81,7 +81,9 @@ def _git(cmd: list[str]) -> list[str]:
     # 認不出來。
     printable = " ".join(cmd)
     try:
-        result = subprocess.run(
+        # S603：argv 是本檔組出來的靜態清單（只有 --base 的值來自呼叫端，且它是
+        # git 的位置參數而非可執行檔），不經 shell。
+        result = subprocess.run(  # noqa: S603
             cmd, cwd=REPO, capture_output=True, text=True, check=True, timeout=GIT_TIMEOUT_S
         )
     except subprocess.CalledProcessError as error:

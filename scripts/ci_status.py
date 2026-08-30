@@ -31,6 +31,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from typing import Any, cast
 
 API_TIMEOUT_S = 10  # 對外呼叫必有 timeout（CLAUDE.md）
 POLL_INTERVAL_S = 15
@@ -42,8 +43,10 @@ CREATE_BUDGET_S = 90
 
 def repo_slug() -> str:
     """從 origin 推導 owner/repo，SSH 與 HTTPS 兩種形式都接。"""
+    # S607（本檔三處皆同）：argv 是靜態字面值、不經 shell、沒有外部輸入，而
+    # `git`／`gh` 本來就該走 PATH——寫死絕對路徑會讓這支腳本在本機與 CI 之間各壞一次。
     url = subprocess.run(
-        ["git", "remote", "get-url", "origin"],
+        ["git", "remote", "get-url", "origin"],  # noqa: S607
         capture_output=True,
         text=True,
         check=True,
@@ -57,7 +60,7 @@ def repo_slug() -> str:
 
 def local_head() -> str:
     return subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
         capture_output=True,
         text=True,
         check=True,
@@ -79,7 +82,7 @@ def token() -> str | None:
             return value
     try:
         result = subprocess.run(
-            ["gh", "auth", "token"],
+            ["gh", "auth", "token"],  # noqa: S607
             capture_output=True,
             text=True,
             check=True,
@@ -90,15 +93,19 @@ def token() -> str | None:
     return result.stdout.strip() or None
 
 
-def api(path: str) -> dict:
+def api(path: str) -> dict[str, Any]:
     headers = {"Accept": "application/vnd.github+json"}
     bearer = token()
     if bearer is not None:
         headers["Authorization"] = f"Bearer {bearer}"
     request = urllib.request.Request(f"https://api.github.com{path}", headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=API_TIMEOUT_S) as response:
-            return json.load(response)
+        # S310：URL 由本檔的常數字面值組成，scheme 恆為 https，沒有 file: 或自訂
+        # scheme 進得來的路徑。
+        with urllib.request.urlopen(request, timeout=API_TIMEOUT_S) as response:  # noqa: S310
+            # GitHub 的這幾個端點回的都是 JSON 物件；json.load 的靜態型別是 Any，
+            # 不收斂的話 strict 之下整條呼叫鏈都會退化成 Any。
+            return cast(dict[str, Any], json.load(response))
     except urllib.error.HTTPError as error:
         # 404 在 GitHub 上是「不存在**或**你看不到」的合稱：私有 repo 對匿名請求
         # 就回這個。少了這句提示，症狀（查不到任何 run）會被讀成「CI 沒觸發」。
@@ -114,12 +121,14 @@ def api(path: str) -> dict:
                 else "而目前這個 token 看不到它——過期、權限不含 Actions: read、或它屬於"
                 "另一個 GitHub 主機。換一個 token 或 `gh auth login` 後重跑。"
             )
-            raise SystemExit(f"GitHub API 404（{path}）——repo 不存在，或它是私有的{hint}") from error
+            raise SystemExit(
+                f"GitHub API 404（{path}）——repo 不存在，或它是私有的{hint}"
+            ) from error
         # 403 常見於匿名 rate limit（每 IP 每小時 60 次）；訊息要指得到原因。
         raise SystemExit(f"GitHub API {error.code}：{error.reason}（{path}）") from error
 
 
-def find_run(slug: str, sha: str) -> dict | None:
+def find_run(slug: str, sha: str) -> dict[str, Any] | None:
     runs = api(f"/repos/{slug}/actions/runs?head_sha={sha}&per_page=1")
     workflow_runs = runs.get("workflow_runs", [])
     return workflow_runs[0] if workflow_runs else None

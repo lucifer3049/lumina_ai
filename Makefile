@@ -611,10 +611,19 @@ lock-check: ## 驗證 uv.lock 與 pyproject 一致（唯讀，不會改動 lock�
 # ruff 帶 --no-cache：cache 以檔案 metadata 為鍵，曾對 test_rag_params.py 沿用舊的
 # 「通過」判定——本機連續綠、CI（無 cache）連紅四次（run 57–60，2026-08-19 查明）。
 # 代價實測 <2s；「lint 的結論可信」值這個價。mypy 的 cache 是語意級的，不在此列。
-lint-backend: lock-check ## 只跑後端：uv.lock 檢查 + ruff + mypy + import-linter（分層依賴強制）
-	$(UV) run ruff check --no-cache .
-	$(UV) run ruff format --check --no-cache .
-	$(UV_RUN) mypy .
+# `../scripts` 是 **repo 根目錄**那一份（`ci_status.py`／`changed_tests.py`），不是
+# `backend/scripts/`。它一度完全沒有被檢查：ruff 與 mypy 的 cwd 是 backend/，而那兩支
+# 住在外面，於是「後端全綠」從來不包含它們——偏偏它們是 make 目標與 push 後盯 CI 所
+# 依賴的程式，壞掉的症狀是「工具本身安靜地不做事」，比程式紅燈難察覺。
+#
+# `--config pyproject.toml` 不能省：ruff 的設定是由**被檢查的檔案**往上找的，root 的
+# scripts/ 一路走到檔案系統頂端都碰不到這份 pyproject，不指定就會套 ruff 的內建預設值
+# ——那是另一套規則（行長 88、幾乎不開 lint 規則），而且不會有任何訊息告訴你。
+# 守門：tests/unit/test_ci_pipeline.py::test_root_scripts_are_statically_checked
+lint-backend: lock-check ## 只跑後端 + repo 根 scripts：uv.lock + ruff + mypy + import-linter
+	$(UV) run ruff check --no-cache --config pyproject.toml . ../scripts
+	$(UV) run ruff format --check --no-cache --config pyproject.toml . ../scripts
+	$(UV_RUN) mypy . ../scripts
 	$(UV) run lint-imports
 
 # `lint` 是**兩端都跑**的那一個，而後端仍留一個獨立目標（lint-backend）：CI 的 quality

@@ -32,6 +32,9 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 MAKEFILE = REPO_ROOT / "Makefile"
+# repo 根的 scripts/（不是 backend/scripts/）：ruff 與 mypy 的 cwd 是 backend/，
+# 這個目錄在它們的檢查範圍之外，除非指令明確帶上相對路徑。
+ROOT_SCRIPTS = REPO_ROOT / "scripts"
 
 # 12 §6.1 PR pipeline 的項目。
 REQUIRED_COMMANDS = {
@@ -269,6 +272,36 @@ def test_required_stage_present(workflow: dict[str, Any], label: str, command: s
     assert command in _effective_commands(workflow), (
         f"CI 缺少階段「{label}」——workflow 呼叫的 make target 之中沒有任何一個會執行 `{command}`"
     )
+
+
+# lint 的三道靜態檢查，以及讓 repo 根 scripts/ 進得了檢查範圍的那個參數。
+_STATIC_CHECKS = ("ruff check", "ruff format --check", "mypy")
+_ROOT_SCRIPTS_ARG = "../scripts"
+
+
+def test_root_scripts_are_statically_checked(workflow: dict[str, Any]) -> None:
+    """repo 根的 `scripts/*.py` 也要進 ruff 與 mypy。
+
+    **這條補的是一個真的存在過的死角**：ruff 與 mypy 都由 `uv --directory backend`
+    啟動，cwd 因此是 backend/，而 `ci_status.py`／`changed_tests.py` 住在 repo 根的
+    scripts/——於是「後端 lint 全綠」從來就不包含它們（2026-08-30 的程式審查發現）。
+    偏偏這兩支正是「push 後盯 CI」與「開發迴圈選測試」所依賴的工具，而工具壞掉的
+    症狀是它安靜地不做事，比程式紅燈難察覺得多。
+
+    斷言沿 workflow → Makefile 這條鏈走（同本檔其他測試），所以把 `../scripts` 從
+    Makefile 拿掉、或 CI 不再呼叫 `lint-backend`，兩種情況都會紅。
+    """
+    scripts = sorted(path.name for path in ROOT_SCRIPTS.glob("*.py"))
+    if not scripts:
+        pytest.skip("repo 根的 scripts/ 目前沒有 Python 檔")
+
+    lines = _effective_commands(workflow).splitlines()
+    for check in _STATIC_CHECKS:
+        covered = [line for line in lines if check in line and _ROOT_SCRIPTS_ARG in line]
+        assert covered, (
+            f"CI 的 `{check}` 沒有帶上 `{_ROOT_SCRIPTS_ARG}`——repo 根的 {scripts} "
+            "不會被檢查（ruff／mypy 的 cwd 是 backend/）"
+        )
 
 
 def test_migration_drift_check_still_exists(workflow: dict[str, Any]) -> None:
