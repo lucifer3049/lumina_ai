@@ -202,9 +202,7 @@ def _message_status(message_id: str) -> str:
         return str(Message.objects.get(id=uuid.UUID(message_id)).status)
 
 
-async def _run_stopped_turn(
-    client: httpx.AsyncClient, journal: dict[str, Any]
-) -> tuple[str, str]:
+async def _run_stopped_turn(client: httpx.AsyncClient, journal: dict[str, Any]) -> tuple[str, str]:
     owner = await run_orm(_owner)
     conversation = await run_orm(_conversation, owner)
     token = await _token(client)
