@@ -170,10 +170,14 @@ API / worker 全部無狀態（session 在 JWT+Redis、上傳直傳 MinIO、SSE 
 
 | 規模 | 估算 | 結論 |
 |------|------|------|
-| 10 萬份文件 | ~1,500 萬 chunks；embedding(1536 float32) ≈ 92GB → **halfvec 減半 ≈ 46GB**；HNSW index ≈ 資料 1.1× | 單機 128GB RAM instance 可承載；halfvec 從 day-1 採用 |
-| 100 萬份文件 | ~1.5 億 chunks、embedding ≈ 460GB(halfvec) | 超出單機甜蜜點 → 向量分離 instance + 分 KB partial index；此規模觸發 ADR-003 演進評估（Qdrant/Milvus） |
+| 10 萬份文件 | ~1,500 萬 chunks；embedding(1024 float32) ≈ 61GB → **halfvec 減半 ≈ 31GB**；HNSW index ≈ 資料 1.1× | 單機 128GB RAM instance 可承載；halfvec 從 day-1 採用 |
+| 100 萬份文件 | ~1.5 億 chunks、embedding ≈ 307GB(halfvec) | 超出單機甜蜜點 → 向量分離 instance + 分 KB partial index；此規模觸發 ADR-003 演進評估（Qdrant/Milvus） |
 | 1,000 使用者（~100 併發） | chat 併發 ~30 串流、API ~200 rps | 2× api replica + 基準 DB 即可 |
 | 10,000 使用者（~1,000 併發） | ~300 串流、~2,000 rps | api ×6、worker 分佇列擴充、DB read replica、Redis Sentinel；瓶頸预期在 LLM provider 配額（多 provider 分流 + 佇列化） |
+
+> **兩列的向量體積於 2026-08-31（W1）按 1024 維重算**（原文為 1536，`bge-m3` 之後不再
+> 成立）。維度直接乘進每一列的體積，所以它是這張表裡最容易悄悄失真的輸入——結論欄的
+> 判斷（單機甜蜜點、何時觸發 ADR-003）不變，只是餘裕變大。chunk 數與 index 係數未動。
 
 **平滑升級原則**：每一步只改部署拓撲，不改程式（介面已抽象）；觸發條件量化（CPU >70% 持續、佇列深度、p95 劣化）寫入 runbook。
 

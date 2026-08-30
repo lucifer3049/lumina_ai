@@ -4,19 +4,20 @@ Multi-tenant SaaS 的 Enterprise AI Knowledge Platform。核心能力：LLM Chat
 
 架構風格：**Modular Monolith + Clean Architecture + DDD**，保留未來拆分 Microservices 的能力。
 
-> **目前狀態：Phase 1 已通過閘門（2026-08-21，有條件）；Phase 2 進行中——2A 已結案、
-> 2B 做到 2B-5（KB config 寫入端驗證與 `rag_trace`），只剩 2B-6。**
+> **目前狀態：Phase 1 已通過閘門（2026-08-21，有條件）；Phase 2 進行中——2A、2B 已結案，
+> 2C 做到 2C-2（憑證的 envelope 加密），下一包是 2C-3。另有不對齊工作包的 W1（地端
+> embedding）已於 2026-08-31 結案。**
 >
 > **狀態的單一事實來源是 [`13_開發Roadmap.md`](docs/plan/13_開發Roadmap.md)**：每個工作包的
-> 範圍、DoD、結案紀錄與帶進下一包的缺口都在那裡（§2 Phase 0、§3 Phase 1 與 1A／1B／1D-5／1E
-> 的結案表、§4 Phase 2 與 2A／2B-0／2B-4／2B-5 的結案表）。這一段刻意只留一行摘要——1D 時代的
-> 逐包流水帳在這裡漂了三個工作包沒有人更新，而「README 說下一步是 1E」這種錯誤沒有任何
-> 測試擋得住。
+> 範圍、DoD、結案紀錄與帶進下一包的缺口都在那裡（§2 Phase 0、§3 Phase 1、§4 Phase 2 與
+> §4.2 的 W 系列）。這一段刻意只留一行摘要——1D 時代的逐包流水帳在這裡漂了三個工作包沒有
+> 人更新，而「README 說下一步是 1E」這種錯誤沒有任何測試擋得住。
 >
-> 能力範圍（截至 2B-4）：登入與 refresh rotation、User／Tenant 管理、KB 與文件上傳、
-> 五種 loader 的 ETL、embedding 與 pgvector 檢索、pgroonga 全文檢索與 RRF 融合、rerank
-> （自架 TEI／Jina）、SSE 問答與引用、Prompt 版本、配額與用量、通知，以及 Vue 3 的
-> 登入／KB／Chat 前端。完整設計見 [`docs/plan/`](docs/plan/)（00–15）。
+> 能力範圍：登入與 refresh rotation、User／Tenant 管理、KB 與文件上傳、五種 loader 的
+> ETL、embedding（雲端五家或自架 TEI + `bge-m3`）與 pgvector 檢索、pgroonga 全文檢索與
+> RRF 融合、rerank（自架 TEI／Jina）、SSE 問答與引用、Prompt 版本、配額與用量、稽核、
+> 通知、租戶設定與憑證加密，以及 Vue 3 的登入／KB／Chat 前端。完整設計見
+> [`docs/plan/`](docs/plan/)（00–15）。
 
 ---
 
