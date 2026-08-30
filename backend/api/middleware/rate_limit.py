@@ -34,7 +34,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from config.logging import get_logger
 from config.settings.app_settings import get_app_settings
 from core.exceptions import ErrorCode
-from core.redis import get_redis
+from core.redis import get_async_redis
 
 logger = get_logger(__name__)
 
@@ -70,15 +70,24 @@ class RateLimitMiddleware:
         client_ip = _client_ip(scope, trust_proxy=settings.rate_limit_trust_proxy_headers)
         is_auth = path.startswith(_AUTH_PREFIX)
         limit = settings.rate_limit_auth_per_minute if is_auth else settings.rate_limit_per_minute
-        if limit <= 0 or self._within(client_ip, bucket="auth" if is_auth else "api", limit=limit):
+        if limit <= 0 or await self._within(
+            client_ip, bucket="auth" if is_auth else "api", limit=limit
+        ):
             await self._app(scope, receive, send)
             return
 
         logger.warning("rate_limited", client_ip=client_ip, path=path, limit=limit)
         await self._refuse(scope, receive, send)
 
-    def _within(self, client_ip: str, *, bucket: str, limit: int) -> bool:
+    async def _within(self, client_ip: str, *, bucket: str, limit: int) -> bool:
         """這一分鐘還有額度嗎？Redis 不可用時一律 True（fail open，見模組 docstring）。
+
+        **走 `get_async_redis()` 而不是同步 client**：middleware 跑在 event loop 上
+        （不像 service 層有 `run_orm` 的 threadpool），同步 client 的每一次 incr 都是
+        loop 上的阻塞 I/O——Redis 一抖（failover、網路抖動），每個請求都掛到 socket
+        timeout（兩個指令、各 ~500ms），這個 replica 上所有 in-flight 請求與 SSE
+        串流被串行化，症狀是「Redis 一抖整站凍結」。與 SSE 走的是 core/redis.py 記載
+        的同一條 event-loop 例外，非阻塞那一份自帶 500ms socket_timeout。
 
         **key 不帶租戶前綴**，是全 repo 少數的例外：這一層跑在認證之前，租戶還不知道
         是誰。前綴改用 `rl:` 並含時窗編號——時窗換了就是新的 key，不必另外重置。
@@ -86,12 +95,12 @@ class RateLimitMiddleware:
         window = int(_now_seconds() // 60)
         key = f"rl:{bucket}:{client_ip}:{window}"
         try:
-            client = get_redis()
-            used = cast("int", client.incr(key))
+            client = get_async_redis()
+            used = cast("int", await client.incr(key))
             if used == 1:
                 # 只在建立時設一次：每次都設等於把時窗變成滑動的，而那不是這裡的語意。
                 # 121 秒而不是 60：時窗結束後留一點餘裕，避免時鐘微幅偏移讓 key 早退。
-                client.expire(key, 121)
+                await client.expire(key, 121)
             return used <= limit
         except Exception:
             logger.warning("rate_limit_backend_unavailable", exc_info=True)

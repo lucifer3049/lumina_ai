@@ -10,11 +10,13 @@
 threadpool 執行緒上，所以同步 client 不會阻塞 event loop；混用兩套 client 反而
 會讓「這段程式跑在哪一側」變得難以推理。
 
-**唯一的例外是 SSE 串流（1D-4a），見 :func:`get_async_redis`。** 那條路徑不是
-service 層，是 transport 層：它要「等下一個事件到達」，而那個等待若發生在
-threadpool 上就是一條串流佔一條執行緒——11 §26 的容量規劃是每個 replica 200 條
-併發串流，而 §45 明寫「SSE 為 IO-bound，async 原生擅長」。上面那條規則的理由
-（讓「跑在哪一側」可推理）在這裡反而指向 async：串流的每一段都跑在 event loop 上。
+**例外是跑在 event loop 上的 transport 層，見 :func:`get_async_redis`**：SSE 串流
+（1D-4a）與認證前的 rate limit middleware（2026-08-30 深度審查修正）。SSE 要「等
+下一個事件到達」，那個等待若發生在 threadpool 上就是一條串流佔一條執行緒——11 §26
+的容量規劃是每個 replica 200 條併發串流，而 §45 明寫「SSE 為 IO-bound，async 原生
+擅長」；middleware 則根本沒有 threadpool 可躲，同步 client 的每一次呼叫都是 loop
+上的阻塞 I/O。上面那條規則的理由（讓「跑在哪一側」可推理）在這兩處反而指向
+async：它們的每一段都跑在 event loop 上。
 
 連線池由 redis-py 內建管理，模組層單例即可——每次 ``Redis(...)`` 都會建一個新池。
 """
@@ -60,7 +62,8 @@ _async_clients: weakref.WeakKeyDictionary[AbstractEventLoop, dict[bool, AsyncRed
 
 
 def get_async_redis(*, blocking: bool = False) -> AsyncRedis:
-    """SSE 串流專用的非同步 client（1D-4a）。**其他地方一律用 `get_redis()`。**
+    """event loop 上的 transport 層專用（SSE 串流、rate limit middleware）。
+    **service 層與其他地方一律用 `get_redis()`**（模組 docstring 的分工）。
 
     **不是模組層單例，而是「每個 event loop 一個」**：`redis.asyncio` 的連線與
     `asyncio.Future` 綁在建立它的那個 loop 上，跨 loop 使用會丟

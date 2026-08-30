@@ -190,11 +190,40 @@ class TestDegradation:
         def explode() -> None:
             raise RuntimeError("redis is down")
 
-        monkeypatch.setattr("api.middleware.rate_limit.get_redis", explode)
+        monkeypatch.setattr("api.middleware.rate_limit.get_async_redis", explode)
 
         statuses = [(await _login(client)).status_code for _ in range(5)]
 
         assert 429 not in statuses
+
+
+class TestItStaysOffTheEventLoop:
+    """middleware 跑在 event loop 上，沒有 threadpool 可躲——同步 client 的每一次
+    incr 都是 loop 上的阻塞 I/O。Redis 一抖（failover、網路抖動），每個請求都掛到
+    socket timeout，這個 replica 的所有 in-flight 請求與 SSE 串流被串行化——症狀
+    是「Redis 一抖整站凍結」（2026-08-30 深度審查）。"""
+
+    def test_the_counter_is_awaited_not_blocking(self) -> None:
+        import inspect
+
+        from api.middleware.rate_limit import RateLimitMiddleware
+
+        assert inspect.iscoroutinefunction(RateLimitMiddleware._within), (
+            "_within 必須是 coroutine——同步版本會在 event loop 上做阻塞 Redis I/O"
+        )
+
+    def test_the_module_does_not_touch_the_sync_client(self) -> None:
+        import inspect
+        from pathlib import Path
+
+        from api.middleware import rate_limit
+
+        source = Path(inspect.getfile(rate_limit)).read_text(encoding="utf-8")
+
+        assert "get_async_redis" in source
+        assert "from core.redis import get_redis" not in source, (
+            "限流改回同步 client 了——那是 event loop 上的阻塞 I/O"
+        )
 
 
 class TestTheSwitch:
