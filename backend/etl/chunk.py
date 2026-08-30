@@ -35,7 +35,10 @@ _SEPARATOR = "\n\n"
 
 # 句子邊界：中文句號驚嘆問號分號、西文句點問號驚嘆號後接空白、以及換行。
 # 標點**留在前一句**（lookbehind），否則切完的句子開頭會是一個孤零零的句號。
-_SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？；!?;])\s*|(?<=[.!?])\s+|\n+")
+# 整個 pattern 包成 capture group：`re.split` 才會把分隔的空白／換行一併回傳，
+# 讓 `_sentences` 併回前一句。丟掉分隔符的話，重組出的 chunk 文字會與原文不符
+# （西文句子黏成 `story.The`、硬換行黏成 `oneline`），FTS 與引用 snippet 一起壞。
+_SENTENCE_BOUNDARY = re.compile(r"((?<=[。！？；!?;])\s*|(?<=[.!?])\s+|\n+)")
 
 # 不可切開的 block 型別。切開的代價（表頭消失、程式碼半截）遠大於超出 target。
 _ATOMIC = {BlockType.TABLE, BlockType.CODE}
@@ -132,10 +135,13 @@ class _Builder:
         # 裝不下：先把已累積的內容切出去，再處理這個 block 本身。
         self._flush()
         for piece in self._split_to_fit(text):
+            if self._page is None:
+                self._page = block.meta.page
             if self._fits(self._joined([*self._parts, piece])):
                 self._parts.append(piece)
             else:
                 self._flush()
+                self._page = block.meta.page
                 self._parts.append(piece)
 
     def finish(self) -> list[TextChunk]:
@@ -161,6 +167,9 @@ class _Builder:
         self._carry = self._tail(_SEPARATOR.join(self._parts))
         self._parts = []
         self._emit(body, page=self._page)
+        # 頁碼屬於「這一塊」：下一塊要從它自己的第一個 block 重新取。沿用的話，
+        # 多頁 section 的第 2..N 塊全部指到節首頁，引用會叫使用者翻錯頁。
+        self._page = None
 
     def _emit(self, text: str, *, page: int | None) -> None:
         body = text.strip()
@@ -184,7 +193,8 @@ class _Builder:
         picked: list[str] = []
         for sentence in reversed(_sentences(text)):
             candidate = [sentence, *picked]
-            if self._count(" ".join(candidate)) > budget:
+            # 句子自帶尾端分隔符（見 `_sentences`），直接串接即可，計數也照串接算。
+            if self._count("".join(candidate)) > budget:
                 break
             picked = candidate
         return "".join(picked).strip()
@@ -211,7 +221,9 @@ class _Builder:
                 pieces.extend(_hard_split(sentence, budget, self._count))
         if buffer:
             pieces.append(buffer)
-        return [piece for piece in pieces if piece.strip()]
+        # 尾端分隔符到此功成身退：piece 之間改由 `_joined` 的 _SEPARATOR 銜接，
+        # 留著只會變成「空白＋空行」的怪縫。piece **內部**的空白／換行原樣保留。
+        return [piece.rstrip() for piece in pieces if piece.strip()]
 
     def _budget_for_body(self) -> int:
         """扣掉標題與重疊之後，正文還能用多少 token。
@@ -224,8 +236,28 @@ class _Builder:
 
 
 def _sentences(text: str) -> list[str]:
-    """切句。保留原文的分隔符（結果串接起來等於原文的可讀形式）。"""
-    parts = [part for part in _SENTENCE_BOUNDARY.split(text) if part and part.strip()]
+    """切句。分隔符（空白／換行）併回**前一句**的尾端——結果串接起來等於原文。
+
+    `re.split` 帶 capture group 時會交錯回傳「句子、分隔符、句子…」；照原始順序
+    把純空白的元素黏到前一個元素上，就不會丟任何字元。
+    """
+    parts: list[str] = []
+    pending = ""
+    for piece in _SENTENCE_BOUNDARY.split(text):
+        if not piece:
+            continue
+        if piece.strip():
+            parts.append(pending + piece)
+            pending = ""
+        elif parts:
+            parts[-1] += piece
+        else:
+            # 開頭就是空白（例：文字以換行起始）：留給第一個句子當前綴。
+            pending += piece
+    if pending and parts:
+        parts[-1] += pending
+    elif pending:
+        parts.append(pending)
     return parts or [text]
 
 

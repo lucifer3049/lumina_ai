@@ -19,6 +19,8 @@ heading_path——1D 的引用要指得出「第幾頁、哪一節」。
 
 from __future__ import annotations
 
+import re
+
 from etl.chunk import ChunkConfig, chunk_document
 from etl.extract.model import Block, BlockMeta, BlockType, ExtractedDoc
 
@@ -201,6 +203,34 @@ class TestChunkShape:
 
         assert chunks[0].page == 7
 
+    def test_each_chunk_in_a_multi_page_section_keeps_its_own_page(self) -> None:
+        """同一節橫跨多頁時，第 2..N 塊要帶**自己**第一個 block 的頁碼。
+
+        全部沿用節首頁碼的話，內容在第 17 頁的引用會顯示「出自第 3 頁」，使用者
+        翻到第 3 頁找不到——而所有多頁 section 都會靜默出錯。
+        """
+        config = ChunkConfig(target_tokens=40, overlap_tokens=0)
+
+        def para(n: int) -> Block:
+            return _paragraph(f"這是第{n}頁的內容。" * 4, order=n, ancestors=("章",), page=n)
+
+        doc = _doc(_heading("章", order=0, page=3), para(3), para(4), para(5))
+
+        chunks = chunk_document(doc, config=config)
+
+        assert len(chunks) == 3
+        assert [chunk.page for chunk in chunks] == [3, 4, 5]
+
+    def test_split_pieces_of_one_block_keep_that_blocks_page(self) -> None:
+        """單一長段落被切成多塊時，每一塊都還是那個 block 的頁碼。"""
+        config = ChunkConfig(target_tokens=60, overlap_tokens=0)
+        text = "這一段話非常長，必須被切成好幾塊才裝得下。" * 20
+
+        chunks = chunk_document(_doc(_paragraph(text, order=0, page=9)), config=config)
+
+        assert len(chunks) > 1
+        assert all(chunk.page == 9 for chunk in chunks)
+
     def test_token_count_is_recorded(self) -> None:
         """token 數進 chunk：08 §4 的 stats 要算平均，1C 的批次也要靠它控制大小。"""
         chunks = chunk_document(_doc(_paragraph("一段內容。", order=0)))
@@ -215,3 +245,46 @@ class TestChunkShape:
         doc = _doc(_heading("空的一節", order=0))
 
         assert chunk_document(doc) == []
+
+
+class TestSeparatorPreservation:
+    """切句不得丟掉句間的空白／換行。
+
+    入庫文字與原文不符時三處一起壞：FTS 對 fused token 比對失敗、引用 snippet
+    顯示黏字、LLM 收到黏字輸入。
+    """
+
+    def test_spaces_between_western_sentences_survive_a_split(self) -> None:
+        config = ChunkConfig(target_tokens=60, overlap_tokens=0)
+        text = " ".join(f"Sentence number {i} ends right here." for i in range(30))
+
+        chunks = chunk_document(_doc(_paragraph(text, order=0)), config=config)
+
+        assert len(chunks) > 1
+        joined = "\n".join(chunk.text for chunk in chunks)
+        assert "here.Sentence" not in joined
+        # 每一句都完整存在於某一塊（切點只落在句子之間，不丟字也不黏字）。
+        for i in range(30):
+            assert f"Sentence number {i} ends right here." in joined
+
+    def test_newlines_inside_a_paragraph_survive_a_split(self) -> None:
+        config = ChunkConfig(target_tokens=60, overlap_tokens=0)
+        text = "\n".join(f"alpha{i} beta{i}." for i in range(40))
+
+        chunks = chunk_document(_doc(_paragraph(text, order=0)), config=config)
+
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert not re.search(r"\.alpha", chunk.text)
+        assert "beta0.\nalpha1" in chunks[0].text
+
+    def test_overlap_carry_keeps_sentence_spacing(self) -> None:
+        """重疊帶到下一塊的尾巴，句與句之間的空白也要保留。"""
+        config = ChunkConfig(target_tokens=60, overlap_tokens=25)
+        text = " ".join(f"Sentence number {i} ends right here." for i in range(30))
+
+        chunks = chunk_document(_doc(_paragraph(text, order=0)), config=config)
+
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert "here.Sentence" not in chunk.text
