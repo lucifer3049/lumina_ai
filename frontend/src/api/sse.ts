@@ -155,7 +155,10 @@ function parseFrame(frame: string): SseEvent | null {
 export interface SseHandlers {
   /** 每一個事件。回傳 promise 的話會被等待——`done` 要先寫完 store 再收線。 */
   onEvent: (event: SseEvent) => void | Promise<void>
-  /** 每一次傳輸層失敗（會重連）。純粹給診斷用，不必接。 */
+  /**
+   * 每一次傳輸層失敗（會重連），以及 `onEvent` 自己拋出時（**不會**重連，
+   * 見 `openEventStream` 內的說明）。純粹給診斷用，不必接。
+   */
   onError?: (error: unknown) => void
 }
 
@@ -171,7 +174,9 @@ export interface SseOptions {
 
 export interface SseOutcome {
   /**
-   * - `completed`：收到 `done` 或 `error` 事件（兩者都是後端說完了）。
+   * - `completed`：收到 `done` 或 `error` 事件（兩者都是後端說完了）。**可能帶著
+   *   `error`**：終局事件本身收到了、但它的 handler 拋出（例：`done` 之後的重抓
+   *   遇到暫時性失敗）——生成是成功的，收尾的善後由上層決定怎麼補。
    * - `aborted`：呼叫端自己取消。
    * - `resume-expired`：緩衝區過期（409），重連沒有意義，改抓最終訊息。
    * - `failed`：連不上且重試用盡。
@@ -236,8 +241,22 @@ export async function openEventStream(
           if (event.id !== undefined) {
             lastEventId = event.id
           }
-          await handlers.onEvent(event)
-          if (TERMINAL_EVENTS.has(event.type)) {
+          const isTerminal = TERMINAL_EVENTS.has(event.type)
+          try {
+            await handlers.onEvent(event)
+          } catch (error) {
+            // **handler 的失敗不是傳輸故障**——連線本身是通的，跟外層的 catch 走
+            // 同一條路只會誤診：`lastEventId` 已經推進，重連不會重播這個事件；而在
+            // 終局事件之後重連，重試耗盡的結局是把一個已完成的回答標成「連線中斷」。
+            // 終局：串流照樣算 completed，把失敗附在 outcome 上讓上層決定怎麼善後。
+            // 非終局：記給診斷、**繼續讀同一條連線**——中斷它救不回已丟的事件。
+            handlers.onError?.(error)
+            if (isTerminal) {
+              return { status: 'completed', lastEventId, error }
+            }
+            continue
+          }
+          if (isTerminal) {
             return { status: 'completed', lastEventId }
           }
         }

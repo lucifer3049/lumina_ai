@@ -118,13 +118,23 @@ export function useChatStream(): ChatStream {
       if (ownRun !== runId) {
         return // 結局也一樣：被取代的串流不得再動 store
       }
-      if (outcome.status === 'resume-expired') {
-        // 生成本身沒有失敗，只是我們接不回那條串流了。
-        await store.finishStreaming(options.messageId)
+      if (
+        outcome.status === 'resume-expired' ||
+        (outcome.status === 'completed' && outcome.error !== undefined)
+      ) {
+        // 兩種情況生成本身都**沒有失敗**：前者是接不回那條串流；後者是終局事件收到
+        // 了、但它的 handler 沒做完（例：`done` 之後的重抓遇到暫時性 500）。都補做
+        // 一次收尾——再失敗才告訴使用者連線有問題，而不是一開始就把一個已完成的
+        // 回答蓋上失敗。
+        try {
+          await store.finishStreaming(options.messageId)
+        } catch {
+          store.failStreaming(options.messageId, DISCONNECTED)
+        }
       } else if (outcome.status === 'failed') {
         store.failStreaming(options.messageId, DISCONNECTED)
       }
-      // `completed`：done／error 事件已經處理過了。
+      // `completed`（無 error）：done／error 事件已經處理過了。
       // `aborted`：使用者自己離開或按停止，buffer 維持現狀。
     } finally {
       if (ownRun === runId) {

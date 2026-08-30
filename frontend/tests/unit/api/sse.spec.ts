@@ -263,6 +263,78 @@ describe('續傳（09 §3.2）', () => {
   })
 })
 
+describe('handler 的失敗不是傳輸故障（2026-08-30 深度審查）', () => {
+  it('completes without reconnecting when the done handler throws', async () => {
+    // `done` 之後 handler 去抓最終訊息，遇到暫時性 500——那不是斷線。當成斷線
+    // 重連的話：Last-Event-ID 已越過終局事件，重連拿不到任何東西，重試耗盡後
+    // 一個**完整生成**的回答被標成「連線中斷」。
+    let attempts = 0
+    server.use(
+      http.get(`${BASE_URL}${PATH}`, () => {
+        attempts += 1
+        return sseResponse([
+          frame(1, 'delta', { text: '答案' }),
+          frame(2, 'done', { finish_reason: 'stop' }),
+        ])
+      }),
+    )
+    const failure = new Error('done 之後的重抓失敗')
+
+    const outcome = await openEventStream(
+      PATH,
+      {
+        onEvent: (event) => {
+          if (event.type === 'done') {
+            throw failure
+          }
+        },
+      },
+      { retryBaseMs: 1 },
+    )
+
+    expect(attempts).toBe(1)
+    expect(outcome.status).toBe('completed')
+    expect(outcome.error).toBe(failure)
+  })
+
+  it('keeps reading the same connection when a mid-stream handler throws', async () => {
+    // 連線是通的、事件編號已推進——重連不會重播那個事件，只會把整條串流的
+    // 剩餘部分一起賠掉。失敗記給 onError（診斷），照讀下去。
+    let attempts = 0
+    server.use(
+      http.get(`${BASE_URL}${PATH}`, () => {
+        attempts += 1
+        return sseResponse([
+          frame(1, 'delta', { text: '一' }),
+          frame(2, 'delta', { text: '二' }),
+          frame(3, 'done', { finish_reason: 'stop' }),
+        ])
+      }),
+    )
+    const seen: string[] = []
+    const reported: unknown[] = []
+
+    const outcome = await openEventStream(
+      PATH,
+      {
+        onEvent: (event) => {
+          seen.push(event.type)
+          if (seen.length === 1) {
+            throw new Error('store 短暫炸了一下')
+          }
+        },
+        onError: (error) => reported.push(error),
+      },
+      { retryBaseMs: 1 },
+    )
+
+    expect(attempts).toBe(1)
+    expect(seen).toEqual(['delta', 'delta', 'done'])
+    expect(outcome.status).toBe('completed')
+    expect(reported).toHaveLength(1)
+  })
+})
+
 describe('取消', () => {
   it('closes the connection when the caller aborts', async () => {
     // 使用者離開頁面。留著連線的話，後端會一路講完，而那條連線也一直佔著。

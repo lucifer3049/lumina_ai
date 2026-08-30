@@ -226,6 +226,31 @@ describe('送出一個問題（09 §2.4 拆成兩步的第一步）', () => {
     expect(store.streaming).toBeNull()
     expect(store.messages).toEqual([])
   })
+
+  it('does not append into another conversation after a slow POST（2026-08-30 深度審查）', async () => {
+    // `messages` 是全域單份、跟著 currentConversationId 走。慢速 POST 的回應在
+    // 使用者已切到 B 之後才到——無條件 append 會把 A 的使用者氣泡塞進 B 的訊息
+    // 列表，沒有任何錯誤，直到下次重抓才消失。
+    server.use(
+      http.post(`${BASE_URL}/api/v1/conversations/${C1}/messages`, async () => {
+        await delay(30) // A 的 POST 很慢
+        return HttpResponse.json(turn, { status: 201 })
+      }),
+      http.get(`${BASE_URL}/api/v1/conversations/${C2}/messages`, () =>
+        HttpResponse.json({ items: [message(M2, 'assistant', 'B 的內容')], next_cursor: null }),
+      ),
+    )
+    const store = useChatStore()
+    store.currentConversationId = C1
+
+    const pending = store.sendMessage(C1, '給 A 的問題')
+    await store.fetchMessages(C2) // 切到 B，先完成
+    await pending // A 的 POST 這時才 resolve
+
+    expect(store.messages.map((item) => item.content)).toEqual(['B 的內容'])
+    // 生成照常在背景跑（buffer 指名對話，元件依 current 決定渲染與否）。
+    expect(store.streaming?.conversationId).toBe(C1)
+  })
 })
 
 describe('串流中的 buffer', () => {

@@ -174,19 +174,26 @@ export const useChatStore = defineStore('chat', () => {
 
     // 使用者那句要立刻出現：等串流開始才顯示的話，送出後畫面有一段空白，
     // 而使用者會以為沒送出去。`created_at` 是本地時間，下一次重抓就會換成後端的。
-    messages.value = [
-      ...messages.value,
-      {
-        id: turn.user_message_id,
-        role: 'user',
-        content,
-        citations: [],
-        model: '',
-        status: 'completed',
-        usage: {},
-        created_at: new Date().toISOString(),
-      },
-    ]
+    //
+    // **要先確認畫面還停在這個對話**：`messages` 是全域單份、跟著 current 走，慢速
+    // POST 的回應可能在使用者已切到別的對話（fetchMessages 先完成）之後才到——
+    // 無條件 append 會把 A 的使用者氣泡塞進 B 的訊息列表，且沒有任何錯誤。跳過
+    // 不會漏：這句話已在後端定案，切回來時 watch 的重抓自己會帶回。
+    if (conversationId === currentConversationId.value) {
+      messages.value = [
+        ...messages.value,
+        {
+          id: turn.user_message_id,
+          role: 'user',
+          content,
+          citations: [],
+          model: '',
+          status: 'completed',
+          usage: {},
+          created_at: new Date().toISOString(),
+        },
+      ]
+    }
     beginStreaming({ messageId: turn.message_id, conversationId })
     return turn
   }

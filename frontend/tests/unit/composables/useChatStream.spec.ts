@@ -190,6 +190,63 @@ describe('接不回去的時候', () => {
     expect(store.messages.at(-1)).toMatchObject({ content: '這是完整的回答' })
   })
 
+  it('salvages a finished answer when the post-done refetch fails once（2026-08-30 深度審查）', async () => {
+    // `done` 收到了、生成成功，但 finishStreaming 的重抓遇到暫時性 500。這**不是**
+    // 斷線：把它當斷線去重連，最後會把一個完整生成的回答蓋上「連線中斷」與重試鈕，
+    // 而伺服器上的定稿永不換入。正確處置：不重連（串流已終局）、補做一次收尾。
+    let streamAttempts = 0
+    let fetches = 0
+    server.use(
+      http.get(`${BASE_URL}${STREAM_PATH}`, () => {
+        streamAttempts += 1
+        return sseResponse([
+          frame(1, 'delta', { text: '答' }),
+          frame(2, 'done', { message_id: M1, finish_reason: 'stop' }),
+        ])
+      }),
+      http.get(`${BASE_URL}/api/v1/conversations/${C1}/messages`, () => {
+        fetches += 1
+        if (fetches === 1) {
+          return HttpResponse.json(
+            {
+              type: 'about:blank',
+              title: 'INTERNAL_ERROR',
+              status: 500,
+              detail: '暫時性失敗',
+              code: 'INTERNAL_ERROR',
+              request_id: 'r2',
+            },
+            { status: 500, headers: { 'Content-Type': 'application/problem+json' } },
+          )
+        }
+        return HttpResponse.json({
+          items: [
+            {
+              id: M1,
+              role: 'assistant',
+              content: '定稿的完整回答',
+              citations: [],
+              model: 'mock',
+              status: 'complete',
+              usage: {},
+              created_at: '2026-08-20T00:00:00Z',
+            },
+          ],
+          next_cursor: null,
+        })
+      }),
+    )
+    const store = startedStore()
+    const { value: stream } = inScope(() => useChatStream())
+
+    await stream.start({ conversationId: C1, messageId: M1, retryBaseMs: 1 })
+
+    expect(streamAttempts).toBe(1) // 串流已終局，不得重連
+    expect(fetches).toBe(2) // 收尾補做了一次
+    expect(store.streaming).toBeNull()
+    expect(store.messages.at(-1)).toMatchObject({ content: '定稿的完整回答' })
+  })
+
   it('tells the user when it cannot connect at all', async () => {
     // 連不上與「模型出錯」要分得出來：前者重新整理可能就好了，後者不會。
     server.use(http.get(`${BASE_URL}${STREAM_PATH}`, () => HttpResponse.error()))
