@@ -1,5 +1,7 @@
 # AI 智庫平台 —— 開發指令入口
 # 執行環境：WSL2 Ubuntu（ADR-007 工具鏈：uv / pnpm）
+# Docker 是 **Ubuntu 內的原生 Engine**（docker-ce ＋ compose plugin；GPU 目標另需
+# nvidia-container-toolkit），2026-09-05 起不再用 Docker Desktop——理由與後果見 13 §4.3。
 #
 # 典型流程：
 #   make up → make migrate → make gen-jwt-keys → make test → make smoke

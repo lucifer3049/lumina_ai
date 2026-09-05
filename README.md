@@ -89,7 +89,9 @@ docs/plan/        架構設計文件 00–15（SAD）
 
 ## 開發環境
 
-**前置需求**：WSL2 Ubuntu（或 Linux / macOS）、Docker、[uv](https://github.com/astral-sh/uv)、GNU Make、
+**前置需求**：WSL2 Ubuntu（或 Linux / macOS）、Docker Engine（**WSL2 內原生安裝** docker-ce ＋ compose
+plugin，跑 `gpu` profile 另需 nvidia-container-toolkit；**不要用 Docker Desktop**，見下方）、
+[uv](https://github.com/astral-sh/uv)、GNU Make、
 Node.js 22 LTS + pnpm（ADR-007；建議用 [nvm](https://github.com/nvm-sh/nvm) 裝，pnpm 由 `corepack enable pnpm`
 啟用，版本由 `frontend/package.json` 的 `packageManager` 欄位決定）。
 
@@ -102,6 +104,12 @@ Node.js 22 LTS + pnpm（ADR-007；建議用 [nvm](https://github.com/nvm-sh/nvm)
 > `UV_PROJECT_ENVIRONMENT` 指定）：實測 venv 放在 repo 裡時，即使守門健在，Windows 側
 > 經 `\\wsl.localhost` 碰 repo（git、檔案總管）仍足以讓它半毀。手動跑 `uv run` 請一律
 > 經 make 目標，直接在 `backend/` 下跑會在 repo 裡另長一份 `.venv`。
+>
+> **Docker 一律用 WSL2 內的原生 Engine，不用 Docker Desktop**（2026-09-05 起，13 §4.3）：
+> Desktop 的 Windows 側轉發綁不上 Hyper-V 的動態保留區間（8070–8169，TEI 的預設 port 正好
+> 在裡面），而且它會把 `credsStore: desktop.exe` 寫進 `~/.docker/config.json`——之後原生
+> Engine 的每一次 `docker pull` 都會死在找不到 `docker-credential-desktop.exe`。曾裝過 Desktop
+> 的機器先把那個檔案清成 `{}`。
 
 ```bash
 git clone https://github.com/lucifer3049/lumina_ai.git

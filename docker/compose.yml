@@ -289,8 +289,12 @@ services:
     #
     # 蓋掉之後 loader 往下找到注入的 shim，模型起在 `Cuda(...)`（實測 24 段候選 62ms）。
     # **compat 在這裡本來就沒有用**：它的存在是為了「新 CUDA 跑在舊驅動上」，而這台的
-    # 驅動（610）比 compat（575）新。**換到原生 Linux 而驅動較舊的機器要拿掉這一行**，
+    # 驅動（610）比 compat（575）新。**換到原生 Linux 核心而驅動較舊的機器要拿掉這一行**，
     # 那裡 compat 才是有作用的東西。
+    #
+    # **「原生」指的是核心，不是 Docker Engine**：2026-09-05 Docker 由 Desktop 改為 WSL2 內的
+    # 原生 Engine（13 §4.3）之後，這一行**仍然需要**——shim libcuda 是 WSL2 的性質，跟 Docker
+    # 是哪一家無關。換引擎後實測兩個容器都起在 `Cuda(...)`，`verify-provider` 兩種能力皆過。
     tmpfs:
       - /usr/local/cuda/compat
     ports:
@@ -358,7 +362,8 @@ services:
               capabilities: [gpu]
     # 理由與上面 `tei` 的同一行完全相同（2026-08-24 對 rerank 實測定位）：不蓋掉映像
     # 自帶的 CUDA forward-compat 驅動，這個容器在 WSL2 上**拿得到 GPU 卻用不到**，
-    # 而它會安靜地退成 CPU。換到原生 Linux 而驅動較舊的機器要拿掉這一行。
+    # 而它會安靜地退成 CPU。換到原生 Linux **核心**而驅動較舊的機器要拿掉這一行；WSL2 內的
+    # 原生 Docker Engine 一樣要留（2026-09-05 換引擎後實測，見上）。
     tmpfs:
       - /usr/local/cuda/compat
     ports:
