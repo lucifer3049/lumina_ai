@@ -16,7 +16,7 @@ HTTP 層（CLAUDE.md），那驗得了「我們送出去的請求長什麼樣」
     make verify-provider PROVIDER=tei CAPABILITY=rerank     # 本機 TEI（2B-4；先 make tei-up）
     make verify-provider PROVIDER=jina CAPABILITY=rerank    # 雲端 rerank（需金鑰）
 
-金鑰取自 `AI_EMBEDDING_API_KEY` / `AI_CHAT_API_KEY`（Ollama 不需要）。它只印出維度、
+金鑰取自 `AI_EMBEDDING_API_KEY` / `AI_CHAT_API_KEY`（vLLM／TEI 不需要）。它只印出維度、
 用量與耗時，**不印金鑰、也不印向量內容**。
 
 串流那一條要驗的東西與 embedding 不同，而且更驗不出來：那家有沒有照 SSE 的格式送、

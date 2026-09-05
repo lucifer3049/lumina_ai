@@ -641,7 +641,7 @@ class TestEmbeddingDimensions:
     ) -> None:
         """**設定值是「要求的維度」，不是「拿到的維度」**（research.md R-03）。
 
-        `VendorSpec.supports_dimensions` 為 False 的那幾家（tei／ollama／nvidia）根本
+        `VendorSpec.supports_dimensions` 為 False 的那幾家（tei／vllm／nvidia）根本
         不會把 `dimensions` 送出去，於是設定填什麼都不影響回來的向量。報告要記的是
         量到的東西——記設定值等於在報告裡放一個看起來精確、而可能整份都不成立的數字。
         """

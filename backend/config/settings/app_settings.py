@@ -115,14 +115,14 @@ class AppSettings(BaseSettings):
     # TEI 是**兩個容器**——同一個映像、不同的 `--model-id`、不同的 port。它沒有金鑰
     # 概念（見 VENDORS 的那一列），所以下面那組金鑰設定對它是空的也沒關係。
     ai_embedding_provider: Literal[
-        "mock", "gemini", "openai", "openrouter", "nvidia", "ollama", "tei"
+        "mock", "gemini", "openai", "openrouter", "nvidia", "vllm", "tei"
     ] = "mock"
     # **只有一組金鑰**：同一時間只有一家在服務 embedding（同一個 KB 的向量必須來自
     # 同一個模型，否則距離沒有意義），所以設定「正在用的那一家」就夠了。
-    # `None` 是合法的——本機 Ollama 沒有金鑰概念；缺金鑰而那家需要時，
+    # `None` 是合法的——本機 vLLM／TEI 沒有金鑰概念；缺金鑰而那家需要時，
     # `build_gateway()` 會在**啟動當下**失敗（Fail Fast，理由同 1A 的 JWT 金鑰）。
     ai_embedding_api_key: SecretStr | None = None
-    # 空字串 = 用 VENDORS 表裡的預設位址。留這個覆寫是因為 Ollama 的位址隨部署而異
+    # 空字串 = 用 VENDORS 表裡的預設位址。留這個覆寫是因為 vLLM 的位址隨部署而異
     # （本機 / 區網 / 容器內），而那不該逼人去改程式碼。
     ai_embedding_base_url: str = ""
     ai_embedding_model: str = "mock-embedding"
@@ -141,7 +141,7 @@ class AppSettings(BaseSettings):
     # **與 embedding 是兩組獨立的設定**，即使兩邊常常是同一家。理由是它們的選型依據
     # 完全不同：embedding 綁著整個知識庫的向量（換了就要重算），chat 換一家是換一次
     # 請求。共用一組的話，想換聊天模型就得連帶動到 embedding，而那是重嵌入。
-    ai_chat_provider: Literal["mock", "gemini", "openai", "openrouter", "nvidia", "ollama"] = "mock"
+    ai_chat_provider: Literal["mock", "gemini", "openai", "openrouter", "nvidia", "vllm"] = "mock"
     ai_chat_api_key: SecretStr | None = None
     ai_chat_base_url: str = ""
     ai_chat_model: str = "mock-chat"

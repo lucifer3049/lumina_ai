@@ -45,7 +45,7 @@
 不是 `AI_EMBEDDING_DIMENSIONS` 的設定值。
 
 **Rationale**：設定值是「請求的維度」，而它不一定送得出去——`VendorSpec.supports_dimensions`
-為 False 的廠商（`tei`、`ollama`、`nvidia`）根本不會帶這個參數，設定填 512 也照樣回 1024。
+為 False 的廠商（`tei`、`vllm`、`nvidia`）根本不會帶這個參數，設定填 512 也照樣回 1024。
 報告要記的是**量到的東西**，不是要求的東西；記設定值等於在報告裡放一個看起來精確而可能
 不成立的數字，而那正是 FR-006 這條需求要防的類型。
 

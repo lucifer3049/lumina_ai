@@ -43,7 +43,7 @@ __all__ = [
 
 # 自架 TEI 的預設位址。**給一個預設而不是強制設定**：TEI 依定義跑在自己的機器上
 # （`make tei-up` 起的就是這個 port），而設定漏了的後果是連線被拒——那是一個看得見的
-# 失敗，且會被降級鏈接住。形狀同 `VENDORS["ollama"]` 的 `127.0.0.1:11434`。
+# 失敗，且會被降級鏈接住。形狀同 `VENDORS["vllm"]` 的 `127.0.0.1:8000`。
 TEI_DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 JINA_BASE_URL = "https://api.jina.ai/v1"
 

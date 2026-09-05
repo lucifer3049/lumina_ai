@@ -152,7 +152,7 @@ class TestTeiRequestShape:
         assert str(captured[0].url) == "http://tei.internal:8080/rerank"
 
     def test_it_defaults_to_the_local_container(self) -> None:
-        """位址沒設時打本機的 TEI（同 Ollama 的 `127.0.0.1:11434`）：自架服務的預設
+        """位址沒設時打本機的 TEI（同 vLLM 的 `127.0.0.1:8000`）：自架服務的預設
         部署就在本機，而設定漏了的後果是連線被拒——那是一個看得見的失敗。"""
         captured: list[httpx.Request] = []
 

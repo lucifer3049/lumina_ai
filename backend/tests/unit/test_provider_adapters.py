@@ -2,7 +2,7 @@
 
 1C-1 立了規則（timeout、重試、計量）而只有 MockProvider；這一包把規則接到真的 HTTP 上。
 
-**五家共用一個 adapter**：Gemini、OpenAI、OpenRouter、NVIDIA NIM、Ollama 全部提供
+**五家共用一個 adapter**：Gemini、OpenAI、OpenRouter、NVIDIA NIM、vLLM 全部提供
 OpenAI 相容的 `/v1/embeddings`，差別只有 base URL、金鑰與支不支援 `dimensions`。寫五份
 的話，五份會各自漂——而漏改的那一份只在切換到那家時才會走到，也就是沒有人測的時候。
 因此本檔驗的是「一個實作 × 一張廠商表」，而不是五個實作。
@@ -117,7 +117,7 @@ class TestVendorRegistry:
         assert configurable - {"mock"} == set(VENDORS)
 
     def test_the_six_vendors_are_present(self) -> None:
-        assert set(VENDORS) == {"gemini", "openai", "openrouter", "nvidia", "ollama", "tei"}
+        assert set(VENDORS) == {"gemini", "openai", "openrouter", "nvidia", "vllm", "tei"}
 
     @pytest.mark.parametrize("vendor", sorted(VENDORS))
     def test_no_credentials_are_baked_into_the_table(self, vendor: str) -> None:
@@ -136,10 +136,10 @@ class TestVendorRegistry:
 
     @pytest.mark.parametrize("vendor", sorted(VENDORS))
     def test_remote_vendors_use_tls(self, vendor: str) -> None:
-        """本機的兩家（Ollama、自架 TEI）以外，一律 https——金鑰會跟著每一次請求送出去。"""
+        """本機的兩家（自架 vLLM、自架 TEI）以外，一律 https——金鑰會跟著每一次請求送出去。"""
         spec = VENDORS[vendor]
 
-        if vendor in {"ollama", "tei"}:
+        if vendor in {"vllm", "tei"}:
             assert spec.requires_api_key is False, f"本機的 {vendor} 不該要求金鑰"
         else:
             assert spec.base_url.startswith("https://"), f"{vendor} 不是 https"
@@ -178,14 +178,14 @@ class TestRequestShape:
         assert json.loads(captured[0].content)["dimensions"] == 1536
 
     def test_vendors_without_dimension_support_do_not_send_it(self) -> None:
-        """NVIDIA 與 Ollama 的模型維度固定，送了會被退整批（400）。
+        """NVIDIA 與 vLLM 的模型維度固定，送了會被退整批（400）。
 
         「支不支援」是廠商的性質，屬於那張表——寫在呼叫端的話，每個呼叫端都要記得
         判斷一次，而漏掉的那個只在切到那家時才會壞。
         """
         captured: list[httpx.Request] = []
 
-        _provider(_ok(captured), vendor="ollama", dimensions=1536).embed(
+        _provider(_ok(captured), vendor="vllm", dimensions=1536).embed(
             ["a"], model="bge-m3", timeout_seconds=5.0
         )
 
@@ -444,7 +444,7 @@ class TestErrorMapping:
         assert caught.value.retryable is True
 
     def test_a_connection_error_is_retryable(self) -> None:
-        """Ollama 沒開、網路瞬斷——下一次通常就好了。"""
+        """本機容器沒起、網路瞬斷——下一次通常就好了。"""
 
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)

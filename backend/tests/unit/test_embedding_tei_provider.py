@@ -73,7 +73,7 @@ class TestVendorTable:
         """bge-m3 的維度固定 1024，TEI 不吃 `dimensions` 參數——送了是整批 400。
 
         「支不支援」是廠商的性質，屬於這張表。寫在呼叫端的話每個呼叫端各判斷一次，
-        而漏掉的那個只在切到這一家時才會壞（同 NVIDIA 與 Ollama 的理由）。
+        而漏掉的那個只在切到這一家時才會壞（同 NVIDIA 與 vLLM 的理由）。
         """
         assert VENDORS["tei"].supports_dimensions is False
 

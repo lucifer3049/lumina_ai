@@ -283,13 +283,11 @@ class TestRealProviderWiring:
 
         assert gateway.provider_name == vendor
 
-    def test_ollama_needs_no_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """本機 Ollama 沒有金鑰概念——硬性要求會讓最容易上手的那條路走不通。"""
-        gateway = self._rebuild(
-            monkeypatch, AI_EMBEDDING_PROVIDER="ollama", AI_EMBEDDING_API_KEY=""
-        )
+    def test_vllm_needs_no_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """本機 vLLM 沒有金鑰概念——硬性要求會讓最容易上手的那條路走不通。"""
+        gateway = self._rebuild(monkeypatch, AI_EMBEDDING_PROVIDER="vllm", AI_EMBEDDING_API_KEY="")
 
-        assert gateway.provider_name == "ollama"
+        assert gateway.provider_name == "vllm"
 
     def test_a_missing_api_key_fails_at_startup(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """缺金鑰要在**建立 Gateway 時**炸，不是在第一次呼叫時。
@@ -432,7 +430,7 @@ class TestProviderSdkIsolation:
             if allowed in path.parents:
                 continue
             source = path.read_text(encoding="utf-8")
-            for sdk in ("import openai", "from openai", "import ollama", "from ollama"):
+            for sdk in ("import openai", "from openai", "import vllm", "from vllm"):
                 if sdk in source:
                     offenders.append(f"{path.relative_to(backend)}: {sdk}")
 

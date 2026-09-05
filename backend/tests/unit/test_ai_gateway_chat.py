@@ -242,7 +242,7 @@ class TestMetering:
         assert usage[0].completion_tokens == 8
 
     async def test_a_silent_provider_is_estimated_not_zeroed(self) -> None:
-        """provider 不回報用量時要估一個非 0 的值（Ollama 與部分相容端點就是如此）。
+        """provider 不回報用量時要估一個非 0 的值（部分 OpenAI 相容端點就是如此）。
 
         填 0 的話，2A 的成本統計會把整段對話當成免費——而那種低估不會有人回報。
         """

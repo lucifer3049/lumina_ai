@@ -1,6 +1,6 @@
 """OpenAI 相容的 embedding adapter —— 六家共用一個實作（06 §4、02 §2、1C-5、W1）。
 
-Gemini、OpenAI、OpenRouter、NVIDIA NIM、Ollama、自架 TEI **全部**提供 OpenAI 格式的
+Gemini、OpenAI、OpenRouter、NVIDIA NIM、自架 vLLM、自架 TEI **全部**提供 OpenAI 格式的
 `POST /embeddings`。差別只有三件事，而三件事都是資料而不是程式：位址、要不要金鑰、
 支不支援 `dimensions` 參數。因此這裡是「一個實作 × 一張表」——加一家廠商是加一列
 （W1 的 `tei` 就是這樣加進來的：一列資料，沒有第二個實作）。
@@ -62,7 +62,7 @@ class VendorSpec:
 
     base_url: str
     requires_api_key: bool
-    # 模型維度可否由請求指定（Matryoshka 截斷）。NVIDIA 與 Ollama 的模型維度固定，
+    # 模型維度可否由請求指定（Matryoshka 截斷）。NVIDIA 與 vLLM 的模型維度固定，
     # 送了會被退整批（400）——「支不支援」是廠商的性質，寫在呼叫端就是每個呼叫端
     # 各判斷一次，而漏掉的那個只在切到那家時才會壞。
     supports_dimensions: bool
@@ -93,7 +93,7 @@ VENDORS: dict[str, VendorSpec] = {
     ),
     # **唯一兩個旗標開著的**：`reasoning_effort` 與 `response_format` 就是 OpenAI 自己
     # 定義的參數，其餘四家是「相容端點」——相容的是哪幾個欄位由那家決定，而那正是
-    # 1C-5 在 `dimensions` 上實測到差異的地方（Gemini 吃、NVIDIA 與 Ollama 不吃）。
+    # 1C-5 在 `dimensions` 上實測到差異的地方（Gemini 吃、NVIDIA 與本機推論不吃）。
     "openai": VendorSpec(
         base_url="https://api.openai.com/v1",
         requires_api_key=True,
@@ -117,9 +117,14 @@ VENDORS: dict[str, VendorSpec] = {
         requires_api_key=True,
         supports_dimensions=False,
     ),
-    # 本機推論，沒有金鑰概念。位址隨部署而異，由 `ai_embedding_base_url` 覆寫。
-    "ollama": VendorSpec(
-        base_url="http://127.0.0.1:11434/v1",
+    # 自架 vLLM（2026-09-05 起取代 Ollama；本 repo 不再使用 Ollama）：OpenAI 相容的
+    # `/v1/chat/completions`、`/v1/embeddings`，本機推論、沒有金鑰概念。位址隨部署而異
+    # （W2 的容器走 `${VLLM_PORT}`），由 `ai_*_base_url` 覆寫；這裡是 vLLM 的預設 port。
+    #
+    # `supports_dimensions=False`：vLLM 只對少數 Matryoshka 模型認得 `dimensions`，其餘
+    # 會退整批——照本表的規則，沒實測過的旗標一律 False（填錯成 True 是每次請求都失敗）。
+    "vllm": VendorSpec(
+        base_url="http://127.0.0.1:8000/v1",
         requires_api_key=False,
         supports_dimensions=False,
     ),
@@ -271,7 +276,7 @@ class OpenAICompatibleProvider(_VendorClient):
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError(f"{self.name} 逾時（{timeout_seconds:g}s）") from exc
         except httpx.HTTPError as exc:
-            # 連不上、DNS、TLS——下一次通常就好了（Ollama 沒開是最常見的一種）。
+            # 連不上、DNS、TLS——下一次通常就好了（本機 vLLM／TEI 容器沒起是最常見的一種）。
             raise ProviderUnavailableError(f"{self.name} 連線失敗：{type(exc).__name__}") from exc
 
         if response.status_code >= 400:

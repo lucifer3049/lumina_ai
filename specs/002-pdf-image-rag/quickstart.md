@@ -85,7 +85,7 @@ nvidia-smi                      # 兩個 TEI + vLLM 的總和必須 < 8151 MiB
 ### B2. 實測 vision 能力
 
 ```bash
-make verify-provider PROVIDER=ollama CAPABILITY=vision
+make verify-provider PROVIDER=vllm CAPABILITY=vision
 ```
 
 預期輸出含：回報模型、單張耗時、描述文字前 120 字。

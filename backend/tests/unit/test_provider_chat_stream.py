@@ -1,7 +1,7 @@
 """驗收：OpenAI 相容的**串流對話** adapter（06 §4、02 §2、13 §3 工作包 1D-3a）。
 
 1C-5 讓五家廠商共用一個 embedding adapter（一個實作 × 一張 `VENDORS` 表）。串流對話走
-同一條路：Gemini、OpenAI、OpenRouter、NVIDIA NIM、Ollama 全部提供 OpenAI 格式的
+同一條路：Gemini、OpenAI、OpenRouter、NVIDIA NIM、vLLM 全部提供 OpenAI 格式的
 `POST /chat/completions`，`stream=true` 時以 `data: {...}` 逐行推送。因此**不新增廠商表**
 ——加一家仍然是加一列。
 
@@ -243,14 +243,14 @@ class TestOptionalParameters:
         """
         request = dataclasses.replace(_request(), reasoning_effort="high")
 
-        payload = await self._payload_for(request, vendor="ollama")
+        payload = await self._payload_for(request, vendor="vllm")
 
         assert "reasoning_effort" not in payload
 
     async def test_the_request_still_succeeds_when_dropped(self) -> None:
         """降級是**降級**，不是失敗：參數丟掉了，回答照樣要拿得到。"""
         request = dataclasses.replace(_request(), reasoning_effort="high")
-        provider = _provider(lines=[_chunk(content="嗨"), _finish(), _DONE], vendor="ollama")
+        provider = _provider(lines=[_chunk(content="嗨"), _finish(), _DONE], vendor="vllm")
 
         assert _text_of(await _collect(provider, request)) == "嗨"
 
@@ -437,7 +437,7 @@ class TestErrorMapping:
             await _collect(_provider(exc=httpx.ReadTimeout("慢")))
 
     async def test_a_connection_error_is_retryable(self) -> None:
-        """連不上、DNS、TLS——下一次通常就好了（Ollama 沒開是最常見的一種）。"""
+        """連不上、DNS、TLS——下一次通常就好了（本機 vLLM 容器沒起是最常見的一種）。"""
         with pytest.raises(ProviderError) as caught:
             await _collect(_provider(exc=httpx.ConnectError("連不上")))
 
@@ -466,8 +466,8 @@ class TestVendorReuse:
         的那一份只在切換到那家時才走到。"""
         from ai.gateway.providers.openai_compatible import OpenAICompatibleProvider
 
-        assert OpenAICompatibleChatProvider(vendor="ollama")._spec is VENDORS["ollama"]
-        assert OpenAICompatibleProvider(vendor="ollama")._spec is VENDORS["ollama"]
+        assert OpenAICompatibleChatProvider(vendor="vllm")._spec is VENDORS["vllm"]
+        assert OpenAICompatibleProvider(vendor="vllm")._spec is VENDORS["vllm"]
 
     def test_an_unknown_vendor_is_rejected(self) -> None:
         with pytest.raises(ProviderError):

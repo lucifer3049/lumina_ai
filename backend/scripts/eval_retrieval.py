@@ -251,7 +251,7 @@ def resolve_embedding_dimensions(
     """報告要記的維度＝**實際存下來的向量長度**，不是 `AI_EMBEDDING_DIMENSIONS`。
 
     設定值是「要求的維度」。`VendorSpec.supports_dimensions` 為 False 的那幾家
-    （`tei`／`ollama`／`nvidia`）根本不會把 `dimensions` 送出去，於是設定填什麼都不影響
+    （`tei`／`vllm`／`nvidia`）根本不會把 `dimensions` 送出去，於是設定填什麼都不影響
     回來的向量——記設定值等於在報告裡放一個看起來精確、而可能整份都不成立的數字。
 
     **查不到向量時不准猜**。那正是 W1 之後、reindex 之前的狀態：chunk 都在、文件狀態

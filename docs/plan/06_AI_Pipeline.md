@@ -3,11 +3,11 @@
 | 項目 | 內容 |
 |------|------|
 | 文件編號 | 06 |
-| 版本 | v1.8 |
-| 日期 | 2026-08-27 |
+| 版本 | v1.9 |
+| 日期 | 2026-09-05 |
 | 狀態 | Draft — 待審閱 |
 | 相依文件 | 01（ADR-003/004）、04（RAG / Embedding / Memory / Gateway 模組）、05（chunks / embeddings 表） |
-| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08）。v1.2：新增 §3.5 Prompt Engineering 策略分級表；§4 增補 reasoning 模式與 structured output 的介面預留。v1.3：§2.1 的 Clean / Chunk 兩列補上 1B-5 的實作定案（語言偵測方式、正規化邊界、不可切塊型別、token 計數注入）。v1.4：§3.1 與 §3.3 併入 1D-5 的四項實作定案（2026-08-17）——引用標記改用「本輪第幾段」的短編號、Phase 1 的檢索門檻改為可選的相對門檻、condense 先做免呼叫模型的版本、幻覺引用只剔清單不改寫文字；並在 §3.1 前加註參數的落點（15 §4.1）。偏離的完整理由見 13 §3.5。v1.5：§7 補上 `rag_trace` 的落地紀錄（2B-5）——六項全部有欄位，另記三個設計決定（一次查詢一筆、不記 chunk 內文、逐路記融合前的原始分數）與兩個未做（Loki 保存／Dashboard、§3.4 的跨語言配對）。v1.6：§3.1 的 Rerank 門檻裁決——第四次評測的分數分布推翻 `threshold=0.3`，絕對門檻維持關閉；同列記下 hybrid 不進預設的裁決（系統預設 `vector+rerank`），依據見 13 §4 的 2B-4／2B-5 結案。v1.7：§2.2 補上 2B-6 的落地紀錄（四步的實作落點、重切不遞增版本、重切與換模型分兩次跑、保留窗參數）。v1.8（W1 揭出，2026-08-31）：§2.2 補上四步的**前提**——它靠 `UNIQUE(chunk, model, embedding_version)` 兩版並存，而 `halfvec(N)` 是固定寬度欄位，因此**換模型走這四步、換維度不走**（後者是清空 → `ALTER TYPE` → 逐 KB 重建，無觀察期、不可回退）。1536 → 1024（`BAAI/bge-m3`）就是這樣做的，落地紀錄見 13 §4.2 |
+| 變更紀錄 | v1.1：新增 §3.4 跨語言檢索指引（15 審查報告 F-08）。v1.2：新增 §3.5 Prompt Engineering 策略分級表；§4 增補 reasoning 模式與 structured output 的介面預留。v1.3：§2.1 的 Clean / Chunk 兩列補上 1B-5 的實作定案（語言偵測方式、正規化邊界、不可切塊型別、token 計數注入）。v1.4：§3.1 與 §3.3 併入 1D-5 的四項實作定案（2026-08-17）——引用標記改用「本輪第幾段」的短編號、Phase 1 的檢索門檻改為可選的相對門檻、condense 先做免呼叫模型的版本、幻覺引用只剔清單不改寫文字；並在 §3.1 前加註參數的落點（15 §4.1）。偏離的完整理由見 13 §3.5。v1.5：§7 補上 `rag_trace` 的落地紀錄（2B-5）——六項全部有欄位，另記三個設計決定（一次查詢一筆、不記 chunk 內文、逐路記融合前的原始分數）與兩個未做（Loki 保存／Dashboard、§3.4 的跨語言配對）。v1.6：§3.1 的 Rerank 門檻裁決——第四次評測的分數分布推翻 `threshold=0.3`，絕對門檻維持關閉；同列記下 hybrid 不進預設的裁決（系統預設 `vector+rerank`），依據見 13 §4 的 2B-4／2B-5 結案。v1.7：§2.2 補上 2B-6 的落地紀錄（四步的實作落點、重切不遞增版本、重切與換模型分兩次跑、保留窗參數）。v1.8（W1 揭出，2026-08-31）：§2.2 補上四步的**前提**——它靠 `UNIQUE(chunk, model, embedding_version)` 兩版並存，而 `halfvec(N)` 是固定寬度欄位，因此**換模型走這四步、換維度不走**（後者是清空 → `ALTER TYPE` → 逐 KB 重建，無觀察期、不可回退）。1536 → 1024（`BAAI/bge-m3`）就是這樣做的，落地紀錄見 13 §4.2 v1.9：**Ollama 自本專案退場**（2026-09-05 人類裁決；三個地端角色它一個都沒拿到——rerank 無端點、embedding 走 TEI、W2 caption 改 vLLM），Gateway 的 `VENDORS` 由 `ollama` 改為 `vllm`（OpenAI 相容、免金鑰、預設 `127.0.0.1:8000`），§3.4／§4 圖與 prompt cache 的降級說明同步；歷史定案（2B-4「不走 Ollama」）原文保留。 |
 
 ---
 
@@ -151,7 +151,7 @@ flowchart TB
 
 | 決策點 | 定案 |
 |--------|------|
-| Embedding 模型硬性條件 | **必須是多語模型**（中英共享向量空間），跨語言召回主要靠這一層。候選：OpenAI `text-embedding-3-large`（API）／`bge-m3`（Ollama 自建，中文表現佳）；模型選型於 Phase 2 golden set 上實測定案，golden set **必含跨語言題組**（中問英答、英問中答各 ≥15 題） |
+| Embedding 模型硬性條件 | **必須是多語模型**（中英共享向量空間），跨語言召回主要靠這一層。候選：OpenAI `text-embedding-3-large`（API）／`bge-m3`（自架 TEI，中文表現佳；W1 已落地）；模型選型於 Phase 2 golden set 上實測定案，golden set **必含跨語言題組**（中問英答、英問中答各 ≥15 題） |
 | Rerank 模型硬性條件 | 同樣必須多語；單語 reranker 會把跨語言的正確候選打低分，比沒有 rerank 更糟。**2B-4 落地（2026-08-23）**：自架 HuggingFace TEI 跑 `BAAI/bge-reranker-v2-m3`（MIT、568M、多語 cross-encoder），容器置於 compose 的 `gpu` profile 之後、預設不啟動（`make tei-up`）；第二個 adapter 是 Jina（證明 Gateway 沒綁死一家，且沒有 GPU 的機器有東西可用）。**不走 Ollama**——它至今沒有 rerank 端點，reranker 模型只能經 `/api/embed`，取不到 cross-encoder 分類頭的分數。選型理由與成本比較見 13 §4「2B 開工前定案」；跨語言驗證做在 `make verify-provider CAPABILITY=rerank`（中文問句、英文正解） |
 | FTS 側的跨語言縮限 | pgroonga 是詞面比對，跨語言天然失效——**hybrid 融合在跨語言配對時自動退化為以 vector 為主**（RRF 天然容忍單路弱訊號，無需特判） |
 | Query 翻譯增強（選配） | KB 設定 `cross_lingual_boost: true` 時，condense 階段順帶產生文件主要語言的翻譯問句、FTS 用翻譯句查（多一次小模型呼叫）；**預設關**，僅在評測證明該 KB 跨語言召回不足時開 |
@@ -182,14 +182,14 @@ flowchart LR
     QC --> RT[Model Routing<br/>tenant 設定 → 指定模型<br/>失敗鏈: primary → fallback]
     RT --> PC{Prompt Cache<br/>provider 支援?}
     PC --> AD[Provider Adapter<br/>統一 ChatRequest/Delta 格式]
-    AD --> P1[OpenAI] & P2[Azure] & P3[Ollama] & P4[OpenRouter] & P5[Gemini]
+    AD --> P1[OpenAI] & P2[Azure] & P3[vLLM] & P4[OpenRouter] & P5[Gemini]
     AD --> MET[Metering<br/>usage event → usage_logs<br/>quota commit]
 ```
 
 - **統一介面**：`stream_chat(ChatRequest) -> AsyncIterator[Delta]`；Delta 型別統一（text / tool_call / usage / done / error），上層不知道 provider 差異（含 tool calling 格式轉換）。
 - **Timeout**：連線 10s、首 token（TTFT）30s、整體 120s；逾時觸發 fallback 鏈下一個模型（僅在尚未輸出任何 token 時才切換，避免拼接不一致）。
 - **Retry**：只 retry 可安全重試的錯誤（429/5xx 且未開始輸出），退避 1s/2s/4s，最多 3 次。
-- **Prompt Caching**：system + RAG context 放前綴、對話輪次放後綴，最大化 provider 端 cache 命中；Ollama 等無 cache 的 provider 自動忽略。
+- **Prompt Caching**：system + RAG context 放前綴、對話輪次放後綴，最大化 provider 端 cache 命中；vLLM／TEI 等無 cache 的 provider 自動忽略。
 - **中斷處理（G-06）**：client 斷線 → server 繼續收完該回應（成本已發生）→ 完整持久化 → resume buffer（Redis, TTL 5min）供 `Last-Event-ID` 續傳。
 - **Reasoning 模式（介面預留，功能屬 backlog，見 §3.5）**：`ChatRequest` 增 provider 無關欄位 `reasoning_effort: off|low|medium|high`（預設 off），Adapter 各自翻譯為該家參數，不支援的 provider 靜默忽略（同 prompt cache 的降級模式）。**Delta 契約定案：Adapter 丟棄 reasoning 內容，不新增 Delta 型別**（避免各 adapter 各行其是；除錯需要時再開 trace-only 通道）。計費：reasoning token **必須併入 output tokens metering**——漏計即租戶成本低估（multi-tenant 直接影響）。Timeout：reasoning 模型 TTFT 天然變長，啟用時 TTFT 上限隨 model_config 覆寫，不吃預設 30s。
 - **Structured Output（選配，見 §3.5）**：`ChatRequest` 增 `response_format`（none / json_schema）欄位，Adapter 轉換為各 provider 的約束解碼參數；不支援的 provider 降級為提示詞指示＋後處理驗證。
