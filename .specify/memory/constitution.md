@@ -1,6 +1,38 @@
 <!--
 Sync Impact Report
 ==================
+Version change: 1.1.0 → 2.0.0
+Bump rationale: MAJOR——**重新定義原則 II**。多租戶隔離（per-row tenant_id + RLS +
+                TenantContext）自本版起作廢，改為單一資料域 + 部署邊界；這是向後不相容
+                的治理變更，且使 ADR-002 與 Phase 1–2 的多租戶設計失效。
+
+Modified principles:
+  - II. 租戶隔離 Fail Fast → **II. 單一資料域與部署邊界**。決定依據：本系統實際只有
+    一位使用者，對外交付走 container-per-customer，隔離由部署提供而非資料列提供
+    （2026-09-06 人類裁決）。新原則明寫它賣掉了什麼（DB 層不再有防線）與它的效力條件
+    （一份部署只服務一個擁有者），並禁止個別 Feature 自行加回擁有者欄位——半套隔離
+    比沒有隔離更危險。
+  - IV. 測試層定義：integration 由「Repository + RLS」改為「Repository + 真實 DB 行為」
+    （RLS 移除後該層仍在，守的對象換成約束、索引與 migration）。
+
+Removed sections: 無（原則 II 為改寫而非移除）
+
+待處理的下游同步（**本次僅修訂憲章，程式碼與文件尚未跟上；這是刻意的順序**）:
+  - CLAUDE.md 架構鐵則 4（租戶隔離）必須改寫——Governance 明訂兩者衝突時同步修正
+  - docs/plan：01（ADR-002）、05（RLS 與 22 張表）、09（登入帶 tenant_slug）、
+    10（§4 租戶隔離）、11、12、13 全部需要同步
+  - specs/003-api-key/spec.md：整份建立在「租戶管理者發 key」之上，需重寫
+  - 程式碼：230 檔／3,819 處 tenant 參照、22 張表的欄位、8 個含 tenant 的唯一鍵、
+    20+ 支 RLS migration、2 張以 tenant 為主鍵的表（identity_tenant_directory、
+    platform_tenantdatakey）
+  - 拆除本身走完整 SDD，且必須切成多個工作包分批進行（原則 VI 與〈開發工作流〉）
+
+歷史：v1.1.0（2026-09-05）新增原則 VI（規格先行與分層授權）。
+      v1.0.0（2026-09-05）首次批准，原檔是未替換的 constitution-template 佔位樣板。
+
+---
+（v1.1.0 當時的 Sync Impact Report 保留於下，供追溯）
+
 Version change: 1.0.0 → 1.1.0
 Bump rationale: MINOR——新增原則 VI（規格先行與分層授權），並實質擴充〈開發工作流與
                 品質閘門〉與 Governance。未移除、未重新定義任何既有原則，無向後不相容
@@ -55,17 +87,40 @@ Celery task 同樣遵守三行原則（取 context → 呼叫 service → 回報
 理由：架構風格為 Modular Monolith + Clean Architecture，唯有機器可驗證的邊界能在
 單人 + AI 的高速迭代下保住未來拆分 microservices 的能力（ADR-001、ADR-006）。
 
-### II. 租戶隔離 Fail Fast（NON-NEGOTIABLE）
+### II. 單一資料域與部署邊界（NON-NEGOTIABLE）
 
-所有 Repository 必須繼承 `TenantScopedRepository`，由基底自動注入 tenant filter。
-TenantContext 缺失時必須 raise，禁止以預設租戶、跳過過濾或回傳空集合的方式吞掉。
-Redis key 必須帶 `t:{tenant_id}:` 前綴。tenant_id 必須由伺服器端從已驗證的身分推導，
-禁止採信 client 自報的 tenant_id。所有 tenant fixture 必須是雙租戶，使隔離驗證
-內建於每個測試情境而非另外補寫。
+本系統是**單一擁有者、單一資料域**的部署。一個部署單元內的全部資料屬於同一個擁有者；
+交付給第三方的方式是**交付一份獨立部署**（container 映像 + 其自有的資料卷），兩份部署
+之間不共用任何儲存體、快取或物件前綴。
 
-理由：Multi-tenant SaaS 的跨租戶資料外洩是不可回復的損害；「靜默地少過濾一個條件」
-不會讓任何功能測試變紅，因此隔離必須是預設行為加上啟動即失敗，而非開發者的紀律
-（ADR-002）。
+因此：
+
+- 禁止在任何資料表引入 `tenant_id` 或任何等價的擁有者欄位。
+- 禁止建立以「日後可能要支援多租戶」為由的隔離抽象——TenantContext、
+  `TenantScopedRepository`、Redis 的擁有者 key 前綴、per-owner 的加密層皆屬此列。
+- Repository 禁止帶隱含的擁有者過濾：查詢條件必須全部來自呼叫端明示的參數，
+  「基底自動幫你加一個 WHERE」不再是這個系統的行為。
+
+**必須明白寫下這個決定買到什麼、賣掉什麼。** 隔離邊界移到部署層之後，資料庫層不再有
+任何防線：RLS 過去會在應用層漏過濾時擋下錯誤，移除之後那一類 bug 直接讀到資料而不會
+有任何症狀。這是本原則**自願接受**的代價，不是疏忽——單一資料域下「不該讀的資料」不
+存在，代價只會在「同一份部署被兩個擁有者共用」的那一天兌現。
+
+**因此本原則有一個效力條件：一份部署只服務一個擁有者。** 這個前提一旦改變，必須先修訂
+本原則（MAJOR 級），**禁止由個別 Feature 自行加回擁有者欄位或隔離層**——那會造出一個
+「有一半隔離」的系統，而半套隔離比沒有隔離更危險：它看起來像有防線。
+
+與擁有者數量無關、因此**繼續成立**的兩條：
+
+- 身分必須由伺服器端從已驗證的憑證推導，**禁止採信呼叫端自報的身分、權限或範圍**。
+- 憑證與 secrets 沿用 envelope 加密（KEK → DEK → 密文），DEK 改為**每份部署一把**。
+  envelope 的價值在於輪替 KEK 時只需重包 DEK 而不必重新加密每一列密文，這個價值與
+  擁有者數量無關。
+
+理由：本系統的實際使用者只有一位，而對外交付走 container-per-customer——隔離由部署提供，
+不由資料列提供。在此前提下，per-row 的租戶機制不再是防線，只是每個 Feature 都要繳的稅
+（2026-09-06 人類裁決；此前的 ADR-002 與 Phase 1–2 的多租戶設計自本版起作廢，其歷史紀錄
+保留於 `docs/plan/13`）。
 
 ### III. AI 呼叫收斂於 Gateway
 
@@ -87,7 +142,8 @@ Redis key 必須帶 `t:{tenant_id}:` 前綴。tenant_id 必須由伺服器端從
 Specification，該工作包的 DoD 即為驗收語意的最上游。
 
 測試分四層並必須分層維護：unit
-（Service／純邏輯）、integration（Repository + RLS）、api（權限矩陣 + 錯誤格式）、e2e。
+（Service／純邏輯）、integration（Repository + 真實 DB 行為：約束、索引、migration）、
+api（權限矩陣 + 錯誤格式）、e2e。
 LLM 測試一律使用 MockProvider，禁止呼叫真實 API。每個 Model 必須有對應的 factory_boy
 factory。
 
@@ -159,7 +215,7 @@ repo 根目錄的 `openapi.json`，單跑它只會用舊契約重產一次而看
    選擇一方。
 7. 發現範圍外的問題時只回報、不修改（同〈開發工作流與品質閘門〉的禁區規則）。
 
-原則 I–V 的架構、租戶、Gateway、測試與契約規則，以及 Git／Review／CI 規則，在 SDD 的
+原則 I–V 的架構、資料域、Gateway、測試與契約規則，以及 Git／Review／CI 規則，在 SDD 的
 每一層都持續有效，不因走了規格流程而放寬。
 
 **輕量路徑**：不是所有變更都需要完整的 Specification。
@@ -276,4 +332,4 @@ Git commit（人類執行）→ push → make ci-status 盯到終局
 留下明確紀錄（範圍偏離紀錄或未結項），不得以口頭默認方式帶過。複雜度必須被證成——
 無法說明必要性的抽象層與間接層，預設不加入。
 
-**Version**: 1.1.0 | **Ratified**: 2026-09-05 | **Last Amended**: 2026-09-05
+**Version**: 2.0.0 | **Ratified**: 2026-09-05 | **Last Amended**: 2026-09-06

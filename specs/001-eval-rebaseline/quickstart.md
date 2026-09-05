@@ -19,8 +19,22 @@ make tei-embed-up                        # embedding 容器（GPU，8081；首�
 > 兩個 GPU 容器與地端 embedding 的啟用已於 2026-09-05 完成並實測（R-10），
 > 這裡列出指令是為了「重開機之後要做什麼」，不是還沒做的事。
 >
-> 評測租戶 `lumina-eval` 已存在，**不要**跑 `make demo-tenant`。
-> **不要**跑 `make eval-sample`（會改語料指紋）或 `make eval-clean`（會刪掉 1,499 個 chunk）。
+> **⚠️ 2026-09-06 更新：評測租戶與兩個評測知識庫都不存在了。** Docker 由 Desktop 改為
+> WSL2 內的原生 Engine（13 §4.3）時舊資料卷不遷移，`lumina-eval` 租戶、`eval-drcd`、
+> `eval-handwritten` 與那 1,499 個 chunk 隨之消失（實查：DB 內只剩 smoke 殘留）。
+> 因此 B 段開跑前**必須**先開通租戶：
+>
+> ```bash
+> make demo-tenant DEMO_SLUG=lumina-eval
+> ```
+>
+> 語料**不必**手動重灌——`eval-retrieval` 會自行建立知識庫、灌語料、算向量（見 R-02）。
+> 第一次跑會因此比之前久。**本節原文寫的是「租戶已存在，不要跑 `make demo-tenant`」，
+> 那句話現在會把人擋在唯一的解法外面**：`resolve_kb` 找不到租戶時的錯誤訊息正好叫你跑
+> 這個指令。
+>
+> 仍然成立：**不要**跑 `make eval-sample`（會改語料指紋）；`make eval-clean` 現在沒有
+> 東西可刪，但語意不變——**不要**跑它。
 
 先驗一件事——spec Assumptions 裡唯一沒被證實的那條（R-08）：
 
