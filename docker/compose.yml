@@ -336,6 +336,16 @@ services:
       # 退整批的話，一份文件裡有一個過長的 chunk 就會讓整批 422，而 ETL 的退避重試
       # 每一次都會得到同樣的結果——症狀是「某些文件永遠處理不完」。
       - --auto-truncate
+      # **必須是 64，不是預設的 32**：`services/knowledge/embedding.py` 的
+      # `EMBED_BATCH_SIZE` 是 64（06 §2.1 的設計值，同時受 provider 單次上限與
+      # 記憶體夾住），而 TEI 對超過上限的整批回 422 —— 訊息是
+      # `batch size 64 > maximum allowed batch size 32`，而 `--auto-truncate` 救不了
+      # 它（那個旗標管的是單筆過長，不是批次過大）。
+      #
+      # W1 沒撞到這個，是因為當時只用 `verify-provider` 送兩筆樣本；**第一次拿真文件
+      # 打它就整批失敗，而退避重試每一次都得到同樣的 422**——症狀是文件永遠處理不完。
+      - --max-client-batch-size
+      - "64"
     # 要不到 GPU 就是 CPU 推論。**這裡的症狀與 rerank 不同、而且更難發現**：rerank 慢
     # 會被 11 §4 的 1.2s 預算跳過（至少排序看得出沒變），embedding 慢只是 ETL 變久——
     # 一份 500 頁的 PDF 從幾分鐘變成幾小時，而每一批都成功，沒有任何錯誤。
