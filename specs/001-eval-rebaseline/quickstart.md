@@ -16,6 +16,9 @@ make tei-up                              # rerank 容器（GPU，8080）
 make tei-embed-up                        # embedding 容器（GPU，8081；首次啟動要等模型下載）
 ```
 
+> 兩個 GPU 容器與地端 embedding 的啟用已於 2026-09-05 完成並實測（R-10），
+> 這裡列出指令是為了「重開機之後要做什麼」，不是還沒做的事。
+>
 > 評測租戶 `lumina-eval` 已存在，**不要**跑 `make demo-tenant`。
 > **不要**跑 `make eval-sample`（會改語料指紋）或 `make eval-clean`（會刪掉 1,499 個 chunk）。
 
@@ -119,11 +122,18 @@ make eval-verdict HANDWRITTEN_BASE=…/gemini-embedding-2/hybrid_rerank_handwrit
 
 ### B2 依判定行動
 
-判定的後續動作**視 R-10 的裁決結果而定**（見 [research.md](./research.md)）——該條目前
-是 BLOCKING，尚未由人類定案。無論方向為何，兩件事都必須發生：
+系統目前跑的是**地端模型**（2026-09-05 切換，見 [research.md](./research.md) R-10），
+因此：
+
+- **優於／持平** → 不做任何設定變更
+- **劣於**（或公開題組否決）→ 依 FR-023 回退到雲端模型、重建向量至檢索可用
+
+無論落在哪一檔，三件事都必須發生：
 
 1. `evaluation/README.md` 更新為 2 模型 × 4 模式 × 2 題組的對照表，每格可追到報告檔
 2. `docs/plan/13` §4.2 的 W1 未做項③ 依實測結果結案，並記下判定結論
+3. **FR-027**：切換的日期、方向與依據落進上述兩份文件——實際生效的設定不進版控，
+   文件是唯一可審查的產物
 
 ---
 

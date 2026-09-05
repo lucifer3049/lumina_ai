@@ -4,9 +4,10 @@
 
 **Input**: Feature specification from `/specs/001-eval-rebaseline/spec.md`
 
-> ⚠ **本計畫有一項 BLOCKING**：`research.md` 的 **R-10**——FR-023 的「回退」方向與現況
-> 相反（系統此刻跑的就是雲端模型，沒有東西可以「改回」）。依憲章原則 VI，plan 不得自行
-> 改寫需求語意，故**停下回報，等人類裁決**。其餘所有設計已完成，不受該項阻擋。
+> **原有的一項 BLOCKING 已解除**：`research.md` 的 **R-10**（FR-023 的「回退」方向與現況
+> 相反）於 2026-09-05 由人類裁決選項 B——**先把系統切到地端模型，讓「回退」成立**，
+> FR-023 字面不動。該切換已執行並實測驗證（含修掉一個 W1 未發現的批次上限缺陷）。
+> 本計畫目前**沒有未解決的阻擋項**。
 
 ## Summary
 
@@ -51,10 +52,11 @@ W1 換掉 embedding 模型（雲端 → 地端、1536 → 1024 維）之後沒�
 | III. AI 呼叫收斂於 Gateway | **PASS** | embedding 與 rerank 全部經 `ai/gateway/`；本次不新增 provider、不新增 `VENDORS` 條目。切換模型只改環境變數 |
 | IV. 驗收測試先行與四層測試 | **PASS** | 驗收測試先行且**大部分可獨立於外部服務**（見 quickstart A 段）。DoD 逐條回溯至 spec 的 AC——US2→可比性測試、US3→題組守門、US4→判定測試、US1→16 次實測。LLM 測試仍一律 Mock；評測本身不是測試，維持在自動化套件之外 |
 | V. 契約與結構變更受控 | **PASS** | **無 migration、無 schema 變更、無 API 端點變更**，因此 `make openapi && make gen-api` 不會有 diff（`openapi-check` 應無漂移；若有即代表改到不該改的地方）。報告 JSON 的 `schema_version` 由 2 升 3，屬離線檔案格式，非 API 契約 |
-| VI. 規格先行與分層授權 | **⚠ CONDITIONAL** | 本計畫未改寫任何需求語意。但 **FR-023 與實查到的現況衝突**（R-10），依原則 VI 停下回報，不在此解決。**該項裁決之前不得進入 `/speckit-tasks` 的對應區段** |
+| VI. 規格先行與分層授權 | **PASS** | 本計畫未改寫任何需求語意。R-10 的衝突依原則 VI 上報而非自行解決，已由人類裁決（選項 B）並回寫 spec 的 Assumptions、Dependencies 與新增的 FR-027。無殘留待決項 |
 
 **Does this plan restate or alter any requirement in `spec.md`?** 否。R-10 的三個候選處置
-是**提給人類的選項**，不是本計畫做出的決定。
+是**提給人類的選項**；選定之後由 spec 自己修訂（Assumptions／Dependencies／FR-027），
+不是在本計畫裡改寫。
 
 ## Project Structure
 
@@ -63,7 +65,7 @@ W1 換掉 embedding 模型（雲端 → 地端、1536 → 1024 維）之後沒�
 ```text
 specs/001-eval-rebaseline/
 ├── plan.md              # 本檔
-├── research.md          # Phase 0：10 項實查，含 BLOCKING 的 R-10
+├── research.md          # Phase 0：10 項實查（R-10 曾為 BLOCKING，已裁決並解除）
 ├── data-model.md        # Phase 1：題組／報告／比較／判定四種資料的形狀
 ├── quickstart.md        # Phase 1：A 段（不需外部服務）＋ B 段（16 次實測）
 ├── contracts/
@@ -119,11 +121,14 @@ docs/plan/13_開發Roadmap.md      # 改：W1 未做項③ 結案（本 Feature 
 | 7 | `EVAL_ENV` 與兩份 env 檔 | 1 | 否 |
 | 8 | 驗雲端模型 1024 維的正規化（R-08） | 7 | **是** |
 | 9 | 16 次評測 | 2,5,6,7,8 | **是（GPU + 金鑰）** |
-| 10 | 判定、對照表、文件同步、依判定行動 | 9, **R-10 裁決** | 否 |
+| 10 | 判定、對照表、文件同步、依判定行動（含 FR-027 的落檔） | 9 | 否 |
 
-**1–7 完全不需要 GPU 或金鑰**，可以在 R-10 未定案時全部完成；卡住的只有第 10 步的
-「依判定行動」那一半。第 6 步卡在人類逐題改寫（FR-002）。
+**前置已完成（2026-09-05）**：地端 embedding 實際啟用、既有知識庫向量重建、檢索實測可用，
+並修掉 TEI 批次上限 32 < 64 的缺陷——**沒有那一步，第 9 步屬於地端模型的 8 次評測跑不完**。
+
+**1–7 完全不需要 GPU 或金鑰。** 目前唯一的人類瓶頸是第 6 步的逐題改寫（FR-002）。
 
 ## Complexity Tracking
 
-> 無憲章違反項需要辯護。R-10 不是違反，是**需求與現況的衝突**，依原則 VI 上報而非在此解決。
+> 無憲章違反項需要辯護。R-10 不是違反，是**需求與現況的衝突**，依原則 VI 上報，已由人類
+> 裁決並回寫 spec（2026-09-05）。

@@ -160,34 +160,47 @@ US4「可獨立驗證」的來源。
 
 ---
 
-## R-10 ⚠ 停下回報：FR-023 的「回退」與現況方向相反
+## R-10 ✅ 已解決：FR-023 的「回退」方向（原為 BLOCKING）
 
-**Status**: **BLOCKING —— 需要人類裁決，plan 不自行解決（憲章原則 VI）。**
+**Status**: **RESOLVED（2026-09-05，人類裁決選項 B）。**
 
-**實查到的事實**：本機 `.env` 目前是
-```
-AI_EMBEDDING_PROVIDER=gemini
-AI_EMBEDDING_MODEL=gemini-embedding-2
-```
-也就是說 **W1 從來沒有把實際使用的模型切成 `bge-m3`**——這與 13 §4.2 W1 結案的「仍未做②
-系統預設仍是 mock，本次實測是一次性的環境變數覆寫，沒有改任何預設」一致。程式裡的預設
-是 `mock`；`.env` 不進版控。而 `AI_EMBEDDING_DIMENSIONS` 的程式預設已是 1024，因此**系統
-此刻跑的就是 gemini@1024**。
+**當時查到的事實**：本機 `.env` 是 `AI_EMBEDDING_PROVIDER=gemini`——**W1 從來沒有把實際
+使用的模型切成 `bge-m3`**（與 13 §4.2 W1 的「仍未做②：系統預設仍是 mock，本次實測是
+一次性的環境變數覆寫」一致）。而 `AI_EMBEDDING_DIMENSIONS` 的程式預設已是 1024，因此
+系統當時跑的是 **gemini@1024**。於是 FR-023 的「**改回**雲端模型」沒有東西可以改回，
+真正的決定是它的反向。
 
-**衝突**：FR-023 寫「判為劣於時，把系統預設的 embedding 供應商與模型**改回**雲端模型」。
-但系統現在用的就是雲端模型——沒有東西可以「改回」。實際要做的決定是它的**反向**：
-量完之後，要不要把預設**切到** `bge-m3`。
+**裁決**：**選項 B——先把系統切到地端模型，讓「回退」成立**，FR-023 字面不動。
 
-**注意 SC-010 的寫法是中性的**（「系統實際使用的 embedding 模型與已落檔的判定結論一致」），
-它在兩個方向下都成立。衝突只在 FR-023 的措辭。
+**已執行（2026-09-05，實測驗證）**
 
-**候選處置（由人類選，plan 不預設）**：
-| 選項 | 內容 |
+| 步驟 | 結果 |
 |------|------|
-| A | 改寫 FR-023 為方向中性：「判定為優於時切換到地端模型；持平或劣於時維持雲端模型」，其餘不變 |
-| B | 維持 FR-023 字面，另在 spec 補一條「本 Feature 開始前先把預設切成 bge-m3」，讓「回退」成立 |
-| C | 刪掉 FR-023，只留 SC-010（結論與實際使用一致），把「怎麼一致」留給實作 |
+| `.env` 切至 `AI_EMBEDDING_PROVIDER=tei` / `AI_EMBEDDING_MODEL=BAAI/bge-m3` / `..._BASE_URL=http://127.0.0.1:18081/v1`（舊值註解保留，備份 `.env.bak-20260905`） | ✅ |
+| `make tei-embed-up` | Healthy（模型快取有效，未重下載） |
+| `make verify-provider PROVIDER=tei CAPABILITY=embedding` | ✅ 模型 `BAAI/bge-m3`、維度 **1024**、**單位長度 1.000000**、0.11s |
+| `admin/民法` 重建向量（走 `KbReindexService`，`rechunk=False`） | `completed`；DB 實測 **245 筆 `BAAI/bge-m3`@1024、embedding_version 2** |
+| `make tei-up`（rerank 容器當時也沒起） | Healthy |
+| 實際查詢 | `hit_count=40`、`degraded=[]`、rerank `applied=True`（24 進 8 出）——W1 記載的「檢索空窗」關閉 |
+| `tests/integration/test_infra_config.py` | 18 passed |
 
-**還有一個連帶問題**：`.env` 不進版控，因此「系統預設」在 repo 裡**沒有對應的檔案**可改。
-真正進得了版控的只有 `.env.example` 與文件。這一點無論選 A／B／C 都要在 spec 或 plan 裡
-講明，否則「切換模型」這個動作會沒有可審查的產物。
+**過程中修掉的一個 W1 缺陷（本 Feature 的前置，不在其範圍內）**
+
+第一次拿真文件打地端服務，**整批 422**：`batch size 64 > maximum allowed batch size 32`。
+TEI 的 `--max-client-batch-size` 預設 32，而 `services/knowledge/embedding.py` 的
+`EMBED_BATCH_SIZE` 是 **64**（06 §2.1 的設計值）。`--auto-truncate` 救不了它——那個旗標
+管的是單筆過長，不是批次過大；而 422 會被退避重試打三次、每次同樣失敗，症狀是「某些
+文件永遠處理不完」。修法是給容器加 `--max-client-batch-size 64`（**不動 `EMBED_BATCH_SIZE`**
+——那是設計文件的值）。
+
+**W1 的兩筆樣本實測驗不到這條路**：`verify-provider` 送的樣本數遠低於上限，於是「通過的
+那個實測」與「真的能不能用」之間隔著一個沒有人看得見的門檻。
+
+**連帶問題的處置**：「系統預設」在 repo 裡沒有對應檔案（環境設定檔不進版控、程式預設是
+`mock`），因此切換模型沒有可審查的產物。spec 新增 **FR-027**：切換的日期、方向與依據必須
+落進評測說明文件與開發 Roadmap。
+
+**同時發現、未處理（不屬本 Feature 範圍，已回報）**：`BAAI/bge-m3` 不在計價表裡
+（`model_price_missing`）；reindex job 的進度回報是 `total_chunks=0` 而 `embedded=245`
+（2C-4 的進度條會吃到）；rerank 最高分 0.108，若啟用 06 §3.1 的 0.3 絕對門檻會被砍光；
+`AI_CHAT_PROVIDER` 仍是 `mock`。
