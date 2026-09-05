@@ -1,0 +1,696 @@
+{
+  "schema_version": 1,
+  "mode": "hybrid+rerank",
+  "created_at": "2026-08-23T16:37:24.631500+00:00",
+  "dataset": {
+    "name": "handwritten",
+    "goldenset_sha256": "fda43c28b2cf6f3d1f4a14ad731e4b7f50c362070cf057df724e44f8a73d48a2",
+    "corpus_sha256": "453608523a4cc435bc04a2d0da65c40dfd77f43a62e7aad3c2b3533573f72d67",
+    "question_count": 24,
+    "passage_count": 299
+  },
+  "retrieval": {
+    "embedding_provider": "gemini",
+    "embedding_model": "gemini-embedding-2",
+    "top_k": 40,
+    "mode": "hybrid+rerank",
+    "params": {
+      "top_k": 40,
+      "fts_top_k": 40,
+      "rrf_k": 60,
+      "hybrid_candidates": 24,
+      "retrieval_mode": "vector",
+      "rerank_threshold": 0.0,
+      "context_chunks": 8,
+      "context_token_budget": 4500,
+      "min_score_ratio": 0.0,
+      "query_history_turns": 1
+    },
+    "rerank_provider": "tei",
+    "rerank_model": "BAAI/bge-reranker-v2-m3"
+  },
+  "metrics": {
+    "question_count": 24.0,
+    "mrr": 0.8940972222222222,
+    "recall@1": 0.7916666666666666,
+    "recall@5": 0.9375,
+    "recall@10": 0.9791666666666666,
+    "recall@20": 0.9791666666666666,
+    "hit@1": 0.8333333333333334,
+    "hit@5": 0.9583333333333334,
+    "hit@10": 1.0,
+    "hit@20": 1.0
+  },
+  "per_question": [
+    {
+      "question_id": "hw-01",
+      "hit_rank": 1,
+      "retrieved": [
+        "10_安全設計#2",
+        "04_模組設計#6",
+        "10_安全設計#1",
+        "10_安全設計#4",
+        "04_模組設計#2",
+        "10_安全設計#7",
+        "10_安全設計#14",
+        "11_NFR_效能與可用性#12"
+      ],
+      "retrieved_chunk_ids": [
+        "64e41acb-d8dd-4d3f-9b33-a0df2a9d1980",
+        "6af930b1-3e98-4af6-bfab-b0ada9bfb973",
+        "9283f784-ee4e-48c4-bea2-fce600d11b8f",
+        "68b6009d-8401-4686-ba67-a1d718e4707f",
+        "ee3bc226-f272-4a46-8dac-394c893e4e77",
+        "c8a2b2a2-bd03-406f-b64e-d6427608215b",
+        "8ad21840-a793-4279-a40d-a5131456eb7c",
+        "d33a6121-01f1-4058-88c7-5772c526d6f1"
+      ],
+      "relevant": [
+        "10_安全設計#2"
+      ]
+    },
+    {
+      "question_id": "hw-02",
+      "hit_rank": 1,
+      "retrieved": [
+        "10_安全設計#3",
+        "09_REST_API設計#4",
+        "10_安全設計#2",
+        "15_計畫審查報告#15",
+        "12_NFR_維運與AI特有需求#8",
+        "09_REST_API設計#5",
+        "10_安全設計#12",
+        "09_REST_API設計#3"
+      ],
+      "retrieved_chunk_ids": [
+        "213dc78c-c398-4ccb-bc44-f5904db59398",
+        "d85cbdba-3963-44f9-aa40-d221f0d0085f",
+        "64e41acb-d8dd-4d3f-9b33-a0df2a9d1980",
+        "65178e65-13d7-4fda-ad5f-7456800ba4e9",
+        "d2987d6c-ff65-43e7-965b-84255bc322cb",
+        "fd65023f-bf6b-464d-b1bd-1145e28ad035",
+        "ab3337b8-4b65-4977-b2ad-8e3fc7320add",
+        "0012dd7a-eeb0-4743-acea-fec7ed5f3bf7"
+      ],
+      "relevant": [
+        "10_安全設計#3"
+      ]
+    },
+    {
+      "question_id": "hw-03",
+      "hit_rank": 2,
+      "retrieved": [
+        "04_模組設計#6",
+        "10_安全設計#4",
+        "05_資料庫設計#22",
+        "09_REST_API設計#5",
+        "13_開發Roadmap#32",
+        "10_安全設計#10",
+        "05_資料庫設計#7",
+        "09_REST_API設計#13"
+      ],
+      "retrieved_chunk_ids": [
+        "6af930b1-3e98-4af6-bfab-b0ada9bfb973",
+        "68b6009d-8401-4686-ba67-a1d718e4707f",
+        "b85386a2-9ed3-4fd9-860e-ff2172f977a7",
+        "fd65023f-bf6b-464d-b1bd-1145e28ad035",
+        "80bdf6e8-c1df-48cd-a4c9-fc0c6f494646",
+        "400a47d8-bf61-45f1-870d-4ec5514d0816",
+        "3517242e-f190-4123-9d19-21dcbd04c1a0",
+        "6359281c-f9d9-4b24-b269-752b108d94bd"
+      ],
+      "relevant": [
+        "10_安全設計#4"
+      ]
+    },
+    {
+      "question_id": "hw-04",
+      "hit_rank": 2,
+      "retrieved": [
+        "11_NFR_效能與可用性#25",
+        "07_Tool架構#4",
+        "12_NFR_維運與AI特有需求#5",
+        "11_NFR_效能與可用性#26",
+        "05_資料庫設計#20",
+        "04_模組設計#20",
+        "07_Tool架構#1",
+        "07_Tool架構#6"
+      ],
+      "retrieved_chunk_ids": [
+        "b8e92226-7324-4883-941b-5056637388ee",
+        "e4b0f81f-892f-4778-91af-f2049792f35e",
+        "1984712f-6a5c-421f-a72c-92e0e26c4be0",
+        "4ae8410e-3725-46f1-b04e-dde1d9452ac6",
+        "c1b855f0-3e3b-44ef-8138-e46c77667675",
+        "69591eb6-5c55-48da-aeb1-fba902effa92",
+        "c05dfc79-ebaa-45f0-a5a4-a9f924fe8393",
+        "3862496d-9b12-4e68-995b-82d95cfa5756"
+      ],
+      "relevant": [
+        "07_Tool架構#4"
+      ]
+    },
+    {
+      "question_id": "hw-05",
+      "hit_rank": 1,
+      "retrieved": [
+        "08_ETL_Pipeline#7",
+        "11_NFR_效能與可用性#1",
+        "04_模組設計#8",
+        "08_ETL_Pipeline#2",
+        "05_資料庫設計#9",
+        "13_開發Roadmap#2",
+        "09_REST_API設計#10",
+        "09_REST_API設計#6"
+      ],
+      "retrieved_chunk_ids": [
+        "78d731fa-baba-4189-8726-51a0dc5afed6",
+        "12a2526a-d95b-4929-b492-de1b81d46e32",
+        "6b148b98-755b-47f2-adc4-d922ba4cfba6",
+        "8b922899-bc7c-461d-8b3b-a04fbebf1402",
+        "2727dee4-3dd1-47d9-921e-90a9ea379d09",
+        "feaa7767-9acd-4595-acb4-4ee2f30e132d",
+        "0e7ce95f-5aa0-4223-86b8-aa85810bd00c",
+        "4346d9b7-8d51-4b3a-81df-6b35eb70aecb"
+      ],
+      "relevant": [
+        "08_ETL_Pipeline#7"
+      ]
+    },
+    {
+      "question_id": "hw-06",
+      "hit_rank": 1,
+      "retrieved": [
+        "05_資料庫設計#13",
+        "08_ETL_Pipeline#7",
+        "08_ETL_Pipeline#1",
+        "11_NFR_效能與可用性#26",
+        "08_ETL_Pipeline#8",
+        "05_資料庫設計#9",
+        "05_資料庫設計#12",
+        "04_模組設計#8"
+      ],
+      "retrieved_chunk_ids": [
+        "4790d671-9657-4f5a-a9df-27fe1b6a2131",
+        "78d731fa-baba-4189-8726-51a0dc5afed6",
+        "d596729d-5c25-48e0-b390-5cb5f7c95c85",
+        "4ae8410e-3725-46f1-b04e-dde1d9452ac6",
+        "ff33935f-873f-48ab-b514-a07dca343c11",
+        "2727dee4-3dd1-47d9-921e-90a9ea379d09",
+        "dad7729e-11c5-4de7-9a68-4701ad5d42e7",
+        "6b148b98-755b-47f2-adc4-d922ba4cfba6"
+      ],
+      "relevant": [
+        "05_資料庫設計#13"
+      ]
+    },
+    {
+      "question_id": "hw-07",
+      "hit_rank": 1,
+      "retrieved": [
+        "06_AI_Pipeline#4",
+        "04_模組設計#14",
+        "06_AI_Pipeline#8",
+        "06_AI_Pipeline#1",
+        "06_AI_Pipeline#14",
+        "06_AI_Pipeline#12",
+        "11_NFR_效能與可用性#22",
+        "06_AI_Pipeline#5"
+      ],
+      "retrieved_chunk_ids": [
+        "944e4274-1789-4fbf-9ba0-e162763d29b8",
+        "cb7bde89-b10c-41ff-a9e5-5a6245df6fe7",
+        "af786c32-11be-4ff4-9a79-da7ef60ad72e",
+        "8cd091cf-bd40-45fe-b0f4-b7ff010ac276",
+        "3b5fd108-7044-4813-ba9a-ba94070ae8a0",
+        "de44dec1-b301-4818-ad10-a9e27e92e3b8",
+        "15fd6e79-29ce-4498-ab7a-06cffa0df1f5",
+        "bd1ca809-bc58-4f58-84ad-a019826a6c4f"
+      ],
+      "relevant": [
+        "06_AI_Pipeline#4"
+      ]
+    },
+    {
+      "question_id": "hw-08",
+      "hit_rank": 3,
+      "retrieved": [
+        "05_資料庫設計#29",
+        "05_資料庫設計#10",
+        "05_資料庫設計#27",
+        "06_AI_Pipeline#12",
+        "01_系統架構總覽#6",
+        "06_AI_Pipeline#8",
+        "00_專案總覽與文件索引#1",
+        "05_資料庫設計#33"
+      ],
+      "retrieved_chunk_ids": [
+        "5eea0284-46cf-4686-8a80-d5133a4b9be2",
+        "b848695b-6ad3-4a17-ab27-1622061f898c",
+        "91a5cf17-959b-4a79-a291-07030db42570",
+        "de44dec1-b301-4818-ad10-a9e27e92e3b8",
+        "3b736578-27c3-436c-a831-957bff8a36c7",
+        "af786c32-11be-4ff4-9a79-da7ef60ad72e",
+        "ca74e9e0-10f6-4957-8e34-95f9f2758669",
+        "2f112c92-afe1-4a71-b485-888f35100048"
+      ],
+      "relevant": [
+        "05_資料庫設計#27"
+      ]
+    },
+    {
+      "question_id": "hw-09",
+      "hit_rank": 1,
+      "retrieved": [
+        "11_NFR_效能與可用性#2",
+        "06_AI_Pipeline#4",
+        "11_NFR_效能與可用性#3",
+        "05_資料庫設計#24",
+        "11_NFR_效能與可用性#22",
+        "06_AI_Pipeline#1",
+        "01_系統架構總覽#14",
+        "11_NFR_效能與可用性#15"
+      ],
+      "retrieved_chunk_ids": [
+        "2130f1f1-6bc9-446a-9a56-ae0341901168",
+        "944e4274-1789-4fbf-9ba0-e162763d29b8",
+        "91b24590-2f12-41ca-aca5-e0cab9278014",
+        "a7ed509b-559e-43d6-993f-446aef9061b5",
+        "15fd6e79-29ce-4498-ab7a-06cffa0df1f5",
+        "8cd091cf-bd40-45fe-b0f4-b7ff010ac276",
+        "f06d5f27-7739-4ce0-bd03-970c16667254",
+        "669624e9-c4b1-4d9b-b701-8497c422b07d"
+      ],
+      "relevant": [
+        "11_NFR_效能與可用性#2"
+      ]
+    },
+    {
+      "question_id": "hw-10",
+      "hit_rank": 1,
+      "retrieved": [
+        "11_NFR_效能與可用性#25",
+        "06_AI_Pipeline#13",
+        "01_系統架構總覽#24",
+        "12_NFR_維運與AI特有需求#7",
+        "11_NFR_效能與可用性#24",
+        "12_NFR_維運與AI特有需求#2",
+        "11_NFR_效能與可用性#28",
+        "10_安全設計#3"
+      ],
+      "retrieved_chunk_ids": [
+        "b8e92226-7324-4883-941b-5056637388ee",
+        "685bf421-50ad-4326-8697-4215535c33c2",
+        "8861a17c-f05b-477f-8238-5da550139343",
+        "8a16805f-ab5e-4449-b87b-76c2d8e45029",
+        "d4158006-829e-4150-81fd-0a84331c13b0",
+        "0b6f614d-f707-45e6-9f7e-d3403e215501",
+        "25b6fc1a-776f-4bf6-ba29-e9abe21b3b3a",
+        "213dc78c-c398-4ccb-bc44-f5904db59398"
+      ],
+      "relevant": [
+        "11_NFR_效能與可用性#25"
+      ]
+    },
+    {
+      "question_id": "hw-11",
+      "hit_rank": 1,
+      "retrieved": [
+        "11_NFR_效能與可用性#23",
+        "11_NFR_效能與可用性#25",
+        "12_NFR_維運與AI特有需求#4",
+        "04_模組設計#21",
+        "01_系統架構總覽#15",
+        "11_NFR_效能與可用性#24",
+        "11_NFR_效能與可用性#29",
+        "10_安全設計#3"
+      ],
+      "retrieved_chunk_ids": [
+        "78f8d2a7-b053-42a0-ae7b-f2d2911a87a2",
+        "b8e92226-7324-4883-941b-5056637388ee",
+        "0e130947-19a0-4fff-b7d9-76416e5f8d51",
+        "7f612d83-f875-4d82-9f71-2908d6531d79",
+        "a0a94658-549a-4ab9-a4ec-8370fdfe6fed",
+        "d4158006-829e-4150-81fd-0a84331c13b0",
+        "c147a17c-fe9b-4e45-bc9c-ffe48ceab556",
+        "213dc78c-c398-4ccb-bc44-f5904db59398"
+      ],
+      "relevant": [
+        "11_NFR_效能與可用性#23"
+      ]
+    },
+    {
+      "question_id": "hw-12",
+      "hit_rank": 1,
+      "retrieved": [
+        "09_REST_API設計#11",
+        "01_系統架構總覽#15",
+        "06_AI_Pipeline#7",
+        "06_AI_Pipeline#11",
+        "05_資料庫設計#26",
+        "09_REST_API設計#7",
+        "03_前端專案結構#5",
+        "11_NFR_效能與可用性#26"
+      ],
+      "retrieved_chunk_ids": [
+        "685937ac-c7bd-406f-8aae-677bb6985c3a",
+        "a0a94658-549a-4ab9-a4ec-8370fdfe6fed",
+        "53ce69b6-4d06-4ce6-b4f6-0e4f31b9b61e",
+        "fd25149d-d4b3-4a34-8e5e-f253be3ab7b1",
+        "5b68a6b8-0651-42af-8d8b-d1cbbdd27443",
+        "9285420b-e91e-404a-9579-10b275c4ca7a",
+        "7141011f-efe0-48b9-9b77-da6e5c924bd6",
+        "4ae8410e-3725-46f1-b04e-dde1d9452ac6"
+      ],
+      "relevant": [
+        "09_REST_API設計#11"
+      ]
+    },
+    {
+      "question_id": "hw-13",
+      "hit_rank": 1,
+      "retrieved": [
+        "09_REST_API設計#11",
+        "13_開發Roadmap#26",
+        "03_前端專案結構#1",
+        "06_AI_Pipeline#7",
+        "12_NFR_維運與AI特有需求#11",
+        "01_系統架構總覽#3",
+        "09_REST_API設計#7",
+        "01_系統架構總覽#14"
+      ],
+      "retrieved_chunk_ids": [
+        "685937ac-c7bd-406f-8aae-677bb6985c3a",
+        "62425f02-f2e8-43cc-9962-f6810878dff3",
+        "28873049-2ec5-4785-a96c-8254e8849d89",
+        "53ce69b6-4d06-4ce6-b4f6-0e4f31b9b61e",
+        "af847da3-3e45-4b8a-a638-7244ced9de84",
+        "d65c487c-3253-4936-aa45-b6ad31119b6f",
+        "9285420b-e91e-404a-9579-10b275c4ca7a",
+        "f06d5f27-7739-4ce0-bd03-970c16667254"
+      ],
+      "relevant": [
+        "03_前端專案結構#1",
+        "09_REST_API設計#11"
+      ]
+    },
+    {
+      "question_id": "hw-14",
+      "hit_rank": 8,
+      "retrieved": [
+        "09_REST_API設計#4",
+        "09_REST_API設計#5",
+        "09_REST_API設計#9",
+        "04_模組設計#2",
+        "05_資料庫設計#22",
+        "10_安全設計#5",
+        "10_安全設計#2",
+        "03_前端專案結構#5"
+      ],
+      "retrieved_chunk_ids": [
+        "d85cbdba-3963-44f9-aa40-d221f0d0085f",
+        "fd65023f-bf6b-464d-b1bd-1145e28ad035",
+        "2b6275ec-b92e-4bf8-abb3-7b44042c2817",
+        "ee3bc226-f272-4a46-8dac-394c893e4e77",
+        "b85386a2-9ed3-4fd9-860e-ff2172f977a7",
+        "c190cfa2-8ce3-482e-908e-d10f1456f933",
+        "64e41acb-d8dd-4d3f-9b33-a0df2a9d1980",
+        "7141011f-efe0-48b9-9b77-da6e5c924bd6"
+      ],
+      "relevant": [
+        "03_前端專案結構#5"
+      ]
+    },
+    {
+      "question_id": "hw-15",
+      "hit_rank": 1,
+      "retrieved": [
+        "02_後端專案結構#2",
+        "02_後端專案結構#6",
+        "01_系統架構總覽#3",
+        "02_後端專案結構#5",
+        "02_後端專案結構#1",
+        "01_系統架構總覽#17",
+        "02_後端專案結構#3",
+        "10_安全設計#7"
+      ],
+      "retrieved_chunk_ids": [
+        "342053f9-4578-45e0-a965-5c5ef53bff70",
+        "301b0ca9-1eaf-4a21-bed3-5797c459c349",
+        "d65c487c-3253-4936-aa45-b6ad31119b6f",
+        "99f1d7a1-9bfd-463a-832f-1ecfb4a98787",
+        "c1ea4633-f07a-44e5-97c9-f5674d4f6bc8",
+        "1f568615-0fd2-41e3-b0a4-4ce27e05aa4c",
+        "ba2ae2d9-3288-4bdf-a862-02aacfec3ade",
+        "c8a2b2a2-bd03-406f-b64e-d6427608215b"
+      ],
+      "relevant": [
+        "02_後端專案結構#2"
+      ]
+    },
+    {
+      "question_id": "hw-16",
+      "hit_rank": 1,
+      "retrieved": [
+        "02_後端專案結構#3",
+        "02_後端專案結構#6",
+        "15_計畫審查報告#14",
+        "01_系統架構總覽#17",
+        "04_模組設計#1",
+        "15_計畫審查報告#13",
+        "03_前端專案結構#3",
+        "02_後端專案結構#1"
+      ],
+      "retrieved_chunk_ids": [
+        "ba2ae2d9-3288-4bdf-a862-02aacfec3ade",
+        "301b0ca9-1eaf-4a21-bed3-5797c459c349",
+        "f6eefd1c-e5af-4e29-9d84-145400adc839",
+        "1f568615-0fd2-41e3-b0a4-4ce27e05aa4c",
+        "71707f72-1d8a-42e2-9a99-c0d6d145b231",
+        "81df19c7-826a-4553-852b-42f3dea9a665",
+        "0e172051-1cc6-4891-aa0c-0aa035de1a03",
+        "c1ea4633-f07a-44e5-97c9-f5674d4f6bc8"
+      ],
+      "relevant": [
+        "02_後端專案結構#3",
+        "15_計畫審查報告#3"
+      ]
+    },
+    {
+      "question_id": "hw-17",
+      "hit_rank": 1,
+      "retrieved": [
+        "10_安全設計#7",
+        "14_Production_Checklist#11",
+        "01_系統架構總覽#3",
+        "01_系統架構總覽#2",
+        "04_模組設計#27",
+        "01_系統架構總覽#9",
+        "10_安全設計#8",
+        "13_開發Roadmap#12"
+      ],
+      "retrieved_chunk_ids": [
+        "c8a2b2a2-bd03-406f-b64e-d6427608215b",
+        "861a79f8-44ff-4fc5-8b1b-785212afdc57",
+        "d65c487c-3253-4936-aa45-b6ad31119b6f",
+        "9f29d4cb-d678-4db0-8625-40990509c6d0",
+        "0327f2f8-633c-4b27-a164-aa9b6efff3c2",
+        "48c58e53-f5ef-4cf4-87f1-14bc8ac09e9d",
+        "20bf4ceb-cf0a-4e49-8623-4c9489fe8f9c",
+        "6bfda2b3-6e68-41f0-861e-8cae0b1b2e3a"
+      ],
+      "relevant": [
+        "10_安全設計#7"
+      ]
+    },
+    {
+      "question_id": "hw-18",
+      "hit_rank": 1,
+      "retrieved": [
+        "10_安全設計#11",
+        "06_AI_Pipeline#2",
+        "06_AI_Pipeline#13",
+        "06_AI_Pipeline#0",
+        "10_安全設計#10",
+        "10_安全設計#1",
+        "06_AI_Pipeline#1",
+        "06_AI_Pipeline#15"
+      ],
+      "retrieved_chunk_ids": [
+        "4a59acd4-386c-44e8-be88-5217b8a1f30a",
+        "6bafca39-177c-4270-b381-a923088cff08",
+        "685bf421-50ad-4326-8697-4215535c33c2",
+        "de1ca1c6-2796-4fa6-9520-6a0ac2bf9f5e",
+        "400a47d8-bf61-45f1-870d-4ec5514d0816",
+        "9283f784-ee4e-48c4-bea2-fce600d11b8f",
+        "8cd091cf-bd40-45fe-b0f4-b7ff010ac276",
+        "0749ba75-49e0-44ef-8c5e-9d8858084279"
+      ],
+      "relevant": [
+        "10_安全設計#11"
+      ]
+    },
+    {
+      "question_id": "hw-19",
+      "hit_rank": 1,
+      "retrieved": [
+        "03_前端專案結構#4",
+        "15_計畫審查報告#8",
+        "03_前端專案結構#0",
+        "03_前端專案結構#1",
+        "05_資料庫設計#2",
+        "03_前端專案結構#2",
+        "03_前端專案結構#11",
+        "15_計畫審查報告#7"
+      ],
+      "retrieved_chunk_ids": [
+        "baea0117-469b-41ed-9003-06b4a61c4ee5",
+        "e2d8c89b-17f6-415d-b874-644c14783294",
+        "e9c84c3d-bcfd-41e1-83af-58ba6fd988cd",
+        "28873049-2ec5-4785-a96c-8254e8849d89",
+        "899f4ba1-e725-4622-a7b6-857159e98cf0",
+        "f425d420-6085-4b0c-9c62-510a4ffccdc9",
+        "62854b8e-f1f3-41c7-80a1-7affa73c691d",
+        "0c477d00-6ca2-43e1-8f6c-35ffb79da9d2"
+      ],
+      "relevant": [
+        "03_前端專案結構#4"
+      ]
+    },
+    {
+      "question_id": "hw-20",
+      "hit_rank": 1,
+      "retrieved": [
+        "14_Production_Checklist#14",
+        "04_模組設計#15",
+        "11_NFR_效能與可用性#3",
+        "00_專案總覽與文件索引#9",
+        "06_AI_Pipeline#6",
+        "14_Production_Checklist#8",
+        "12_NFR_維運與AI特有需求#11",
+        "13_開發Roadmap#28"
+      ],
+      "retrieved_chunk_ids": [
+        "44a0b367-8103-4bf7-821c-8614455d6b27",
+        "abaef64a-5abc-4b32-be89-79199d7b3558",
+        "91b24590-2f12-41ca-aca5-e0cab9278014",
+        "66322523-9da5-4b4a-b851-7dda11f0bf6a",
+        "700833a4-91e2-416c-b697-871e7d2bfb87",
+        "aefd8419-3551-4c3e-862d-439248de37ba",
+        "af847da3-3e45-4b8a-a638-7244ced9de84",
+        "441671d8-7ea4-4ee5-a7ce-2c5ee3429291"
+      ],
+      "relevant": [
+        "14_Production_Checklist#14"
+      ]
+    },
+    {
+      "question_id": "hw-21",
+      "hit_rank": 1,
+      "retrieved": [
+        "10_安全設計#8",
+        "04_模組設計#27",
+        "04_模組設計#6",
+        "13_開發Roadmap#32",
+        "09_REST_API設計#5",
+        "09_REST_API設計#2",
+        "05_資料庫設計#7",
+        "01_系統架構總覽#2"
+      ],
+      "retrieved_chunk_ids": [
+        "20bf4ceb-cf0a-4e49-8623-4c9489fe8f9c",
+        "0327f2f8-633c-4b27-a164-aa9b6efff3c2",
+        "6af930b1-3e98-4af6-bfab-b0ada9bfb973",
+        "80bdf6e8-c1df-48cd-a4c9-fc0c6f494646",
+        "fd65023f-bf6b-464d-b1bd-1145e28ad035",
+        "fabb9379-2b2a-4f34-8662-8c6aa3250968",
+        "3517242e-f190-4123-9d19-21dcbd04c1a0",
+        "9f29d4cb-d678-4db0-8625-40990509c6d0"
+      ],
+      "relevant": [
+        "10_安全設計#8"
+      ]
+    },
+    {
+      "question_id": "hw-22",
+      "hit_rank": 1,
+      "retrieved": [
+        "12_NFR_維運與AI特有需求#7",
+        "12_NFR_維運與AI特有需求#8",
+        "11_NFR_效能與可用性#23",
+        "14_Production_Checklist#14",
+        "11_NFR_效能與可用性#28",
+        "00_專案總覽與文件索引#8",
+        "00_專案總覽與文件索引#2",
+        "00_專案總覽與文件索引#7"
+      ],
+      "retrieved_chunk_ids": [
+        "8a16805f-ab5e-4449-b87b-76c2d8e45029",
+        "d2987d6c-ff65-43e7-965b-84255bc322cb",
+        "78f8d2a7-b053-42a0-ae7b-f2d2911a87a2",
+        "44a0b367-8103-4bf7-821c-8614455d6b27",
+        "25b6fc1a-776f-4bf6-ba29-e9abe21b3b3a",
+        "9e60fec4-ec90-4b7f-8d09-454095c73570",
+        "b58b2bc3-d614-46f9-aa96-97c375678eb8",
+        "1e7dfa5b-0f68-4b46-aec7-576fb98c3041"
+      ],
+      "relevant": [
+        "12_NFR_維運與AI特有需求#7"
+      ]
+    },
+    {
+      "question_id": "hw-23",
+      "hit_rank": 1,
+      "retrieved": [
+        "08_ETL_Pipeline#7",
+        "08_ETL_Pipeline#1",
+        "08_ETL_Pipeline#4",
+        "08_ETL_Pipeline#8",
+        "13_開發Roadmap#22",
+        "06_AI_Pipeline#2",
+        "08_ETL_Pipeline#2",
+        "13_開發Roadmap#20"
+      ],
+      "retrieved_chunk_ids": [
+        "78d731fa-baba-4189-8726-51a0dc5afed6",
+        "d596729d-5c25-48e0-b390-5cb5f7c95c85",
+        "d244b103-15e6-49ec-bf35-757bcd138e7e",
+        "ff33935f-873f-48ab-b514-a07dca343c11",
+        "be00f3c1-dbc0-45f5-ad24-4551940655fc",
+        "6bafca39-177c-4270-b381-a923088cff08",
+        "8b922899-bc7c-461d-8b3b-a04fbebf1402",
+        "2e39f0e2-0dd6-4d3f-b441-6dcec105b602"
+      ],
+      "relevant": [
+        "08_ETL_Pipeline#7"
+      ]
+    },
+    {
+      "question_id": "hw-24",
+      "hit_rank": 1,
+      "retrieved": [
+        "07_Tool架構#6",
+        "04_模組設計#20",
+        "07_Tool架構#4",
+        "11_NFR_效能與可用性#26",
+        "08_ETL_Pipeline#8",
+        "04_模組設計#16",
+        "05_資料庫設計#13",
+        "05_資料庫設計#20"
+      ],
+      "retrieved_chunk_ids": [
+        "3862496d-9b12-4e68-995b-82d95cfa5756",
+        "69591eb6-5c55-48da-aeb1-fba902effa92",
+        "e4b0f81f-892f-4778-91af-f2049792f35e",
+        "4ae8410e-3725-46f1-b04e-dde1d9452ac6",
+        "ff33935f-873f-48ab-b514-a07dca343c11",
+        "1a902c9a-4450-4479-ab39-d91071cb7e83",
+        "4790d671-9657-4f5a-a9df-27fe1b6a2131",
+        "c1b855f0-3e3b-44ef-8138-e46c77667675"
+      ],
+      "relevant": [
+        "07_Tool架構#6"
+      ]
+    }
+  ]
+}

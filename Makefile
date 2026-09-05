@@ -509,6 +509,23 @@ DATASET ?= drcd
 MODE ?= vector
 EVAL_TENANT ?= lumina-eval
 
+# 切換 embedding 模型用的**覆蓋檔**。空值＝只用 ../.env（既有行為不變）。
+#
+# **疊加而不是取代**：`uv run` 吃得下多個 `--env-file` 且**後者勝**（2026-09-05 實測，
+# uv 0.12.0），所以覆蓋檔只要寫與 base 不同的那幾行。改成「每個模型一份完整副本」的話，
+# DB／Redis／金鑰那些設定會多出一份必須同步維護的複本，而它與 .env 漂開的那一天沒有
+# 任何徵兆。
+#
+# **一個陷阱**（同一次實測）：shell 裡已經 export 的變數**贏過** `--env-file`。於是
+#
+#     export AI_EMBEDDING_PROVIDER=gemini
+#     make eval-retrieval EVAL_ENV=../.env.eval-tei     # 安靜地跑成 gemini
+#
+# 報告記的是實際生效的值，因此兩個模型會產出模型欄位相同的兩份報告，而 compare 那一步
+# 會拒絕比較——錯誤攔得住，只是徵兆出現得比較晚。
+EVAL_ENV ?=
+EVAL_ENV_FLAG := $(if $(EVAL_ENV),--env-file $(EVAL_ENV),)
+
 # 產生評測語料與題組（決定性取樣）。**平時不需要跑**：產物是凍結快照且已進版控，
 # 重跑會讓所有既有的 baseline 失效（報告帶語料與題組的 sha256）。理由見
 # backend/evaluation/README.md 的「什麼時候該重新取樣」。
@@ -517,8 +534,8 @@ SOURCE ?= drcd
 eval-sample: ## 重新取樣評測資料（SOURCE=drcd|docs；會使既有 baseline 失效）
 	$(UV_RUN) python scripts/sample_corpus.py $(SOURCE) $(SAMPLE_ARGS)
 
-eval-retrieval: ## 離線檢索評測（DATASET=drcd|handwritten MODE=vector|hybrid|hybrid+rerank）
-	$(UV_RUN) python scripts/eval_retrieval.py --dataset $(DATASET) --mode $(MODE) \
+eval-retrieval: ## 離線檢索評測（DATASET／MODE；EVAL_ENV=覆蓋檔可切 embedding 模型）
+	$(UV_RUN) $(EVAL_ENV_FLAG) python scripts/eval_retrieval.py --dataset $(DATASET) --mode $(MODE) \
 		--tenant $(EVAL_TENANT) $(EVAL_ARGS)
 
 # 評測語料在開發庫裡常駐（2B-4 時 1,499 個 chunk 加同樣數量的向量），跑完沒有人清

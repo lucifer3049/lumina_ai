@@ -59,5 +59,15 @@ backend/.secrets/
 backend/evaluation/.cache/
 # 報告只提交 baseline：它是「改動之前的分數」，是之後每一次比較的對照組，必須進版控。
 # 其餘每次跑出來的報告是過程產物。
+#
+# **001-eval-rebaseline 起，模型子目錄底下的報告一律提交**（`reports/<model>/…`）。
+# 在此之前只放行 `baseline_*`，於是 2B-4 那張四模式對照表背後的六份報告**從來沒有
+# 進過版控**——數字只活在 evaluation/README.md 的表格裡，沒有人能重算、也沒有人能
+# 查「那一格是哪一次跑的」。跨模型比較要拿兩份報告相減，兩份都必須在 repo 裡。
+#
+# 三行的順序有意義：`reports/*` 先排除全部，`!…/*/` 才讓 git 進得去子目錄
+# （被排除的目錄底下的檔案，再怎麼 `!` 也救不回來），最後才放行裡面的 JSON。
 backend/evaluation/reports/*
 !backend/evaluation/reports/baseline_*.json
+!backend/evaluation/reports/*/
+!backend/evaluation/reports/*/*.json

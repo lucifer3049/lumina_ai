@@ -36,13 +36,14 @@ import dataclasses
 import json
 import math
 import os
+import re
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 # 直接執行時 sys.path[0] 是 scripts/，`import rag.metrics` 會失敗（pyproject 的
 # `pythonpath = ["."]` 只對 pytest 生效）。同 scripts/export_openapi.py。
@@ -78,6 +79,7 @@ from repositories.identity import TenantDirectoryRepository  # noqa: E402
 from repositories.knowledge import (  # noqa: E402
     ChunkRepository,
     DocumentRepository,
+    EmbeddingRepository,
     KnowledgeBaseRepository,
 )
 from services.knowledge.embedding import EmbeddingService, model_for  # noqa: E402
@@ -121,7 +123,12 @@ _MODE_OWNERS: dict[str, str] = {}
 # 分布。**純新增欄位**，所以 2B-0 的 baseline（version 1）仍然比得動——可比性看的是
 # 題組與 embedding 模型（`_require_comparable`），不是報告的版本。版本仍要動，因為
 # 讀報告的人要分得出「這一份沒有分數」是因為它是舊的，而不是因為那次跑掉了。
-SCHEMA_VERSION = 2
+#
+# **001-eval-rebaseline 起是 3**：`retrieval.embedding_dimensions` 成為必填。這一次
+# 與上一次不同——上一次是純新增，舊報告照樣比得動；這一次新欄位**進了可比性判斷**，
+# 因此 version 2 的報告在任何比較裡都會被拒絕。那是刻意的：它們是 1536 維量出來的，
+# 而 W1 之後的報告是 1024 維，兩者的 `embedding_model` 卻可以完全相同。
+SCHEMA_VERSION = 3
 # 報告要回答的是「前幾名裡有沒有」，而不同的 k 回答不同的問題：k=1 是「第一名就對」，
 # k=20 是「有沒有進候選集」。rerank 只能重排它拿得到的候選，所以 recall@20 掉下去時
 # 2B-4 再怎麼調都救不回來——那是 2B-1／2B-2 的責任範圍。
@@ -218,6 +225,76 @@ def require_real_providers(
         )
 
 
+# ── 維度 ────────────────────────────────────────────────────────
+
+# 探幾個 chunk 才算「這個 KB 沒有向量」。取 1 不夠：上一次跑到一半中斷時，第一個
+# chunk 可能剛好是沒算到的那個，而整份報告會因此拒絕產出。取全部則會把 1,200 條
+# 1024 維的向量整批撈進記憶體，只為了量其中一條的長度。
+_DIMENSION_PROBE_CHUNKS = 32
+
+
+class _EmbeddingSource(Protocol):
+    """`resolve_embedding_dimensions` 需要的最小介面。
+
+    宣告成 Protocol 而不是直接吃 `EmbeddingRepository`：維度解析本身是一段純粹的
+    「量一下這條向量多長」，不該為了測它而需要一個資料庫。
+    """
+
+    def first_vector_for_kb(
+        self, *, kb_id: Any, model: str, embedding_version: int
+    ) -> Sequence[float] | None: ...
+
+
+def resolve_embedding_dimensions(
+    *, embeddings: _EmbeddingSource, kb_id: Any, model: str, embedding_version: int
+) -> int:
+    """報告要記的維度＝**實際存下來的向量長度**，不是 `AI_EMBEDDING_DIMENSIONS`。
+
+    設定值是「要求的維度」。`VendorSpec.supports_dimensions` 為 False 的那幾家
+    （`tei`／`ollama`／`nvidia`）根本不會把 `dimensions` 送出去，於是設定填什麼都不影響
+    回來的向量——記設定值等於在報告裡放一個看起來精確、而可能整份都不成立的數字。
+
+    **查不到向量時不准猜**。那正是 W1 之後、reindex 之前的狀態：chunk 都在、文件狀態
+    是 `ready`，而向量是空的。此時退回設定值會產出一份標著 1024 維、實際上一筆向量都
+    沒查到的報告，而它的每一題都會是零分——讀報告的人會以為是檢索變差了。
+    """
+    vector = embeddings.first_vector_for_kb(
+        kb_id=kb_id, model=model, embedding_version=embedding_version
+    )
+    if not vector:
+        raise EvaluationError(
+            f"知識庫 {kb_id} 底下找不到 {model} v{embedding_version} 的向量，"
+            "量不出維度——先確認語料已嵌入（W1 的 migration 清空過向量）"
+        )
+    return len(vector)
+
+
+@dataclass(frozen=True, slots=True)
+class _EvalEmbeddings:
+    """把評測租戶的向量查詢包成 `_EmbeddingSource`。
+
+    存在的理由只有一個：`EmbeddingRepository` 沒有「給我這個 KB 的任一條向量」這個
+    方法，而**為了量一次維度去改 repository 層並不划算**——那一層是 API 與 worker
+    共用的，多一個只有離線腳本用得到的方法，下一個讀它的人得先確認沒有別人在用。
+    """
+
+    tenant_id: uuid.UUID
+
+    def first_vector_for_kb(
+        self, *, kb_id: Any, model: str, embedding_version: int
+    ) -> Sequence[float] | None:
+        with tenant_context(self.tenant_id), unit_of_work():
+            chunks = ChunkRepository().for_retrieval(kb_id=kb_id)[:_DIMENSION_PROBE_CHUNKS]
+            if not chunks:
+                return None
+            rows = EmbeddingRepository().for_chunks(
+                [chunk.id for chunk in chunks],
+                model=model,
+                embedding_version=embedding_version,
+            )
+        return list(rows[0].vector) if rows else None
+
+
 # ── 報告 ────────────────────────────────────────────────────────
 
 
@@ -237,6 +314,14 @@ def build_report(
     沒有的欄位）；沒給時由 outcomes 直接產生，測試與離線分析都用得上。
     """
     validate_mode(mode)
+    if "embedding_dimensions" not in retrieval:
+        # **模型名稱不足以認出一把尺**：W1 之後同一家雲端模型可以跑在 1024 維（它支援
+        # Matryoshka 截斷），而 W1 之前的報告是 1536 維的——兩份的 `embedding_model`
+        # 完全相同。少了維度，`_require_comparable` 會判定它們是同一把尺並放行相減。
+        #
+        # 擋在產出這一步而不是比較那一步：報告寫進磁碟就會被提交，等到有人拿它來比較
+        # 才發現少一欄時，「當時跑在幾維」已經補不回來了。
+        raise EvaluationError("報告必須記下 retrieval.embedding_dimensions（模型名稱認不出維度）")
     if mode.endswith("+rerank") and not {"rerank_provider", "rerank_model"} <= set(retrieval):
         # **漏填不是小事**：報告的比對門檻只看題組與 embedding 模型（`_require_comparable`
         # 的理由見那裡），所以一份沒記 reranker 的 rerank 報告照樣比得動——它的分數
@@ -522,6 +607,10 @@ def run_evaluation(
     with tenant_context(tenant_id), unit_of_work():
         kb = KnowledgeBaseRepository().get_by_id(kb_id)
     settings = get_app_settings()
+    # KB 的模型優先（06 §2.2：向量只在同一個模型的空間裡可比較），與檢索實際用的是
+    # 同一個解析（`services/knowledge/embedding.model_for`）。
+    embedding_model = model_for(str(kb.embedding_model) if kb else "")
+    embedding_version = int(kb.embedding_version) if kb else 1
     return build_report(
         mode=mode,
         # 題組決定名字，不是語料：`handwritten` 的語料檔叫 `lumina_docs`，兩者對得起來
@@ -532,9 +621,14 @@ def run_evaluation(
         outcomes=outcomes,
         retrieval={
             "embedding_provider": settings.ai_embedding_provider,
-            # KB 的模型優先（06 §2.2：向量只在同一個模型的空間裡可比較），與檢索實際
-            # 用的是同一個解析（`services/knowledge/embedding.model_for`）。
-            "embedding_model": model_for(str(kb.embedding_model) if kb else ""),
+            "embedding_model": embedding_model,
+            # **量出來的，不是設定的**（見 `resolve_embedding_dimensions`）。
+            "embedding_dimensions": resolve_embedding_dimensions(
+                embeddings=_EvalEmbeddings(tenant_id=tenant_id),
+                kb_id=kb_id,
+                model=embedding_model,
+                embedding_version=embedding_version,
+            ),
             "top_k": effective_top_k,
             # 報告要記**實際生效**的模式，不是 KB 設定的那個（見上方 `mode=mode`）。
             "mode": mode,
@@ -610,7 +704,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"評測中止：{exc}", file=sys.stderr)
         return 1
 
-    path = write_report(report, args.out or _default_out(args.mode, args.dataset))
+    # 模型取自報告本身而不是設定：報告記的是**實際生效**的那個，而環境變數與
+    # `--env-file` 的優先順序不是每個人都記得（切錯時檔名會跟著錯，於是覆蓋掉別人）。
+    model = str(report["retrieval"]["embedding_model"])
+    path = write_report(report, args.out or _default_out(args.mode, args.dataset, model))
     _print_summary(report, path)
 
     if args.baseline:
@@ -623,9 +720,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _default_out(mode: str, dataset: str) -> Path:
+def _model_slug(model: str) -> str:
+    """模型名 → 一段可以當目錄名的字串。
+
+    `BAAI/bge-m3` 帶著斜線，直接拼進路徑會多長出一層目錄——報告還是寫得出來，而下一個
+    人照著文件的路徑去找會找不到，然後以為那一次沒跑。`:`（`org/model:tag`）與空白
+    同理。**換成 `_` 而不是砍掉前綴**：`bge-m3` 丟掉了「哪一家的」，而那正是跨模型
+    比較要分辨的東西。
+    """
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", model).strip("_")
+    return slug or "unknown-model"
+
+
+def _default_out(mode: str, dataset: str, model: str) -> Path:
+    """`reports/<model>/<mode>_<dataset>.json`。
+
+    **模型必須進路徑**：舊的 `<mode>_<dataset>.json` 在兩個模型跑同一個模式時會互相
+    覆蓋，而覆蓋沒有任何徵兆——檔案還在、內容合法、時間戳是新的。001-eval-rebaseline
+    要在同一份題組上跑兩個模型各四個模式，這是一定會撞上的。
+    """
     # `+` 在檔名裡不好打也不好 glob；模式名裡唯一的特殊字元就它。
-    return REPORTS_ROOT / f"{mode.replace('+', '_')}_{dataset}.json"
+    return REPORTS_ROOT / _model_slug(model) / f"{mode.replace('+', '_')}_{dataset}.json"
 
 
 def _print_summary(report: Mapping[str, Any], path: Path) -> None:

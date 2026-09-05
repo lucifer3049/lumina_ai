@@ -36,9 +36,9 @@ description: "Task list for 001-eval-rebaseline"
 
 **Purpose**：讓「兩個模型各跑一次」這件事有可靠的切換方式。**不需要 GPU 或金鑰。**
 
-- [ ] T001 驗證 `uv run --env-file` 的覆蓋語意（research.md 的 R-06 待驗項）：多個 `--env-file` 誰贏、環境變數與檔案誰贏；驗法是跑 `--limit 1 --allow-mock` 看報告記下的 provider，結果回寫 `specs/001-eval-rebaseline/research.md` 的 R-06
-- [ ] T002 [P] 在 `Makefile` 新增 `EVAL_ENV ?= ../.env`，`eval-retrieval` 目標改用 `--env-file $(EVAL_ENV)`（contracts/cli.md §1）
-- [ ] T003 [P] 建立 `.env.eval-tei` 與 `.env.eval-gemini`（**不進版控**，內容須各自完整可用；`.env.eval-gemini` 不得留 `AI_EMBEDDING_BASE_URL`，否則雲端請求會打到本機容器）
+- [X] T001 驗證 `uv run --env-file` 的覆蓋語意（research.md 的 R-06 待驗項）：多個 `--env-file` 誰贏、環境變數與檔案誰贏；驗法是跑 `--limit 1 --allow-mock` 看報告記下的 provider，結果回寫 `specs/001-eval-rebaseline/research.md` 的 R-06
+- [X] T002 [P] 在 `Makefile` 新增 `EVAL_ENV ?= ../.env`，`eval-retrieval` 目標改用 `--env-file $(EVAL_ENV)`（contracts/cli.md §1）
+- [X] T003 [P] 建立 `.env.eval-tei` 與 `.env.eval-gemini`（**不進版控**，內容須各自完整可用；`.env.eval-gemini` 不得留 `AI_EMBEDDING_BASE_URL`，否則雲端請求會打到本機容器）
 
 **Checkpoint**：兩份 env 檔切得動，且切錯時看得出來。
 
@@ -52,17 +52,17 @@ description: "Task list for 001-eval-rebaseline"
 
 ### Tests（先寫，必須先紅）⚠️
 
-- [ ] T004 [P] unit 測試：`build_report` 產出的報告必含 `retrieval.embedding_dimensions`，於 `backend/tests/unit/test_eval_runner.py`（FR-006）
-- [ ] T005 [P] unit 測試：`SCHEMA_VERSION` 為 3，且既有 version 2 報告仍讀得進來，於 `backend/tests/unit/test_eval_runner.py`（contracts/report.md §版本相容）
-- [ ] T006 [P] unit 測試：預設輸出路徑為 `reports/<model_slug>/<mode>_<dataset>.json`，兩個模型跑同一模式不會互相覆蓋，於 `backend/tests/unit/test_eval_runner.py`（FR-015）
+- [X] T004 [P] unit 測試：`build_report` 產出的報告必含 `retrieval.embedding_dimensions`，於 `backend/tests/unit/test_eval_runner.py`（FR-006）
+- [X] T005 [P] unit 測試：`SCHEMA_VERSION` 為 3，且既有 version 2 報告仍讀得進來，於 `backend/tests/unit/test_eval_runner.py`（contracts/report.md §版本相容）
+- [X] T006 [P] unit 測試：預設輸出路徑為 `reports/<model_slug>/<mode>_<dataset>.json`，兩個模型跑同一模式不會互相覆蓋，於 `backend/tests/unit/test_eval_runner.py`（FR-015）
 
 ### Implementation
 
-- [ ] T007 在 `backend/scripts/eval_retrieval.py::run_evaluation` 取**實際存下來的向量長度**（經 `EmbeddingRepository`，非 `settings.ai_embedding_dimensions`——理由見 research.md R-03），傳入 `build_report`
-- [ ] T008 `backend/scripts/eval_retrieval.py::build_report` 寫入 `retrieval.embedding_dimensions`，並把 `SCHEMA_VERSION` 由 2 改為 3
-- [ ] T009 `backend/scripts/eval_retrieval.py::_default_out` 改為 `REPORTS_ROOT / <model_slug> / f"{mode}_{dataset}.json"`（`+` 仍換成 `_`；model slug 需可安全當目錄名）
-- [ ] T010 將既有 8 份 1536 維報告移入 `backend/evaluation/reports/legacy-gemini-1536/`（**不刪除**——它們是 2B 系列結論的證據，FR-016）
-- [ ] T011 `.gitignore` 放行 `backend/evaluation/reports/` 下的模型子目錄與 `legacy-gemini-1536/`（既有規則只放行 `baseline_*.json`，因此 2B-4 那張四模式表背後的 6 份報告從來沒進過版控）
+- [X] T007 在 `backend/scripts/eval_retrieval.py::run_evaluation` 取**實際存下來的向量長度**（經 `EmbeddingRepository`，非 `settings.ai_embedding_dimensions`——理由見 research.md R-03），傳入 `build_report`
+- [X] T008 `backend/scripts/eval_retrieval.py::build_report` 寫入 `retrieval.embedding_dimensions`，並把 `SCHEMA_VERSION` 由 2 改為 3
+- [X] T009 `backend/scripts/eval_retrieval.py::_default_out` 改為 `REPORTS_ROOT / <model_slug> / f"{mode}_{dataset}.json"`（`+` 仍換成 `_`；model slug 需可安全當目錄名）
+- [X] T010 將既有 8 份 1536 維報告移入 `backend/evaluation/reports/legacy-gemini-1536/`（**不刪除**——它們是 2B 系列結論的證據，FR-016）
+- [X] T011 `.gitignore` 放行 `backend/evaluation/reports/` 下的模型子目錄與 `legacy-gemini-1536/`（既有規則只放行 `baseline_*.json`，因此 2B-4 那張四模式表背後的 6 份報告從來沒進過版控）
 
 **Checkpoint**：新報告帶維度、落在帶模型的路徑上；舊報告有了明確的歷史地位。
 
@@ -101,7 +101,7 @@ description: "Task list for 001-eval-rebaseline"
 
 **Independent Test**：不需要 GPU、金鑰或資料庫，載入題組驗結構即可。
 
-**⚠ 本 Phase 有一步 AI 做不完**：T029 需要人類逐題改寫（FR-002）。
+**本 Phase 已無人類瓶頸**（2026-09-05 第二次裁決：T029 改為 AI 改寫定稿）。代價是題組上沒有人類把關點，見 spec 的 FR-002。
 
 ### Tests（先寫，必須先紅）⚠️
 
@@ -114,7 +114,7 @@ description: "Task list for 001-eval-rebaseline"
 ### Implementation
 
 - [ ] T028 [US3] AI 起草 26 題（`hw-25`…`hw-50`），**優先補目前一題都沒有的四份文件**（`00_專案總覽`、`01_系統架構總覽`、`04_模組設計`、`13_開發Roadmap`——實查：語料涵蓋 16 份文件而既有 24 題只碰了 12 份）；起草的問句**不得沿用正解段落原文字詞作為主要檢索線索**（FR-002a）
-- [ ] T029 [US3] **人類逐題改寫與確認**（FR-002）——AI 不得代勞，這是本 Feature 唯一的人類瓶頸
+- [ ] T029 [US3] AI 逐題改寫定稿（FR-002，2026-09-05 人類第二次裁決改為不需人類確認）。**改寫時逐題自檢 FR-002a**：問句的主要檢索線索不得是正解段落的原文字詞——這是題組上唯一剩下的把關，且是 AI 檢查自己
 - [ ] T030 [US3] 將定稿的 26 題寫入 `backend/evaluation/goldenset/handwritten.jsonl`（續編 id、`source` 用新值、`language` 沿用既有白名單），**既有 24 題一字不動**
 - [ ] T031 [US3] 更新 `backend/tests/unit/test_golden_set.py` 的 `_SOURCES` 與題數下限
 
@@ -244,7 +244,7 @@ make test-file FILE=tests/unit/test_eval_runner.py   # 預期：七條全紅
 
 1. Phase 1 + Phase 2 → 人類 review → 人類 commit
 2. Phase 3（US2）→ Verification 四項 → 人類 review → 人類 commit
-3. Phase 4（US3）→ **卡在 T029 的人類逐題改寫** → review → commit
+3. Phase 4（US3）→ review → commit
 4. Phase 5（US4）→ review → commit
 5. Phase 6（US1）→ 16 次實測 → 判定 → 行動 → 文件 → review → commit
 6. Phase 7 收尾
@@ -253,7 +253,7 @@ make test-file FILE=tests/unit/test_eval_runner.py   # 預期：七條全紅
 
 ### 這個 Feature 的三個現實限制
 
-1. **T029 卡人類**：26 題的逐題改寫，AI 不得代勞（FR-002）
+1. **題組上沒有人類把關點**（FR-002 第二次放寬）：起草與改寫都由 AI 做，2B-0 的偏差顧慮只剩自我約束擋著
 2. **Phase 6 卡硬體與金鑰**：兩個 GPU 容器 + 雲端金鑰，且 16 次要在同一台機器跑完
 3. **Phase 4 之後會有一條紅**：baseline 指紋守門，要等 Phase 6 才轉綠——**不要修它**
 

@@ -94,6 +94,10 @@ def _report(runner: ModuleType, tiny_dataset: tuple[Any, Any], **overrides: Any)
         "retrieval": {
             "embedding_provider": "gemini",
             "embedding_model": "text-embedding-004",
+            # schema 3 起必填（001-eval-rebaseline FR-006）。放進共用夾具而不是逐條
+            # 測試自己補：這幾十條測試看的都不是維度，缺了它只會讓它們全部紅在同一個
+            # 與自己無關的理由上。要驗「缺了會怎樣」的那幾條自己覆寫整個 retrieval。
+            "embedding_dimensions": 1024,
             "top_k": 20,
             "params": {"min_score_ratio": 0.0},
         },
@@ -139,7 +143,10 @@ class TestReportShape:
         # 2B-5 升 2：逐題的 `scores` 與整份的 `rerank_scores` 是**新增**欄位，舊報告
         # 仍然比得動（`_require_comparable` 不看版本），但讀報告的人要分得出「這一份
         # 沒有分數」是因為它是舊的，而不是因為那次跑掉了。
-        assert report["schema_version"] == 2
+        #
+        # 001-eval-rebaseline 升 3：`embedding_dimensions` 必填，且**進了可比性判斷**
+        # ——這一次與上一次不同，version 2 的報告從此比不動（見 `TestSchemaVersion`）。
+        assert report["schema_version"] == 3
         assert report["mode"] == "vector"
         assert set(report["dataset"]) >= {
             "name",
@@ -148,7 +155,13 @@ class TestReportShape:
             "question_count",
             "passage_count",
         }
-        assert set(report["retrieval"]) >= {"embedding_provider", "embedding_model", "top_k"}
+        assert set(report["retrieval"]) >= {
+            "embedding_provider",
+            "embedding_model",
+            # 模型名稱認不出維度：同一家雲端模型在 W1 前後跑的是 1536 與 1024。
+            "embedding_dimensions",
+            "top_k",
+        }
 
     def test_the_dataset_fingerprints_come_from_the_files(
         self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
@@ -284,6 +297,7 @@ class TestRerankAttribution:
         retrieval = {
             "embedding_provider": "gemini",
             "embedding_model": "text-embedding-004",
+            "embedding_dimensions": 1024,
             "top_k": 20,
             "params": {"min_score_ratio": 0.0},
         }
@@ -434,6 +448,7 @@ class TestCompare:
             retrieval={
                 "embedding_provider": "openai",
                 "embedding_model": "text-embedding-3-small",
+                "embedding_dimensions": 1024,
                 "top_k": 20,
                 "params": {},
             },
@@ -462,6 +477,7 @@ class TestRerankReportsRemainComparable:
             retrieval={
                 "embedding_provider": "gemini",
                 "embedding_model": "text-embedding-004",
+                "embedding_dimensions": 1024,
                 "top_k": 20,
                 "params": {"min_score_ratio": 0.0},
                 "rerank_provider": "tei",
@@ -483,6 +499,7 @@ class TestRerankReportsRemainComparable:
             retrieval={
                 "embedding_provider": "gemini",
                 "embedding_model": "text-embedding-005",
+                "embedding_dimensions": 1024,
                 "top_k": 20,
                 "params": {"min_score_ratio": 0.0},
             },
@@ -574,3 +591,167 @@ class TestItStaysOutOfTheAutomatedSuites:
             assert "eval-retrieval" not in path.read_text(encoding="utf-8"), (
                 f"{path.name} 會打真 API——CI 會開始花錢，也會因為別人的服務中斷而紅"
             )
+
+
+# ── 001-eval-rebaseline Phase 2：報告要記下實際生效的維度 ────────────
+
+
+class TestEmbeddingDimensions:
+    """**模型名稱不足以認出一把尺**（FR-006）。
+
+    W1 之後同一家雲端模型可以跑在 1024 維（它支援 Matryoshka 截斷），而 W1 之前的
+    報告是 1536 維的——兩者的 `embedding_model` 完全相同。少了維度這一欄，那兩份
+    報告會被判定為同一把尺、順利相減，而它們量的不是同一件事。
+
+    **這種錯誤不會有錯誤訊息**：兩個浮點數相減永遠成功，差值也永遠「看起來像個結論」。
+    """
+
+    def test_a_report_records_the_dimensions_it_was_given(
+        self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
+    ) -> None:
+        report = _report(runner, tiny_dataset)
+
+        assert report["retrieval"]["embedding_dimensions"] == 1024
+
+    def test_a_report_without_embedding_dimensions_is_refused(
+        self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
+    ) -> None:
+        """漏填要當場炸，不能產出一份「看起來正常但少一欄」的報告。
+
+        形式沿用 rerank 那條既有規則（`rerank_provider`／`rerank_model` 漏填即拒絕
+        產出）：報告一旦寫進磁碟就會被提交、被下一次比較讀取，那時再發現少一欄，
+        補不回來的是「當時到底跑在幾維」這個事實。
+        """
+        with pytest.raises(runner.EvaluationError) as excinfo:
+            _report(
+                runner,
+                tiny_dataset,
+                retrieval={
+                    "embedding_provider": "gemini",
+                    "embedding_model": "text-embedding-004",
+                    "top_k": 20,
+                    "params": {"min_score_ratio": 0.0},
+                },
+            )
+
+        assert "embedding_dimensions" in str(excinfo.value)
+
+    def test_the_dimensions_come_from_a_stored_vector_not_from_settings(
+        self, runner: ModuleType
+    ) -> None:
+        """**設定值是「要求的維度」，不是「拿到的維度」**（research.md R-03）。
+
+        `VendorSpec.supports_dimensions` 為 False 的那幾家（tei／ollama／nvidia）根本
+        不會把 `dimensions` 送出去，於是設定填什麼都不影響回來的向量。報告要記的是
+        量到的東西——記設定值等於在報告裡放一個看起來精確、而可能整份都不成立的數字。
+        """
+        resolve = getattr(runner, "resolve_embedding_dimensions", None)
+        assert resolve is not None, (
+            "缺 resolve_embedding_dimensions——維度必須由實際存下來的向量長度決定"
+        )
+
+        class _FakeEmbeddings:
+            """回一個長度 1024 的向量；設定那邊會故意講 1536。"""
+
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            def first_vector_for_kb(
+                self, *, kb_id: Any, model: str, embedding_version: int
+            ) -> list[float]:
+                self.calls.append(
+                    {"kb_id": kb_id, "model": model, "embedding_version": embedding_version}
+                )
+                return [0.0] * 1024
+
+        embeddings = _FakeEmbeddings()
+        dimensions = resolve(
+            embeddings=embeddings,
+            kb_id="kb-1",
+            model="BAAI/bge-m3",
+            embedding_version=2,
+        )
+
+        assert dimensions == 1024
+        assert embeddings.calls, "沒有去問實際的向量——那就是在讀設定值"
+
+    def test_it_refuses_when_there_is_no_vector_to_measure(self, runner: ModuleType) -> None:
+        """一個向量都沒有時**不准猜**。
+
+        那正是 W1 之後、reindex 之前的狀態：chunk 都在、文件狀態是 ready、而向量是空的。
+        此時退回設定值會產出一份標著 1024 維、其實一筆向量都沒查到的報告——而它的每一題
+        都會是零分，讀報告的人會以為是檢索變差了。
+        """
+        resolve = getattr(runner, "resolve_embedding_dimensions", None)
+        assert resolve is not None, "缺 resolve_embedding_dimensions"
+
+        class _Empty:
+            def first_vector_for_kb(
+                self, *, kb_id: Any, model: str, embedding_version: int
+            ) -> list[float] | None:
+                return None
+
+        with pytest.raises(runner.EvaluationError):
+            resolve(embeddings=_Empty(), kb_id="kb-1", model="m", embedding_version=1)
+
+
+class TestSchemaVersion:
+    """新增必填欄位就要升版——讀報告的人要分得出「這份沒有維度」是舊的還是跑掉了。"""
+
+    def test_the_schema_version_is_three(self, runner: ModuleType) -> None:
+        assert runner.SCHEMA_VERSION == 3
+
+    def test_a_new_report_carries_the_new_version(
+        self, runner: ModuleType, tiny_dataset: tuple[Any, Any]
+    ) -> None:
+        assert _report(runner, tiny_dataset)["schema_version"] == 3
+
+    def test_a_version_two_report_still_parses(self, runner: ModuleType) -> None:
+        """舊報告**讀得進來**（它們是 2B 系列結論的證據，不刪）。
+
+        「讀得進來」與「比得動」是兩件事：少了維度欄位的報告在任何比較裡都會被拒絕
+        （見 `TestCrossModelComparison`），但那是比較那一層的責任，不是解析這一層的。
+        """
+        legacy = {
+            "schema_version": 2,
+            "mode": "vector",
+            "dataset": {"name": "handwritten", "goldenset_sha256": "a", "corpus_sha256": "b"},
+            "retrieval": {"embedding_provider": "gemini", "embedding_model": "gemini-embedding-2"},
+            "metrics": {"recall@1": 0.4375, "mrr": 0.6046},
+        }
+
+        assert runner._metrics(legacy)["recall@1"] == 0.4375
+
+
+class TestReportPathCarriesTheModel:
+    """**兩個模型跑同一個模式，不准落在同一個檔名上**（FR-015）。
+
+    現行檔名是 `<mode>_<dataset>.json`——地端跑完 `vector/drcd`、雲端再跑一次，
+    後者直接覆蓋前者。而覆蓋沒有任何徵兆：檔案還在、內容合法、時間戳是新的。
+    """
+
+    def test_the_default_path_separates_the_two_models(self, runner: ModuleType) -> None:
+        tei = runner._default_out("vector", "drcd", "BAAI/bge-m3")
+        gemini = runner._default_out("vector", "drcd", "gemini-embedding-2")
+
+        assert tei != gemini
+
+    def test_the_path_names_the_model_the_mode_and_the_dataset(self, runner: ModuleType) -> None:
+        path = runner._default_out("hybrid+rerank", "handwritten", "BAAI/bge-m3")
+        text = str(path)
+
+        assert "bge-m3" in text
+        assert "hybrid_rerank" in text, "`+` 在檔名裡不好打也不好 glob（既有慣例）"
+        assert "handwritten" in text
+
+    def test_a_model_name_with_a_slash_does_not_become_a_nested_directory(
+        self, runner: ModuleType
+    ) -> None:
+        """`BAAI/bge-m3` 帶著斜線。**直接拼進路徑會多長出一層目錄**——報告還是寫得出來，
+        而下一個人照著文件的路徑去找會找不到，並且以為那一次沒跑。"""
+        path = runner._default_out("vector", "drcd", "BAAI/bge-m3")
+        reports_root = Path(runner.REPORTS_ROOT).resolve()
+
+        assert path.parent.parent == reports_root, (
+            f"預期 reports/<model>/<file>，實得 {path.relative_to(reports_root)}"
+        )

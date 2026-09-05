@@ -103,6 +103,44 @@ class TestPartitioning:
         months_ahead = row[0] - (now.year * 12 + now.month)
         assert months_ahead >= MIN_MONTHS_AHEAD, f"未來分區只剩 {months_ahead} 個月，該建下一批了"
 
+    def test_last_month_is_covered_too(self) -> None:
+        """**這張表收得下過去日期的列**，所以分區不能只往未來建。
+
+        `UsageLog.created_at` 刻意不用 `auto_now_add`（見 `apps/platform/models.py` 的
+        註解）：append-only 的表事後調不了時間，值只能在 INSERT 當下給——回填舊資料與
+        測試都需要。而分區只從「migration 執行當月」往後建，於是**剛建好的資料庫收不下
+        上個月的列**。
+
+        症狀是日曆觸發的：任何寫入 N 天前的動作，在每個月的頭 N 天都會撞上
+        `no partition of relation "platform_usagelog" found for row`。2026-09-05
+        就是這樣紅的（`test_analytics_endpoints` 的 `days_ago=5` 落在 08-31），而
+        **前一天跑同一份程式碼是綠的**——最容易被當成 flake 忽略掉的那種紅。
+
+        只往回一個月：時鐘偏移、跨午夜才落地的 task、以及測試的回填都在這個範圍內。
+        更早的歷史匯入是另一回事，那種操作該自己備妥分區。
+        """
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT min(
+                    (regexp_match(c.relname, '(\\d{4})_(\\d{2})$'))[1]::int * 12
+                    + (regexp_match(c.relname, '(\\d{4})_(\\d{2})$'))[2]::int
+                )
+                FROM pg_inherits i
+                JOIN pg_class c ON c.oid = i.inhrelid
+                WHERE i.inhparent = 'platform_usagelog'::regclass
+                """
+            )
+            row = cursor.fetchone()
+
+        assert row is not None and row[0] is not None, "一個分區都沒有"
+        now = datetime.now(UTC)
+        months_back = (now.year * 12 + now.month) - row[0]
+        assert months_back >= 1, (
+            f"最早的分區就是當月（往回 {months_back} 個月）——"
+            "每個月的頭幾天，任何回填過去日期的寫入都會失敗"
+        )
+
 
 class TestIndexes:
     def test_the_design_document_indexes_exist(self) -> None:

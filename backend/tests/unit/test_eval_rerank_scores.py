@@ -79,6 +79,8 @@ def _rerank_report(
         retrieval={
             "embedding_provider": "gemini",
             "embedding_model": "text-embedding-004",
+            # schema 3 起必填（001-eval-rebaseline FR-006）：模型名稱認不出維度。
+            "embedding_dimensions": 1024,
             "top_k": 20,
             "rerank_provider": "tei",
             "rerank_model": "BAAI/bge-reranker-v2-m3",
@@ -194,6 +196,7 @@ class TestDistribution:
             retrieval={
                 "embedding_provider": "gemini",
                 "embedding_model": "text-embedding-004",
+                "embedding_dimensions": 1024,
                 "top_k": 20,
             },
         )
@@ -207,10 +210,14 @@ class TestCompatibility:
     ) -> None:
         """報告是提交進 repo 的契約，形狀變了就要說。
 
-        **只是新增欄位**，所以舊報告仍然讀得動——但讀報告的人要看得出「這一份為什麼
-        沒有分數」是因為它是舊的，而不是因為那次跑掉了。
+        2B-5（版本 2）**只是新增欄位**，舊報告仍然讀得動也比得動——讀報告的人只要看得
+        出「這一份為什麼沒有分數」是因為它是舊的，而不是因為那次跑掉了。
+
+        001-eval-rebaseline（版本 3）**不同**：新欄位 `embedding_dimensions` 進了可比性
+        判斷，所以版本 2 以前的報告從此比不動。那是刻意的——它們是 1536 維量出來的，
+        而 W1 之後是 1024 維，兩者的 `embedding_model` 卻可以一模一樣。
         """
-        assert _rerank_report(runner, tiny_dataset, [_row()])["schema_version"] == 2
+        assert _rerank_report(runner, tiny_dataset, [_row()])["schema_version"] == 3
 
     def test_the_2b0_baselines_are_still_comparable(self, runner: ModuleType) -> None:
         """2B-0 的 baseline 是 schema_version 1，而它是**所有比較的基準**——不能因為

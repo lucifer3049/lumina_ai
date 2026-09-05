@@ -95,9 +95,10 @@ GPU、金鑰與 20 分鐘。**只比不跑的入口讓 US2 完全不必碰外部
 
 ## R-06 兩個模型怎麼切換才不會切錯
 
-**Decision**：Makefile 新增 `EVAL_ENV ?= ../.env`，評測目標改用 `--env-file $(EVAL_ENV)`；
-每個模型一份未進版控的 env 檔（`.env.eval-tei`／`.env.eval-gemini`），`.env.example`
-補說明。
+**Decision**：Makefile 新增 `EVAL_ENV`（預設空），評測目標在既有的 `--env-file ../.env`
+之後**再疊一層** `--env-file $(EVAL_ENV)`；每個模型一份未進版控的覆蓋檔
+（`.env.eval-tei`／`.env.eval-gemini`，只寫差異的幾行），`.env.example` 補說明。
+**疊加而非取代**是 T001 實測之後的定案，見下方「已驗」。
 
 **Rationale**：`UV_RUN := uv run --env-file ../.env`——uv 的 `--env-file` 對**已存在的
 環境變數**的覆蓋語意需要實測確認（見下方待驗），因此「在命令列前面塞 `AI_EMBEDDING_PROVIDER=tei`」
@@ -107,8 +108,20 @@ GPU、金鑰與 20 分鐘。**只比不跑的入口讓 US2 完全不必碰外部
 `embedding_model` 都來自實際生效的設定，加上 R-03 的實際維度，於是「切換沒生效」的症狀
 是**兩份報告的模型欄位相同**——`_require_comparable` 會當場拒絕比較，而不是安靜地相減。
 
-**待驗（實作時第一步）**：`uv run --env-file A --env-file B` 的優先順序，以及環境變數與
-`--env-file` 誰贏。驗法：跑一次 `--limit 1 --allow-mock` 看報告記下的 provider。
+**已驗（2026-09-05，T001，uv 0.12.0）**：
+
+| 問題 | 實測結果 |
+|------|----------|
+| 多個 `--env-file` 誰贏 | **最後一個贏** |
+| 既存環境變數 vs `--env-file` | **環境變數贏**（檔案蓋不掉已 export 的變數） |
+
+**因此定案改為疊加而非兩份完整副本**：`--env-file ../.env --env-file <覆蓋檔>`，覆蓋檔
+只寫與 base 不同的那幾行。原本的「兩份各自完整」會多出一份必須同步維護的 DB／Redis／
+金鑰設定，而漂掉的那天沒有徵兆。
+
+**第二點是個陷阱，要寫進文件**：shell 裡若已 `export AI_EMBEDDING_PROVIDER`，覆蓋檔
+**蓋不掉它**——評測會安靜地用錯模型。安全網仍然成立（報告記的是實際生效的值，於是兩份
+報告的模型欄位會相同，`_require_comparable` 當場拒絕比較），但徵兆出現得比較晚。
 
 ---
 

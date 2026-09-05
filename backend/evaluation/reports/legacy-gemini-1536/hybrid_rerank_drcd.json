@@ -1,0 +1,3286 @@
+{
+  "schema_version": 1,
+  "mode": "hybrid+rerank",
+  "created_at": "2026-08-23T16:40:01.456369+00:00",
+  "dataset": {
+    "name": "drcd",
+    "goldenset_sha256": "4f43a71aa71b913cce75f38b06d81a8007538567ef6f6fb2faff3e6233552134",
+    "corpus_sha256": "625cb86959a542e2ad703564a1e2b9ef89371e43b74ebc1504ae37805793af30",
+    "question_count": 120,
+    "passage_count": 1200
+  },
+  "retrieval": {
+    "embedding_provider": "gemini",
+    "embedding_model": "gemini-embedding-2",
+    "top_k": 40,
+    "mode": "hybrid+rerank",
+    "params": {
+      "top_k": 40,
+      "fts_top_k": 40,
+      "rrf_k": 60,
+      "hybrid_candidates": 24,
+      "retrieval_mode": "vector",
+      "rerank_threshold": 0.0,
+      "context_chunks": 8,
+      "context_token_budget": 4500,
+      "min_score_ratio": 0.0,
+      "query_history_turns": 1
+    },
+    "rerank_provider": "tei",
+    "rerank_model": "BAAI/bge-reranker-v2-m3"
+  },
+  "metrics": {
+    "question_count": 120.0,
+    "mrr": 0.9944444444444444,
+    "recall@1": 0.9916666666666667,
+    "recall@5": 1.0,
+    "recall@10": 1.0,
+    "recall@20": 1.0,
+    "hit@1": 0.9916666666666667,
+    "hit@5": 1.0,
+    "hit@10": 1.0,
+    "hit@20": 1.0
+  },
+  "per_question": [
+    {
+      "question_id": "drcd-1149-12-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1149-12",
+        "drcd-4962-9",
+        "drcd-3229-2",
+        "drcd-1149-13",
+        "drcd-4962-8",
+        "drcd-6171-8",
+        "drcd-6261-2",
+        "drcd-1149-11"
+      ],
+      "retrieved_chunk_ids": [
+        "862a4fc0-f947-4c3c-bbf6-3040bfe0f6e7",
+        "9c55afb0-cd2f-4408-ad89-cb477d670dc7",
+        "8af2410f-f260-411d-b8ca-ddc5a60742df",
+        "352479ac-028c-403f-914e-76b02e07bafd",
+        "558a8eb0-c44c-473f-b0c3-da42864ad349",
+        "43607e90-dde1-49f5-96a1-b5ae034f067e",
+        "e1a9b4bd-63b9-41d7-b878-e774242f8e51",
+        "bf7b1002-5479-4bad-8d76-b7fafd98de26"
+      ],
+      "relevant": [
+        "drcd-1149-12"
+      ]
+    },
+    {
+      "question_id": "drcd-1149-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1149-6",
+        "drcd-1149-1",
+        "drcd-1149-11",
+        "drcd-1149-5",
+        "drcd-6088-3",
+        "drcd-6292-64",
+        "drcd-6088-2",
+        "drcd-1177-34"
+      ],
+      "retrieved_chunk_ids": [
+        "b15bb3c1-a0b9-4abb-960f-8f2f414ad0ef",
+        "3c85c57c-3848-4a9a-9164-a5dd52bc4593",
+        "bf7b1002-5479-4bad-8d76-b7fafd98de26",
+        "5b5fcc56-8c96-44d3-8906-5441fecf06c0",
+        "8214ba37-b38e-4027-993e-32060a3364d8",
+        "e47f7234-7280-4b0b-a807-629b4e57266e",
+        "acede388-128d-41aa-94e0-b495ce362738",
+        "2197cbc4-4695-4f9b-a8b6-caeae6bdce1d"
+      ],
+      "relevant": [
+        "drcd-1149-6"
+      ]
+    },
+    {
+      "question_id": "drcd-1150-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1150-2",
+        "drcd-1150-3",
+        "drcd-6135-4",
+        "drcd-3265-2",
+        "drcd-3579-7",
+        "drcd-4996-1",
+        "drcd-5394-2",
+        "drcd-5780-21"
+      ],
+      "retrieved_chunk_ids": [
+        "bed2fd08-7c9a-42b0-9462-d9ad600be2fa",
+        "ffc1bc50-fa62-49e5-80a0-4e87f19e7d79",
+        "0eee1bfc-4611-4e40-a552-eec49334c98d",
+        "40044594-e006-460f-be10-08e3acc50133",
+        "dae98430-d0e7-4d83-aab5-bd2dff412a71",
+        "44e46e9c-19c6-415b-bbf6-3c4595332e10",
+        "620f61d3-5f6c-4a1f-ba78-7756aeaeea8d",
+        "b3ae5514-4086-4326-941e-5fa87811b460"
+      ],
+      "relevant": [
+        "drcd-1150-2"
+      ]
+    },
+    {
+      "question_id": "drcd-1150-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1150-3",
+        "drcd-1150-2",
+        "drcd-3338-1",
+        "drcd-1181-2",
+        "drcd-6171-51",
+        "drcd-5780-21",
+        "drcd-3356-1",
+        "drcd-6078-2"
+      ],
+      "retrieved_chunk_ids": [
+        "ffc1bc50-fa62-49e5-80a0-4e87f19e7d79",
+        "bed2fd08-7c9a-42b0-9462-d9ad600be2fa",
+        "95fd669d-a581-40f4-b34c-a1a854ed795b",
+        "66a4f080-32f4-48a7-afb7-e2c7d2da02c9",
+        "25382fbe-8c35-44e5-b095-2e493881e8b6",
+        "b3ae5514-4086-4326-941e-5fa87811b460",
+        "ad5d3d45-226d-463a-9a8c-5be7370f234a",
+        "217b2652-30c2-4403-a7f9-d8777829a2a7"
+      ],
+      "relevant": [
+        "drcd-1150-3"
+      ]
+    },
+    {
+      "question_id": "drcd-1152-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1152-2",
+        "drcd-6110-2",
+        "drcd-6110-1",
+        "drcd-1177-34",
+        "drcd-4948-5",
+        "drcd-6225-2",
+        "drcd-5750-18",
+        "drcd-3509-1"
+      ],
+      "retrieved_chunk_ids": [
+        "96c8626f-37de-4b91-af32-41eea5d8a00b",
+        "d16fcec5-465e-481c-b5ae-8b5b4803cdef",
+        "75c2622a-128a-44c6-867a-2fb8a419700c",
+        "2197cbc4-4695-4f9b-a8b6-caeae6bdce1d",
+        "32556a1b-2506-41bc-ae02-ed623e120568",
+        "b8eef2e1-5760-409c-b496-96b8122a00fe",
+        "22e80414-5321-48a4-a2b2-ea0e372645f8",
+        "04489c79-1fbc-490a-ab88-20ccfcc2244e"
+      ],
+      "relevant": [
+        "drcd-1152-2"
+      ]
+    },
+    {
+      "question_id": "drcd-1154-8-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1154-8",
+        "drcd-3269-2",
+        "drcd-6295-1",
+        "drcd-6268-3",
+        "drcd-6040-2",
+        "drcd-5635-14",
+        "drcd-4885-5",
+        "drcd-4911-2"
+      ],
+      "retrieved_chunk_ids": [
+        "ffbb534f-b19a-4ff7-9498-37fb2cb17ec9",
+        "31dac486-bf00-4172-8343-a1ee37eb4eee",
+        "c417c6c4-be9b-472b-a19d-c2256a6671de",
+        "eac8fdd8-fb35-4bb9-aa3b-169cb184bb6c",
+        "01a13bae-0318-42c8-b307-e4a792b7de73",
+        "33719d3e-c4b2-496f-bc93-dee8cb7f8664",
+        "c6e75513-efbc-4d09-a544-0628c2d47456",
+        "8d3590a1-d670-4735-a507-481d4feb5f53"
+      ],
+      "relevant": [
+        "drcd-1154-8"
+      ]
+    },
+    {
+      "question_id": "drcd-1155-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1155-6",
+        "drcd-2480-1",
+        "drcd-3284-2",
+        "drcd-5600-2",
+        "drcd-6269-1",
+        "drcd-5600-3",
+        "drcd-1193-13",
+        "drcd-6007-2"
+      ],
+      "retrieved_chunk_ids": [
+        "2005c188-ba22-4c04-a934-9098f2daacb8",
+        "df0b9cfc-d221-4efe-9aa2-64ebc1cf4df8",
+        "af8ae9ed-dfd3-49d5-a10f-9431cef41e73",
+        "102942cf-7af7-4d13-9038-f2d289fe975b",
+        "4337b84a-3633-442a-a33f-a63c62f3ffb1",
+        "8e4c3d67-91ce-49bc-8043-dfe5d525b0b4",
+        "878d571c-abfd-478e-959a-ba478794d6de",
+        "46005fe1-056e-47e1-a3ff-50aba640a7c0"
+      ],
+      "relevant": [
+        "drcd-1155-6"
+      ]
+    },
+    {
+      "question_id": "drcd-1166-7-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1166-7",
+        "drcd-1166-2",
+        "drcd-1166-5",
+        "drcd-3362-2",
+        "drcd-2388-9",
+        "drcd-3362-4",
+        "drcd-5577-2",
+        "drcd-1147-8"
+      ],
+      "retrieved_chunk_ids": [
+        "55d30ad4-bc45-4bd4-8bca-80b738b85841",
+        "1941dae9-500b-46b6-9879-e64e2193b419",
+        "ec044b1e-b1be-4f7b-aae6-d95d7e8f58fc",
+        "26709929-9fa4-4363-9fca-8461a46c9ee8",
+        "d4f0d8f4-a458-4fe0-ac74-504efea6c9b2",
+        "fd06c0e8-a91b-40a6-9e8b-e12d768a1f78",
+        "1fe64028-5710-45a6-8dd0-4f599cc3fc0c",
+        "5526f023-250b-4168-988a-f3c6f9a99e7d"
+      ],
+      "relevant": [
+        "drcd-1166-7"
+      ]
+    },
+    {
+      "question_id": "drcd-1174-27-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1174-27",
+        "drcd-1174-26",
+        "drcd-1174-1",
+        "drcd-1174-9",
+        "drcd-1174-25",
+        "drcd-1174-11",
+        "drcd-1174-21",
+        "drcd-1174-22"
+      ],
+      "retrieved_chunk_ids": [
+        "065a7fd9-1d31-4e05-a3e0-60b04c761e70",
+        "109812cc-9c66-4617-bf7a-cc62fe81327a",
+        "6fb44a62-44f7-4aa5-9ca4-68ff0282860f",
+        "95345eba-61ed-48f4-8af2-ca606f46d7c2",
+        "03788349-e85c-4596-85de-bc68f7c1b117",
+        "04a90c15-e79e-46e4-a4f1-0626677868a2",
+        "787ff8b7-2d35-4637-9a32-655a5b4971f8",
+        "3031ac91-de84-43e4-8acf-aede24bac6a9"
+      ],
+      "relevant": [
+        "drcd-1174-27"
+      ]
+    },
+    {
+      "question_id": "drcd-1174-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1174-5",
+        "drcd-1174-15",
+        "drcd-1174-1",
+        "drcd-1174-27",
+        "drcd-1174-26",
+        "drcd-1174-21",
+        "drcd-1174-7",
+        "drcd-1174-9"
+      ],
+      "retrieved_chunk_ids": [
+        "c6f9782d-f153-4e7c-ba2c-a680ca67259e",
+        "c7e1d711-3fc5-4978-aeb0-63cb3efe2bd4",
+        "6fb44a62-44f7-4aa5-9ca4-68ff0282860f",
+        "065a7fd9-1d31-4e05-a3e0-60b04c761e70",
+        "109812cc-9c66-4617-bf7a-cc62fe81327a",
+        "787ff8b7-2d35-4637-9a32-655a5b4971f8",
+        "14570a6e-ba5e-4c10-941b-4a0256eea9e0",
+        "95345eba-61ed-48f4-8af2-ca606f46d7c2"
+      ],
+      "relevant": [
+        "drcd-1174-5"
+      ]
+    },
+    {
+      "question_id": "drcd-1179-32-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1179-32",
+        "drcd-1179-18",
+        "drcd-1193-92",
+        "drcd-2534-1",
+        "drcd-1179-38",
+        "drcd-1179-25",
+        "drcd-5485-3",
+        "drcd-6129-1"
+      ],
+      "retrieved_chunk_ids": [
+        "9dc5bda1-4570-4af1-88e0-69c8c18fd99e",
+        "7799502a-8406-4191-bb33-55142eab1f45",
+        "d23415dd-c985-4432-949f-36c0531fbeb5",
+        "12ef9111-6d13-474f-8939-cb729d67a39e",
+        "da1fae87-61ed-4748-b043-b7fda7a77dce",
+        "5808aa39-4756-4565-ad6f-6296e605865f",
+        "0599b004-04d7-47b8-8c0d-8f11d22b8fd5",
+        "dae5c9f5-701c-4746-87c2-93e44c701099"
+      ],
+      "relevant": [
+        "drcd-1179-32"
+      ]
+    },
+    {
+      "question_id": "drcd-1179-38-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1179-38",
+        "drcd-6171-51",
+        "drcd-1179-32",
+        "drcd-1179-27",
+        "drcd-1179-25",
+        "drcd-6078-2",
+        "drcd-1179-18",
+        "drcd-1179-14"
+      ],
+      "retrieved_chunk_ids": [
+        "da1fae87-61ed-4748-b043-b7fda7a77dce",
+        "25382fbe-8c35-44e5-b095-2e493881e8b6",
+        "9dc5bda1-4570-4af1-88e0-69c8c18fd99e",
+        "2e796340-0dda-44ed-b81d-4b3446186e64",
+        "5808aa39-4756-4565-ad6f-6296e605865f",
+        "217b2652-30c2-4403-a7f9-d8777829a2a7",
+        "7799502a-8406-4191-bb33-55142eab1f45",
+        "32ee493e-7786-4bec-9c01-cb206f014a2f"
+      ],
+      "relevant": [
+        "drcd-1179-38"
+      ]
+    },
+    {
+      "question_id": "drcd-1180-22-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1180-22",
+        "drcd-1180-41",
+        "drcd-1180-9",
+        "drcd-1180-20",
+        "drcd-1180-30",
+        "drcd-1180-3",
+        "drcd-3439-2",
+        "drcd-1180-31"
+      ],
+      "retrieved_chunk_ids": [
+        "c952284f-4917-4659-991d-22ee3a560976",
+        "f85ca862-b40b-4ed5-a79f-71aaca28051e",
+        "05e24a9c-dee9-4380-8118-8902bc896ec9",
+        "f13ececd-8b72-4799-93e8-1f4fd61c4a5f",
+        "1e173d17-3f0d-43b7-be72-9b0c18d4a669",
+        "8f0cc1c7-1c0f-48f1-be15-eeb719d70a87",
+        "17dc5883-76b4-4972-84e2-67fd49bb3f1c",
+        "7e8a3b18-282e-4140-9e3a-a7529c351a67"
+      ],
+      "relevant": [
+        "drcd-1180-22"
+      ]
+    },
+    {
+      "question_id": "drcd-1186-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1186-2",
+        "drcd-1186-1",
+        "drcd-3362-2",
+        "drcd-3362-4",
+        "drcd-2501-1",
+        "drcd-3409-1",
+        "drcd-1166-5",
+        "drcd-1166-2"
+      ],
+      "retrieved_chunk_ids": [
+        "4c649c30-4631-4cc6-a725-2dacfabd9011",
+        "49216d35-8278-4d5d-a45d-cdf628dd9a6d",
+        "26709929-9fa4-4363-9fca-8461a46c9ee8",
+        "fd06c0e8-a91b-40a6-9e8b-e12d768a1f78",
+        "96617362-f4ec-4ac8-90d4-a56088ff294b",
+        "051961c8-ef2f-4702-be86-cd259ae77c03",
+        "ec044b1e-b1be-4f7b-aae6-d95d7e8f58fc",
+        "1941dae9-500b-46b6-9879-e64e2193b419"
+      ],
+      "relevant": [
+        "drcd-1186-2"
+      ]
+    },
+    {
+      "question_id": "drcd-1193-24-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-1193-24",
+        "drcd-1193-23",
+        "drcd-3524-3",
+        "drcd-1193-25",
+        "drcd-1193-69",
+        "drcd-1193-7",
+        "drcd-1193-46",
+        "drcd-1193-10"
+      ],
+      "retrieved_chunk_ids": [
+        "62d65133-8a0f-4c2c-969a-f8840e071f9e",
+        "e55874fa-f1b6-43ba-ba10-1be9a552fec4",
+        "ec577fd1-78cc-45d0-aac8-88e5f98c71ea",
+        "63cbdf91-d9bd-4513-ba13-d3a3e7b0ae87",
+        "08b3376f-d238-47f8-a70a-1b6a491a7911",
+        "14d2cf29-1ad7-4272-b031-3bd85194cb85",
+        "09efe531-68f7-421b-81c6-fb38903d5998",
+        "7236dc3e-137f-41aa-8ad0-79091458e47d"
+      ],
+      "relevant": [
+        "drcd-1193-24"
+      ]
+    },
+    {
+      "question_id": "drcd-2458-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-2458-1",
+        "drcd-6078-4",
+        "drcd-6078-16",
+        "drcd-1193-5",
+        "drcd-4885-2",
+        "drcd-6078-5",
+        "drcd-1165-12",
+        "drcd-6078-2"
+      ],
+      "retrieved_chunk_ids": [
+        "b2e98627-d105-45c3-857e-9acfd2efad46",
+        "9ba02fba-e761-4493-a242-27ae7eb6ad1c",
+        "2fbf1cc8-05a7-4e58-a529-6991b0bfe33a",
+        "16ea5fe4-1e1a-4869-ba60-0968b194e389",
+        "5289eace-ad91-4e68-a396-d22a8377908a",
+        "286cc684-af64-4d61-8d1b-979235e0b152",
+        "35571add-854d-4908-8012-454149efbadc",
+        "217b2652-30c2-4403-a7f9-d8777829a2a7"
+      ],
+      "relevant": [
+        "drcd-2458-1"
+      ]
+    },
+    {
+      "question_id": "drcd-2485-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-2485-2",
+        "drcd-2485-5",
+        "drcd-3521-4",
+        "drcd-2485-24",
+        "drcd-2485-15",
+        "drcd-5528-6",
+        "drcd-2485-8",
+        "drcd-2485-9"
+      ],
+      "retrieved_chunk_ids": [
+        "ed3e9946-3851-4a62-ae33-995ea65231d8",
+        "d3cad458-15e8-4fb7-9535-7ddcfd9c9adf",
+        "d6674ef9-0094-443c-a2d9-ff67b24cc8f0",
+        "11ba42b7-88c0-4aef-aa88-2b9cb2726233",
+        "db378c6c-e57f-403a-8da0-4fa830a614df",
+        "29184d54-53fa-469f-a2e5-1349b2ab6b4c",
+        "fe93515d-37ff-4aca-9bb3-cdb21d8fd352",
+        "d5b84543-3787-4959-848a-565695fdbf94"
+      ],
+      "relevant": [
+        "drcd-2485-2"
+      ]
+    },
+    {
+      "question_id": "drcd-2489-7-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-2489-7",
+        "drcd-6509-1",
+        "drcd-3206-6",
+        "drcd-3206-1",
+        "drcd-6509-3",
+        "drcd-3447-2",
+        "drcd-6509-5",
+        "drcd-3341-1"
+      ],
+      "retrieved_chunk_ids": [
+        "d8156efa-73b0-48c3-b7ef-71b88a1a893d",
+        "26609dcc-63bd-401e-8fe6-fbefc2dd64af",
+        "ed05df28-ae56-4e55-b05b-8da00c0ee35c",
+        "aab230fd-315c-49ad-bafa-59488b98f7fb",
+        "f926b080-8650-4d92-95c8-b3a285afeac2",
+        "91af0512-4820-4ded-a883-580fdda99a1f",
+        "11823cd1-adde-4ae5-b9da-88848d7ce9fa",
+        "47323c7e-5c5f-4386-932f-00859595b25e"
+      ],
+      "relevant": [
+        "drcd-2489-7"
+      ]
+    },
+    {
+      "question_id": "drcd-2496-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-2496-5",
+        "drcd-4997-9",
+        "drcd-2496-7",
+        "drcd-2496-8",
+        "drcd-6464-7",
+        "drcd-2496-9",
+        "drcd-3341-7",
+        "drcd-5580-5"
+      ],
+      "retrieved_chunk_ids": [
+        "44cf0cfd-d339-4310-81a4-00304dfea366",
+        "8673c638-f157-4234-8133-6d7e3bcac602",
+        "fa4a57cd-88f2-4155-b6ab-8b77b75975e5",
+        "11ccc0a2-dd02-470b-8b72-2b0ee094ce15",
+        "77a3eef7-ae02-403f-a4a8-973483f27d1f",
+        "497955b4-9a20-419b-87ce-58b5d293eae0",
+        "9e0d11d2-a942-4b83-ada6-b94aa224c025",
+        "ce226d32-fa56-4748-ba28-99c8cc23436e"
+      ],
+      "relevant": [
+        "drcd-2496-5"
+      ]
+    },
+    {
+      "question_id": "drcd-2509-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-2509-2",
+        "drcd-3521-1",
+        "drcd-3521-4",
+        "drcd-2509-3",
+        "drcd-6334-4",
+        "drcd-4941-13",
+        "drcd-5606-2",
+        "drcd-3521-5"
+      ],
+      "retrieved_chunk_ids": [
+        "1c52207d-f928-4b3e-8ac6-66327bf2ef98",
+        "194bbb0e-ef8a-426b-a9a7-d61988bff6a1",
+        "d6674ef9-0094-443c-a2d9-ff67b24cc8f0",
+        "5d6dd6d1-63a3-4410-b99f-e31e72e70e0d",
+        "70e3c4ff-f5eb-49fa-a2ba-867a3ec22e81",
+        "6d8c3bee-6802-41f7-be6a-50f1cb959ba4",
+        "d0805dbf-7e5e-4881-b7e4-da9e36d63562",
+        "39fdc288-e5e5-49c0-96b4-f8ee6faac1c9"
+      ],
+      "relevant": [
+        "drcd-2509-2"
+      ]
+    },
+    {
+      "question_id": "drcd-2527-18-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-2527-18",
+        "drcd-4979-1",
+        "drcd-4899-2",
+        "drcd-4979-2",
+        "drcd-6373-61",
+        "drcd-4899-1",
+        "drcd-6373-32",
+        "drcd-3224-3"
+      ],
+      "retrieved_chunk_ids": [
+        "45f4a4ae-df30-43de-b36c-049649c817b1",
+        "3244f5ff-3d77-4cd0-95b1-f5a356496150",
+        "2f672773-279f-468e-89ad-40f350ee0da6",
+        "3b73e649-b301-4699-b789-24faeb2f9611",
+        "46fe2b88-9c47-4fe8-ba1d-2318470f987b",
+        "39054cbc-cf07-4945-99ac-dd84bfa5241c",
+        "72f9a34f-2408-46c6-8c23-e8474dde9ea7",
+        "3622e109-70a5-4fee-a4b6-edbecaedce05"
+      ],
+      "relevant": [
+        "drcd-2527-18"
+      ]
+    },
+    {
+      "question_id": "drcd-2527-19-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-2527-19",
+        "drcd-6478-28",
+        "drcd-6373-56",
+        "drcd-6224-13",
+        "drcd-6373-74",
+        "drcd-6373-60",
+        "drcd-4982-16",
+        "drcd-6373-66"
+      ],
+      "retrieved_chunk_ids": [
+        "a4a0e634-2a26-43d5-9b7d-714f99585ed3",
+        "4d20c916-b55d-48b5-8a88-4d1a9293b2a5",
+        "a31f6b03-82c4-4228-a91b-150ed61c235d",
+        "deece8f6-c960-4d4f-a598-7ea48a9de6ed",
+        "90098287-9436-4c66-a21b-2ea3da08aa11",
+        "a37b3862-bf1e-4785-af2e-e66675edc5bd",
+        "c2f719e1-1a65-4dd8-8941-df41b566abd8",
+        "632b8f51-b28c-4c87-a11c-1b129a3e1049"
+      ],
+      "relevant": [
+        "drcd-2527-19"
+      ]
+    },
+    {
+      "question_id": "drcd-2534-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-2534-5",
+        "drcd-2534-1",
+        "drcd-2534-7",
+        "drcd-2534-2",
+        "drcd-2534-8",
+        "drcd-5715-3",
+        "drcd-3299-1",
+        "drcd-2534-6"
+      ],
+      "retrieved_chunk_ids": [
+        "1e9c48de-44cc-4217-ba8a-31e7b1c8f5a9",
+        "12ef9111-6d13-474f-8939-cb729d67a39e",
+        "d02957dc-cc77-4f16-bc35-9a5a8532491f",
+        "6e530892-9520-4555-96e7-5255b14a466c",
+        "4a2f305b-a788-4cea-ba77-667684d54008",
+        "bb51b017-5951-412e-84dd-37c561209c14",
+        "83f6b60a-bb44-4a0d-a8ac-0d2d05a53b1d",
+        "301a1d47-108b-4d73-916d-4f3d0e156bfb"
+      ],
+      "relevant": [
+        "drcd-2534-5"
+      ]
+    },
+    {
+      "question_id": "drcd-2534-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-2534-6",
+        "drcd-2534-1",
+        "drcd-2534-2",
+        "drcd-2534-5",
+        "drcd-2534-8",
+        "drcd-5774-1",
+        "drcd-2534-7",
+        "drcd-3206-10"
+      ],
+      "retrieved_chunk_ids": [
+        "301a1d47-108b-4d73-916d-4f3d0e156bfb",
+        "12ef9111-6d13-474f-8939-cb729d67a39e",
+        "6e530892-9520-4555-96e7-5255b14a466c",
+        "1e9c48de-44cc-4217-ba8a-31e7b1c8f5a9",
+        "4a2f305b-a788-4cea-ba77-667684d54008",
+        "e0c034fd-e7b5-49d7-aecc-98f87c14d94f",
+        "d02957dc-cc77-4f16-bc35-9a5a8532491f",
+        "73dcc699-2b77-49dc-9376-9d034121b5b6"
+      ],
+      "relevant": [
+        "drcd-2534-6"
+      ]
+    },
+    {
+      "question_id": "drcd-3206-6-1",
+      "hit_rank": 3,
+      "retrieved": [
+        "drcd-6509-1",
+        "drcd-3206-1",
+        "drcd-3206-6",
+        "drcd-6509-5",
+        "drcd-3206-8",
+        "drcd-6509-3",
+        "drcd-5719-1",
+        "drcd-3206-10"
+      ],
+      "retrieved_chunk_ids": [
+        "26609dcc-63bd-401e-8fe6-fbefc2dd64af",
+        "aab230fd-315c-49ad-bafa-59488b98f7fb",
+        "ed05df28-ae56-4e55-b05b-8da00c0ee35c",
+        "11823cd1-adde-4ae5-b9da-88848d7ce9fa",
+        "a34eec08-365b-468a-8ee8-a6187b9232b1",
+        "f926b080-8650-4d92-95c8-b3a285afeac2",
+        "c5a1b1c9-5273-40e1-b4c0-0e8c61c1b23e",
+        "73dcc699-2b77-49dc-9376-9d034121b5b6"
+      ],
+      "relevant": [
+        "drcd-3206-6"
+      ]
+    },
+    {
+      "question_id": "drcd-3213-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3213-1",
+        "drcd-3213-2",
+        "drcd-1184-2",
+        "drcd-6002-1",
+        "drcd-3395-1",
+        "drcd-6247-2",
+        "drcd-5529-7",
+        "drcd-3284-2"
+      ],
+      "retrieved_chunk_ids": [
+        "5894b995-0ff4-4a1c-befc-2c621f81dff3",
+        "6cd5464d-87ce-4852-9330-6baf3872774f",
+        "f916740d-a4d5-4904-943f-2e6b45f99c5c",
+        "755f6b0b-4375-48cc-abc5-b7a9acf5e28e",
+        "53997154-feb5-4482-8dae-7172073e7f23",
+        "9e388f5f-f99f-4b6c-95c8-ab368113bd47",
+        "ad60b84c-965d-41ae-ae3d-d54ff9bcfa1f",
+        "af8ae9ed-dfd3-49d5-a10f-9431cef41e73"
+      ],
+      "relevant": [
+        "drcd-3213-1"
+      ]
+    },
+    {
+      "question_id": "drcd-3213-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3213-2",
+        "drcd-3213-1",
+        "drcd-3213-43",
+        "drcd-3395-6",
+        "drcd-3395-1",
+        "drcd-3213-10",
+        "drcd-3213-7",
+        "drcd-3213-42"
+      ],
+      "retrieved_chunk_ids": [
+        "6cd5464d-87ce-4852-9330-6baf3872774f",
+        "5894b995-0ff4-4a1c-befc-2c621f81dff3",
+        "4e22d5f7-ba4f-403c-9781-0025ac4ab331",
+        "127e9e69-5567-46dd-82d4-a96459e1eb45",
+        "53997154-feb5-4482-8dae-7172073e7f23",
+        "38dd0173-2cef-42b7-a45e-6dd87999fe61",
+        "111c628e-a51e-48ec-97de-aa860a1de598",
+        "c19284a4-a0ec-40eb-8250-36a600df52b3"
+      ],
+      "relevant": [
+        "drcd-3213-2"
+      ]
+    },
+    {
+      "question_id": "drcd-3224-9-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3224-9",
+        "drcd-3224-8",
+        "drcd-3224-5",
+        "drcd-3224-14",
+        "drcd-3224-12",
+        "drcd-3224-3",
+        "drcd-6095-1",
+        "drcd-6439-1"
+      ],
+      "retrieved_chunk_ids": [
+        "6c67e5ea-1c68-47ae-9a9c-8bf6493fc4c6",
+        "4655af1c-2b6e-4503-8466-6076bf91676d",
+        "2b7f2440-3e5a-4763-a5a0-b0100d4bb12d",
+        "06569eec-a48f-4557-8c36-ddaa53270a23",
+        "acf35921-95a6-4db6-963b-587e0652f43d",
+        "3622e109-70a5-4fee-a4b6-edbecaedce05",
+        "e67bc1ff-9652-44f9-8f2b-5c2e89c7ceec",
+        "fc7e8633-1208-4ca3-afab-aa6a9b5dff83"
+      ],
+      "relevant": [
+        "drcd-3224-9"
+      ]
+    },
+    {
+      "question_id": "drcd-3229-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3229-2",
+        "drcd-3229-5",
+        "drcd-3229-3",
+        "drcd-3229-7",
+        "drcd-3229-6",
+        "drcd-2458-1",
+        "drcd-1179-32",
+        "drcd-1152-2"
+      ],
+      "retrieved_chunk_ids": [
+        "8af2410f-f260-411d-b8ca-ddc5a60742df",
+        "00cf324c-e4e9-43de-8e5d-e6566e84fa97",
+        "3861a17e-5b2c-4558-9a42-ab00a66d30bc",
+        "a9dea1b6-e1b3-43b6-8b6b-be157b8ec591",
+        "37a72de1-f448-45f7-9d6f-b4f35ae58ec7",
+        "b2e98627-d105-45c3-857e-9acfd2efad46",
+        "9dc5bda1-4570-4af1-88e0-69c8c18fd99e",
+        "96c8626f-37de-4b91-af32-41eea5d8a00b"
+      ],
+      "relevant": [
+        "drcd-3229-2"
+      ]
+    },
+    {
+      "question_id": "drcd-3229-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3229-6",
+        "drcd-3229-2",
+        "drcd-3229-3",
+        "drcd-3229-5",
+        "drcd-3229-7",
+        "drcd-6385-6",
+        "drcd-2471-19",
+        "drcd-2471-4"
+      ],
+      "retrieved_chunk_ids": [
+        "37a72de1-f448-45f7-9d6f-b4f35ae58ec7",
+        "8af2410f-f260-411d-b8ca-ddc5a60742df",
+        "3861a17e-5b2c-4558-9a42-ab00a66d30bc",
+        "00cf324c-e4e9-43de-8e5d-e6566e84fa97",
+        "a9dea1b6-e1b3-43b6-8b6b-be157b8ec591",
+        "74056917-a382-4a5b-be6d-37a23141b006",
+        "cd95ad33-418e-42da-ad95-e3a7fe0d3074",
+        "4e124cdc-5b3c-40a0-93a8-85ead5825972"
+      ],
+      "relevant": [
+        "drcd-3229-6"
+      ]
+    },
+    {
+      "question_id": "drcd-3256-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3256-6",
+        "drcd-3256-8",
+        "drcd-3256-3",
+        "drcd-3256-1",
+        "drcd-1193-77",
+        "drcd-6295-1",
+        "drcd-5534-1",
+        "drcd-3256-7"
+      ],
+      "retrieved_chunk_ids": [
+        "0b5376cf-6975-4e3e-81a8-1b557b1dd56f",
+        "e7ecbc7b-e022-43e3-b6ef-9d215f5d1948",
+        "219495ba-0f95-4704-b6e2-183cd7840c73",
+        "0fb5fa6c-1797-4905-b48b-5c2f63d92155",
+        "8d9c80a7-4fee-4a31-96bd-c458a661c748",
+        "c417c6c4-be9b-472b-a19d-c2256a6671de",
+        "6a04121d-fcd7-4c7a-9a9c-3bf7d47a80a2",
+        "44e874da-560c-42bc-bfe9-5adfa621cd9f"
+      ],
+      "relevant": [
+        "drcd-3256-6"
+      ]
+    },
+    {
+      "question_id": "drcd-3265-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3265-1",
+        "drcd-3265-2",
+        "drcd-3579-7",
+        "drcd-3579-2",
+        "drcd-3579-1",
+        "drcd-6324-4",
+        "drcd-3439-2",
+        "drcd-3579-6"
+      ],
+      "retrieved_chunk_ids": [
+        "ea291909-a858-4ea1-9751-3fd9ea56a4a6",
+        "40044594-e006-460f-be10-08e3acc50133",
+        "dae98430-d0e7-4d83-aab5-bd2dff412a71",
+        "5d6809bc-8e56-4405-a15e-a1d807cbad9d",
+        "9ea45dd0-1182-40a1-886c-a6a3f060a41f",
+        "4a68d14d-2d74-4286-a430-13f1176b8738",
+        "17dc5883-76b4-4972-84e2-67fd49bb3f1c",
+        "f13d71f3-1533-4d5f-b15c-6bac86d2cd99"
+      ],
+      "relevant": [
+        "drcd-3265-1"
+      ]
+    },
+    {
+      "question_id": "drcd-3303-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3303-5",
+        "drcd-3303-6",
+        "drcd-3562-5",
+        "drcd-3384-7",
+        "drcd-3394-2",
+        "drcd-1193-7",
+        "drcd-3394-3",
+        "drcd-3303-11"
+      ],
+      "retrieved_chunk_ids": [
+        "742436c1-045b-48f8-a09a-8598274ab91e",
+        "011c48d7-4b85-43ff-8acb-4582976eded0",
+        "ce84e8a2-6f3f-4ef8-93db-130023369d96",
+        "8e539f32-c689-42b9-893f-25f2a981b344",
+        "3991c5b2-f340-4d63-bc7e-7fa3d56d2ca1",
+        "14d2cf29-1ad7-4272-b031-3bd85194cb85",
+        "d98ae7b5-d3c1-482f-807e-7bcdebdc22c2",
+        "b123c9dc-170a-4935-b0c9-64e512318568"
+      ],
+      "relevant": [
+        "drcd-3303-5"
+      ]
+    },
+    {
+      "question_id": "drcd-3324-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3324-1",
+        "drcd-3324-3",
+        "drcd-2475-1",
+        "drcd-6456-1",
+        "drcd-6211-1",
+        "drcd-6214-1",
+        "drcd-5771-18",
+        "drcd-5669-2"
+      ],
+      "retrieved_chunk_ids": [
+        "23c93f37-d118-465c-b036-6ed17e75be5d",
+        "e42a3605-4192-485d-9b5c-972cb8d1f0a5",
+        "d534f8ea-1495-4d88-b0c5-35cda0bc8358",
+        "9adb9533-7ed7-424b-8883-11bb3cff3474",
+        "2d617d3e-9ac0-40fb-bd1d-f8f686e50f08",
+        "5a1f0560-9671-4b5a-a37c-ecbb94e19937",
+        "7027b41b-72ef-4b8a-a838-b69f9dff9fd5",
+        "42a1f2c7-c2ef-4caf-9546-ad536506d083"
+      ],
+      "relevant": [
+        "drcd-3324-1"
+      ]
+    },
+    {
+      "question_id": "drcd-3338-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3338-1",
+        "drcd-2527-5",
+        "drcd-5530-2",
+        "drcd-4893-1",
+        "drcd-6159-9",
+        "drcd-4982-10",
+        "drcd-4988-1",
+        "drcd-3247-2"
+      ],
+      "retrieved_chunk_ids": [
+        "95fd669d-a581-40f4-b34c-a1a854ed795b",
+        "d1302589-5b47-4622-969e-35faf57c261a",
+        "901e0958-7351-47c9-9079-aabde36def7f",
+        "7aeb89bb-1fbc-47c5-b9d3-f2cc771cc596",
+        "dc5226f2-4f9d-49ab-a326-d5e374bc385e",
+        "8f954395-f6e3-4713-8108-cea73730f7eb",
+        "1db5ac93-97ac-452e-ba02-f017374aae3f",
+        "bafdb6d3-d890-4e38-ac9f-eaa0e6844af7"
+      ],
+      "relevant": [
+        "drcd-3338-1"
+      ]
+    },
+    {
+      "question_id": "drcd-3359-7-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3359-7",
+        "drcd-3359-1",
+        "drcd-3359-5",
+        "drcd-3359-15",
+        "drcd-3359-11",
+        "drcd-3359-14",
+        "drcd-3359-10",
+        "drcd-3359-13"
+      ],
+      "retrieved_chunk_ids": [
+        "8bdfcd58-7eb9-4691-bb54-fce8db46949e",
+        "bc6d7763-ef25-469c-b48c-1db677bb7337",
+        "f75432c1-3ed6-4bab-9450-ee7ad7b18be7",
+        "af9470be-eb25-4cc0-bc5d-2931e6cc6fb2",
+        "108599c1-e0d7-4962-b881-08fb7eee8746",
+        "05045357-0b3f-4718-9cb5-71e03798b1ac",
+        "6236d2e9-dba5-43c5-ae96-4c56b62eecd1",
+        "24ed9db4-a7e0-424f-96f8-f6577797a355"
+      ],
+      "relevant": [
+        "drcd-3359-7"
+      ]
+    },
+    {
+      "question_id": "drcd-3362-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3362-4",
+        "drcd-3362-2",
+        "drcd-6373-72",
+        "drcd-2282-1",
+        "drcd-3431-5",
+        "drcd-6171-59",
+        "drcd-6229-3",
+        "drcd-1179-38"
+      ],
+      "retrieved_chunk_ids": [
+        "fd06c0e8-a91b-40a6-9e8b-e12d768a1f78",
+        "26709929-9fa4-4363-9fca-8461a46c9ee8",
+        "c047df96-3edd-4688-83df-9adce033e685",
+        "788abe47-2352-4aba-96de-0b08f26108eb",
+        "2941553d-ce53-4d50-a1a9-4e99fd6ea0c2",
+        "ffda3d86-8acc-4abb-9ce7-bef67272a87f",
+        "d8f608f7-d96e-4a9b-88ff-170783d7fec5",
+        "da1fae87-61ed-4748-b043-b7fda7a77dce"
+      ],
+      "relevant": [
+        "drcd-3362-4"
+      ]
+    },
+    {
+      "question_id": "drcd-3385-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3385-3",
+        "drcd-3385-1",
+        "drcd-3385-2",
+        "drcd-4946-2",
+        "drcd-3265-2",
+        "drcd-6214-1",
+        "drcd-3265-1",
+        "drcd-6324-11"
+      ],
+      "retrieved_chunk_ids": [
+        "9eba2552-37a2-4462-a850-9b2f74b98010",
+        "cef9b52b-bbfb-45f8-b2fd-40de2f6e25dd",
+        "94ace97e-cb45-4b4b-a0d7-25d97c21c91d",
+        "d1c471b4-7eeb-4db7-9597-fe2f67fce50a",
+        "40044594-e006-460f-be10-08e3acc50133",
+        "5a1f0560-9671-4b5a-a37c-ecbb94e19937",
+        "ea291909-a858-4ea1-9751-3fd9ea56a4a6",
+        "022e7475-1a62-411b-9663-a9bd4577a6b0"
+      ],
+      "relevant": [
+        "drcd-3385-3"
+      ]
+    },
+    {
+      "question_id": "drcd-3432-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3432-1",
+        "drcd-6213-3",
+        "drcd-6055-2",
+        "drcd-3521-8",
+        "drcd-3432-6",
+        "drcd-5746-1",
+        "drcd-5686-14",
+        "drcd-6244-1"
+      ],
+      "retrieved_chunk_ids": [
+        "683230a0-d2c9-4b89-aece-2ad7534e3e4b",
+        "75e95d1b-575d-4496-9f07-47e8d62279db",
+        "f8597104-f0fd-435d-8248-fa4e60c9420c",
+        "b2b7b723-a1c3-483c-b069-32e82630fd17",
+        "8fae55d1-7464-4e65-b86e-47e91a94c249",
+        "7be8a685-23d6-4ad5-a84c-8f1c3e18d554",
+        "94d268cf-bbca-4e17-95c5-c19dcde4ab63",
+        "0e22e27d-7d24-465b-99b4-a77f41aa6684"
+      ],
+      "relevant": [
+        "drcd-3432-1"
+      ]
+    },
+    {
+      "question_id": "drcd-3478-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3478-2",
+        "drcd-3478-3",
+        "drcd-3478-4",
+        "drcd-6153-2",
+        "drcd-1147-8",
+        "drcd-6229-3",
+        "drcd-6478-23",
+        "drcd-4982-5"
+      ],
+      "retrieved_chunk_ids": [
+        "06b0fece-8ed1-4816-a899-b8a83c04e1be",
+        "f33101f6-971d-4412-912d-9ceb03cd432d",
+        "d07bbf36-c3c6-486d-97fb-30c9cc733409",
+        "0bfa4d48-7cf1-493a-b291-84f959269164",
+        "5526f023-250b-4168-988a-f3c6f9a99e7d",
+        "d8f608f7-d96e-4a9b-88ff-170783d7fec5",
+        "751e2e10-c1bc-42de-b68d-c98c5db06d95",
+        "1910db44-65a2-4764-953d-f626de0bd27e"
+      ],
+      "relevant": [
+        "drcd-3478-2"
+      ]
+    },
+    {
+      "question_id": "drcd-3521-10-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3521-10",
+        "drcd-3521-1",
+        "drcd-2485-4",
+        "drcd-2485-15",
+        "drcd-3521-4",
+        "drcd-6424-3",
+        "drcd-3521-5",
+        "drcd-2485-8"
+      ],
+      "retrieved_chunk_ids": [
+        "e6b3715d-082b-400c-9bd6-97be183f1ab7",
+        "194bbb0e-ef8a-426b-a9a7-d61988bff6a1",
+        "6528dd13-988f-4ce3-9011-afcbb1a7548d",
+        "db378c6c-e57f-403a-8da0-4fa830a614df",
+        "d6674ef9-0094-443c-a2d9-ff67b24cc8f0",
+        "22a9ff13-b48a-4ac1-81bc-c661510ea47b",
+        "39fdc288-e5e5-49c0-96b4-f8ee6faac1c9",
+        "fe93515d-37ff-4aca-9bb3-cdb21d8fd352"
+      ],
+      "relevant": [
+        "drcd-3521-10"
+      ]
+    },
+    {
+      "question_id": "drcd-3524-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3524-2",
+        "drcd-3524-4",
+        "drcd-3524-5",
+        "drcd-3524-3",
+        "drcd-4979-1",
+        "drcd-3256-6",
+        "drcd-5445-1",
+        "drcd-6385-5"
+      ],
+      "retrieved_chunk_ids": [
+        "db71ff61-1e86-4f48-ac28-2151d6f0e11c",
+        "7cf47869-b50f-4a7c-862a-ac340d9e2931",
+        "8817df97-fda7-4e5c-9edf-907432ac9206",
+        "ec577fd1-78cc-45d0-aac8-88e5f98c71ea",
+        "3244f5ff-3d77-4cd0-95b1-f5a356496150",
+        "0b5376cf-6975-4e3e-81a8-1b557b1dd56f",
+        "88bd8ed1-42b8-4e01-b683-d002ea814373",
+        "a414ebc6-eadc-41b2-af3d-9db30bb22b7e"
+      ],
+      "relevant": [
+        "drcd-3524-2"
+      ]
+    },
+    {
+      "question_id": "drcd-3568-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-3568-1",
+        "drcd-3568-3",
+        "drcd-3568-2",
+        "drcd-2534-1",
+        "drcd-5645-1",
+        "drcd-3247-2",
+        "drcd-6373-60",
+        "drcd-4982-6"
+      ],
+      "retrieved_chunk_ids": [
+        "4a36b6cf-8e9c-488f-bdb1-181394103eca",
+        "9c44db37-b2c0-475c-b97f-5dbd763c8b13",
+        "6e392dcc-43e0-49b6-b8f3-5b5a1e8ca2fd",
+        "12ef9111-6d13-474f-8939-cb729d67a39e",
+        "f6057807-a139-4510-b46d-9b75b278fa8d",
+        "bafdb6d3-d890-4e38-ac9f-eaa0e6844af7",
+        "a37b3862-bf1e-4785-af2e-e66675edc5bd",
+        "6637e75a-3b1d-4563-b2a7-8bf0b92817cc"
+      ],
+      "relevant": [
+        "drcd-3568-1"
+      ]
+    },
+    {
+      "question_id": "drcd-4889-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-4889-3",
+        "drcd-4889-1",
+        "drcd-4889-5",
+        "drcd-6306-4",
+        "drcd-4946-2",
+        "drcd-3340-1",
+        "drcd-3241-7",
+        "drcd-3241-8"
+      ],
+      "retrieved_chunk_ids": [
+        "bb754e4d-f0a6-44d0-956a-2c64a9d14f7a",
+        "dc5aa3d9-5c6c-42b7-be61-0f7a2a1ab247",
+        "9aad36bd-3619-461c-9878-38949d81d12f",
+        "49b29bdc-ac91-45cd-af09-8f4e5dd46a8d",
+        "d1c471b4-7eeb-4db7-9597-fe2f67fce50a",
+        "132a5922-f0c9-4f32-9193-f8650db5eca1",
+        "ee8a7527-f9c5-4f7b-9e32-3bab29f84eca",
+        "744e8977-ad1f-4370-b4f8-3dc6540c2361"
+      ],
+      "relevant": [
+        "drcd-4889-3"
+      ]
+    },
+    {
+      "question_id": "drcd-4896-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-4896-2",
+        "drcd-3394-3",
+        "drcd-6171-59",
+        "drcd-1152-12",
+        "drcd-6171-26",
+        "drcd-2471-18",
+        "drcd-6171-25",
+        "drcd-5750-5"
+      ],
+      "retrieved_chunk_ids": [
+        "5b6b02d3-3532-4dfc-8644-79c2203ef411",
+        "d98ae7b5-d3c1-482f-807e-7bcdebdc22c2",
+        "ffda3d86-8acc-4abb-9ce7-bef67272a87f",
+        "d4d3f278-83ee-40c0-975f-a4695c7e39a7",
+        "017c6677-c583-47d1-a363-9d38470df68b",
+        "a80bbe2a-7693-4536-b7af-3e09f30b6f3e",
+        "ef223201-9612-45af-b1d7-c2facd4bc45d",
+        "5a83263f-ef5a-4efd-a220-74ecf255161d"
+      ],
+      "relevant": [
+        "drcd-4896-2"
+      ]
+    },
+    {
+      "question_id": "drcd-4911-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-4911-1",
+        "drcd-4911-3",
+        "drcd-4911-12",
+        "drcd-4911-16",
+        "drcd-4911-11",
+        "drcd-4911-14",
+        "drcd-4911-2",
+        "drcd-4911-10"
+      ],
+      "retrieved_chunk_ids": [
+        "8ab24b4a-d73f-4a33-99dd-acff39c25031",
+        "b8b67e03-4e25-4fcd-81dc-d13121834fbb",
+        "f01a6fba-6b64-4b71-ac4f-8d528bd46bae",
+        "854398d3-8ff3-42e9-9883-5a08cde6834d",
+        "f97a681c-ad66-4333-adfc-6228ac2b7d52",
+        "cc781d96-41eb-4c13-9b38-06de99c445b8",
+        "8d3590a1-d670-4735-a507-481d4feb5f53",
+        "85075b47-8d86-4834-a5dc-7ae2d6a70068"
+      ],
+      "relevant": [
+        "drcd-4911-1"
+      ]
+    },
+    {
+      "question_id": "drcd-4911-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-4911-3",
+        "drcd-3320-5",
+        "drcd-4911-1",
+        "drcd-4911-2",
+        "drcd-4911-14",
+        "drcd-4911-10",
+        "drcd-4911-11",
+        "drcd-4984-1"
+      ],
+      "retrieved_chunk_ids": [
+        "b8b67e03-4e25-4fcd-81dc-d13121834fbb",
+        "c74f5171-5fc4-47b8-9884-509621de4e9b",
+        "8ab24b4a-d73f-4a33-99dd-acff39c25031",
+        "8d3590a1-d670-4735-a507-481d4feb5f53",
+        "cc781d96-41eb-4c13-9b38-06de99c445b8",
+        "85075b47-8d86-4834-a5dc-7ae2d6a70068",
+        "f97a681c-ad66-4333-adfc-6228ac2b7d52",
+        "3d13dd26-126a-44f9-99c3-0c0c3a175eb9"
+      ],
+      "relevant": [
+        "drcd-4911-3"
+      ]
+    },
+    {
+      "question_id": "drcd-4917-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-4917-2",
+        "drcd-1149-1",
+        "drcd-6122-1",
+        "drcd-6171-3",
+        "drcd-1149-11",
+        "drcd-6360-2",
+        "drcd-6088-2",
+        "drcd-6122-5"
+      ],
+      "retrieved_chunk_ids": [
+        "78a0dc57-5dbe-4820-a5eb-20d52df0dfa6",
+        "3c85c57c-3848-4a9a-9164-a5dd52bc4593",
+        "5b48c912-b2c1-498d-b67c-24833402d0a6",
+        "e1f43fb1-bbf3-4ebe-9b6a-4accbd1a7df1",
+        "bf7b1002-5479-4bad-8d76-b7fafd98de26",
+        "8c7f0f43-01b6-493d-8779-eb6ea065c4b5",
+        "acede388-128d-41aa-94e0-b495ce362738",
+        "5203c4c8-fcf2-44fd-bc52-20e0b31e1a32"
+      ],
+      "relevant": [
+        "drcd-4917-2"
+      ]
+    },
+    {
+      "question_id": "drcd-4949-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-4949-1",
+        "drcd-4949-5",
+        "drcd-4949-3",
+        "drcd-3320-5",
+        "drcd-5584-1",
+        "drcd-1165-12",
+        "drcd-1160-2",
+        "drcd-1158-2"
+      ],
+      "retrieved_chunk_ids": [
+        "b9f9f544-f429-417d-a034-cf0dc81a3ae5",
+        "a3fdbf72-b67e-4e52-a812-5710406eb7fb",
+        "d7c38ac1-6536-4025-b899-04f66c5a3f31",
+        "c74f5171-5fc4-47b8-9884-509621de4e9b",
+        "1c4519b4-97a9-4306-850b-8327ad368bdc",
+        "35571add-854d-4908-8012-454149efbadc",
+        "ce937979-c299-43d2-b016-9058b2842148",
+        "f0dee208-cd0b-455d-8aea-b54873b77205"
+      ],
+      "relevant": [
+        "drcd-4949-1"
+      ]
+    },
+    {
+      "question_id": "drcd-4949-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-4949-5",
+        "drcd-4949-1",
+        "drcd-4949-3",
+        "drcd-1182-4",
+        "drcd-6491-11",
+        "drcd-6491-13",
+        "drcd-3341-5",
+        "drcd-1153-5"
+      ],
+      "retrieved_chunk_ids": [
+        "a3fdbf72-b67e-4e52-a812-5710406eb7fb",
+        "b9f9f544-f429-417d-a034-cf0dc81a3ae5",
+        "d7c38ac1-6536-4025-b899-04f66c5a3f31",
+        "9f76cdd5-cf21-4fb7-8b3f-e25ccf501f91",
+        "8c684fd7-26a1-41f2-980c-5a93e39e574b",
+        "de8df0e2-2ac0-43c8-85a6-bcad9e532fd5",
+        "40c36e79-ae6d-4b32-b9dd-4a1b99b2b914",
+        "6beb2bdd-4dc9-4c0a-853e-9d270f64475b"
+      ],
+      "relevant": [
+        "drcd-4949-5"
+      ]
+    },
+    {
+      "question_id": "drcd-5378-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5378-4",
+        "drcd-3206-1",
+        "drcd-3247-2",
+        "drcd-5645-1",
+        "drcd-5715-1",
+        "drcd-6359-5",
+        "drcd-2534-2",
+        "drcd-5771-3"
+      ],
+      "retrieved_chunk_ids": [
+        "0725e924-2309-4e82-90cc-72f6bd67cba0",
+        "aab230fd-315c-49ad-bafa-59488b98f7fb",
+        "bafdb6d3-d890-4e38-ac9f-eaa0e6844af7",
+        "f6057807-a139-4510-b46d-9b75b278fa8d",
+        "85e08ed7-7397-4d90-9f59-f108ac1add14",
+        "d6266811-b909-4bf3-9a9d-8090209af0e3",
+        "6e530892-9520-4555-96e7-5255b14a466c",
+        "c17ee979-0292-4708-9250-d1314dc9f4c6"
+      ],
+      "relevant": [
+        "drcd-5378-4"
+      ]
+    },
+    {
+      "question_id": "drcd-5381-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5381-2",
+        "drcd-5581-1",
+        "drcd-6039-2",
+        "drcd-3241-2",
+        "drcd-3241-3",
+        "drcd-6324-4",
+        "drcd-4996-1",
+        "drcd-6224-16"
+      ],
+      "retrieved_chunk_ids": [
+        "f99c1205-f1e3-4b50-8d42-56b0b25c2cbb",
+        "e67a017b-5128-487d-9d04-9dd27bae7f42",
+        "74c6493a-a310-4283-a9c8-38d94dd1a666",
+        "4c9509e6-fc8e-40f8-a209-8d6ba2f1bc90",
+        "6d962fc5-07c0-40f0-9df1-99c0e08a6ce4",
+        "4a68d14d-2d74-4286-a430-13f1176b8738",
+        "44e46e9c-19c6-415b-bbf6-3c4595332e10",
+        "8e0d78ba-bb84-4c1a-bd61-cfc10ce81c3d"
+      ],
+      "relevant": [
+        "drcd-5381-2"
+      ]
+    },
+    {
+      "question_id": "drcd-5392-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5392-6",
+        "drcd-5392-5",
+        "drcd-5523-10",
+        "drcd-1193-69",
+        "drcd-3436-1",
+        "drcd-6383-1",
+        "drcd-2388-6",
+        "drcd-5750-2"
+      ],
+      "retrieved_chunk_ids": [
+        "2184a7a2-4d85-4f0a-a77d-9b37610706be",
+        "b9bdd450-8981-4108-bc49-09f4612e40e5",
+        "522dd9bb-0be3-4713-bc8a-d447621077cb",
+        "08b3376f-d238-47f8-a70a-1b6a491a7911",
+        "7fbe9c45-a62a-4472-af35-0617480f65f8",
+        "cfda5964-1f28-4884-b2eb-36a2f1229443",
+        "992a3c11-f408-424d-bc1d-d9a4a3c31d9d",
+        "757f6d3b-8439-4d36-9459-7387da7ac1a5"
+      ],
+      "relevant": [
+        "drcd-5392-6"
+      ]
+    },
+    {
+      "question_id": "drcd-5453-10-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5453-10",
+        "drcd-5453-4",
+        "drcd-5453-7",
+        "drcd-5453-3",
+        "drcd-5453-9",
+        "drcd-5764-3",
+        "drcd-5453-8",
+        "drcd-6171-32"
+      ],
+      "retrieved_chunk_ids": [
+        "0d7efdb0-47f7-4695-a71e-28e2b2b535fa",
+        "c4fbfa38-cd1c-430a-a5f9-eda461b0b6fd",
+        "036855a3-a041-4957-ae33-7b67e7d3545f",
+        "c74d00de-64a4-476f-bb25-69430eb2dc5a",
+        "4e6fa78f-bf38-49a6-bafd-cd4cdcf3c987",
+        "3efbf5ff-ed7f-4c6b-8b7a-792bcf82b989",
+        "ef660eda-c716-43b2-a21c-1a784a30b39f",
+        "9234fdd9-4510-4d6c-9fa4-d473bfe5a1bb"
+      ],
+      "relevant": [
+        "drcd-5453-10"
+      ]
+    },
+    {
+      "question_id": "drcd-5457-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5457-3",
+        "drcd-6078-18",
+        "drcd-3341-6",
+        "drcd-5645-11",
+        "drcd-5645-8",
+        "drcd-1193-7",
+        "drcd-2471-2",
+        "drcd-5645-7"
+      ],
+      "retrieved_chunk_ids": [
+        "6dc263b7-73aa-415e-a375-0f29e1b6feb0",
+        "00300416-17e4-42b7-bca9-248ba8eff0e8",
+        "5f3662ba-cc37-48d8-951e-8aaa8f717a89",
+        "7aece220-40f3-4260-a6a4-e655ee779620",
+        "5b286ad5-7859-4516-8e64-23a4e9481e2d",
+        "14d2cf29-1ad7-4272-b031-3bd85194cb85",
+        "cc8c55a1-0e40-4370-b4fd-ae7b37291d2b",
+        "385eeaf1-f558-462f-a5ff-0349956a8ad5"
+      ],
+      "relevant": [
+        "drcd-5457-3"
+      ]
+    },
+    {
+      "question_id": "drcd-5522-7-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5522-7",
+        "drcd-5522-1",
+        "drcd-5522-2",
+        "drcd-5522-4",
+        "drcd-6424-26",
+        "drcd-6424-4",
+        "drcd-6005-12",
+        "drcd-4879-2"
+      ],
+      "retrieved_chunk_ids": [
+        "025f6472-afd2-4342-9eca-27ce2c095064",
+        "9cfdcd22-1ffb-4133-af2b-9729b92be5eb",
+        "c71ed16e-7999-4d8b-ae48-b1a46ac1ee54",
+        "0b575809-24d7-4298-8090-fb71ac55716c",
+        "171f9138-e9d6-41b0-aedc-f60cf3a48977",
+        "a8033c32-36e9-432e-9dd9-5a7b21f16a4f",
+        "aa22b954-af5e-4a27-8bcd-c94d660d6985",
+        "2f999aa1-a82d-4206-b2e3-b8bb6f3737df"
+      ],
+      "relevant": [
+        "drcd-5522-7"
+      ]
+    },
+    {
+      "question_id": "drcd-5523-7-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5523-7",
+        "drcd-5523-10",
+        "drcd-5523-4",
+        "drcd-6168-1",
+        "drcd-5523-5",
+        "drcd-6520-2",
+        "drcd-6171-25",
+        "drcd-5656-1"
+      ],
+      "retrieved_chunk_ids": [
+        "06a88f1f-9ac9-4846-8938-0864ed7d9d3d",
+        "522dd9bb-0be3-4713-bc8a-d447621077cb",
+        "9f4ea833-ddd1-4680-a744-aa6c7835dce8",
+        "21d600a0-4544-4288-bba3-c6ac97031810",
+        "050ed5a3-da9f-4c59-ba6e-94d7fb4576e6",
+        "481f7246-4bc0-412e-a97c-04719dd6909d",
+        "ef223201-9612-45af-b1d7-c2facd4bc45d",
+        "94d0aab1-ee30-4808-9911-761aa078e4fe"
+      ],
+      "relevant": [
+        "drcd-5523-7"
+      ]
+    },
+    {
+      "question_id": "drcd-5529-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5529-6",
+        "drcd-5529-7",
+        "drcd-3355-1",
+        "drcd-5667-3",
+        "drcd-5667-5",
+        "drcd-5529-3",
+        "drcd-3355-9",
+        "drcd-6005-4"
+      ],
+      "retrieved_chunk_ids": [
+        "2321a5c1-ca83-42ba-854c-582c0aa2bc97",
+        "ad60b84c-965d-41ae-ae3d-d54ff9bcfa1f",
+        "a7a5bb04-9745-4d65-92d6-b456ff87b62e",
+        "7eb010be-7238-41e9-a45f-2fb824d16dbd",
+        "98b10c3b-d1bc-4a52-8d96-9926cd6eebbe",
+        "6ba1d9b8-dd3d-4218-8d1a-e425f1c4b01e",
+        "661ae593-4779-4d78-8299-9da802a3cafa",
+        "435142ad-6bfa-4b50-82d4-241fe4ce8526"
+      ],
+      "relevant": [
+        "drcd-5529-6"
+      ]
+    },
+    {
+      "question_id": "drcd-5622-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5622-2",
+        "drcd-5622-1",
+        "drcd-5635-4",
+        "drcd-5667-5",
+        "drcd-6040-2",
+        "drcd-3213-2",
+        "drcd-6092-2",
+        "drcd-3269-1"
+      ],
+      "retrieved_chunk_ids": [
+        "de4346fe-2ca5-439b-8067-0114cf9068df",
+        "c0ab80cf-308c-434c-a144-e0974cd8f7ba",
+        "184655c5-d197-4721-b331-32cd833351ae",
+        "98b10c3b-d1bc-4a52-8d96-9926cd6eebbe",
+        "01a13bae-0318-42c8-b307-e4a792b7de73",
+        "6cd5464d-87ce-4852-9330-6baf3872774f",
+        "c2b1b3ee-dbec-48c6-8ec0-39d072db40fe",
+        "f2373636-a550-4db0-bd6e-159a8d00ac55"
+      ],
+      "relevant": [
+        "drcd-5622-2"
+      ]
+    },
+    {
+      "question_id": "drcd-5635-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5635-4",
+        "drcd-5635-14",
+        "drcd-3579-1",
+        "drcd-2430-7",
+        "drcd-6092-1",
+        "drcd-6040-2",
+        "drcd-3269-1",
+        "drcd-6092-2"
+      ],
+      "retrieved_chunk_ids": [
+        "184655c5-d197-4721-b331-32cd833351ae",
+        "33719d3e-c4b2-496f-bc93-dee8cb7f8664",
+        "9ea45dd0-1182-40a1-886c-a6a3f060a41f",
+        "d940d45f-132e-4c03-bcbc-4ea9f7ba79a5",
+        "e31c5ff0-88fa-4243-9629-a506cdb9d66f",
+        "01a13bae-0318-42c8-b307-e4a792b7de73",
+        "f2373636-a550-4db0-bd6e-159a8d00ac55",
+        "c2b1b3ee-dbec-48c6-8ec0-39d072db40fe"
+      ],
+      "relevant": [
+        "drcd-5635-4"
+      ]
+    },
+    {
+      "question_id": "drcd-5644-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5644-1",
+        "drcd-5644-5",
+        "drcd-5644-8",
+        "drcd-5676-1",
+        "drcd-3436-1",
+        "drcd-4902-1",
+        "drcd-5656-1",
+        "drcd-1165-9"
+      ],
+      "retrieved_chunk_ids": [
+        "1a15ed59-e933-4ef8-9e41-663154df6766",
+        "0d013c9c-49f2-4ed9-a938-7bf3b58e26dd",
+        "563fffca-a043-4111-830d-1f39a239992d",
+        "489b486d-90af-4ba5-a65f-e31c8934e6a7",
+        "7fbe9c45-a62a-4472-af35-0617480f65f8",
+        "d25ad8be-3a53-4ea3-bc4d-637774f79449",
+        "94d0aab1-ee30-4808-9911-761aa078e4fe",
+        "955fe342-2355-4b4a-88e5-6cbe5140b03c"
+      ],
+      "relevant": [
+        "drcd-5644-1"
+      ]
+    },
+    {
+      "question_id": "drcd-5645-17-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5645-17",
+        "drcd-5645-1",
+        "drcd-5645-11",
+        "drcd-5645-7",
+        "drcd-5645-8",
+        "drcd-5645-22",
+        "drcd-6385-3",
+        "drcd-6385-6"
+      ],
+      "retrieved_chunk_ids": [
+        "e0661041-01aa-429a-b7f7-563e111839be",
+        "f6057807-a139-4510-b46d-9b75b278fa8d",
+        "7aece220-40f3-4260-a6a4-e655ee779620",
+        "385eeaf1-f558-462f-a5ff-0349956a8ad5",
+        "5b286ad5-7859-4516-8e64-23a4e9481e2d",
+        "cabb42ae-632b-4679-8e3b-c1231be6a428",
+        "f41a7b0c-1d67-4ace-9dac-e0283aab0493",
+        "74056917-a382-4a5b-be6d-37a23141b006"
+      ],
+      "relevant": [
+        "drcd-5645-17"
+      ]
+    },
+    {
+      "question_id": "drcd-5661-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5661-2",
+        "drcd-5661-1",
+        "drcd-1179-25",
+        "drcd-3432-1",
+        "drcd-6008-1",
+        "drcd-5661-4",
+        "drcd-1181-8",
+        "drcd-1193-17"
+      ],
+      "retrieved_chunk_ids": [
+        "50236e55-5f7b-4a04-93f2-d4bc7e577bc8",
+        "ed919a32-c671-4fa1-89e3-d7a4ffcbbb70",
+        "5808aa39-4756-4565-ad6f-6296e605865f",
+        "683230a0-d2c9-4b89-aece-2ad7534e3e4b",
+        "ade53343-f3b0-446a-af5e-08477058cdf0",
+        "bcd609e6-d55c-4115-bdc7-0494e914e9f4",
+        "7f74c9d1-fe58-41ad-90ce-658f18a7e97d",
+        "7c40ff30-57b9-4cb2-882b-04114b489e21"
+      ],
+      "relevant": [
+        "drcd-5661-2"
+      ]
+    },
+    {
+      "question_id": "drcd-5661-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5661-4",
+        "drcd-5661-2",
+        "drcd-5661-1",
+        "drcd-3284-2",
+        "drcd-6047-2",
+        "drcd-5661-8",
+        "drcd-6224-3",
+        "drcd-3284-1"
+      ],
+      "retrieved_chunk_ids": [
+        "bcd609e6-d55c-4115-bdc7-0494e914e9f4",
+        "50236e55-5f7b-4a04-93f2-d4bc7e577bc8",
+        "ed919a32-c671-4fa1-89e3-d7a4ffcbbb70",
+        "af8ae9ed-dfd3-49d5-a10f-9431cef41e73",
+        "f1f8b3d8-91a8-4b9d-acaf-5b23c9d7b161",
+        "fe032614-8eae-4563-9d3a-1191a13ed15e",
+        "589e8906-c6fb-4a4b-bf26-3fd84959c194",
+        "baf0cf10-1010-499e-af99-e854fb173f4b"
+      ],
+      "relevant": [
+        "drcd-5661-4"
+      ]
+    },
+    {
+      "question_id": "drcd-5673-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5673-1",
+        "drcd-6225-2",
+        "drcd-2434-4",
+        "drcd-3206-11",
+        "drcd-6171-25",
+        "drcd-2534-7",
+        "drcd-6261-6",
+        "drcd-5453-9"
+      ],
+      "retrieved_chunk_ids": [
+        "2709c9c6-ceb8-4ad9-8c62-f9ec3c23ee32",
+        "b8eef2e1-5760-409c-b496-96b8122a00fe",
+        "b8ac19e1-cb2d-420e-b33a-d1acb7abad4c",
+        "f96b9528-18f3-4e0b-ad9b-7c40368871a9",
+        "ef223201-9612-45af-b1d7-c2facd4bc45d",
+        "d02957dc-cc77-4f16-bc35-9a5a8532491f",
+        "380a1a1a-1dc4-4add-a283-a03bb5f4f77a",
+        "4e6fa78f-bf38-49a6-bafd-cd4cdcf3c987"
+      ],
+      "relevant": [
+        "drcd-5673-1"
+      ]
+    },
+    {
+      "question_id": "drcd-5675-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5675-1",
+        "drcd-5600-2",
+        "drcd-1179-31",
+        "drcd-3206-6",
+        "drcd-6318-1",
+        "drcd-5675-2",
+        "drcd-5675-3",
+        "drcd-6509-1"
+      ],
+      "retrieved_chunk_ids": [
+        "04dd2a74-8923-4b71-a39c-005a67e9eece",
+        "102942cf-7af7-4d13-9038-f2d289fe975b",
+        "4432ba93-9961-4f03-86eb-280bca58825c",
+        "ed05df28-ae56-4e55-b05b-8da00c0ee35c",
+        "74bdb189-5b34-4928-a380-735049c6e8de",
+        "20f6e2b4-b048-408a-8a47-3610e4d90313",
+        "cf8547ef-52b2-41fa-a955-04eca6b0e84d",
+        "26609dcc-63bd-401e-8fe6-fbefc2dd64af"
+      ],
+      "relevant": [
+        "drcd-5675-1"
+      ]
+    },
+    {
+      "question_id": "drcd-5680-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5680-4",
+        "drcd-5680-2",
+        "drcd-3447-2",
+        "drcd-3224-3",
+        "drcd-6450-4",
+        "drcd-3338-1",
+        "drcd-6095-23",
+        "drcd-1193-5"
+      ],
+      "retrieved_chunk_ids": [
+        "5757a620-631f-4769-8fba-23b79baa33e6",
+        "74c49279-98ef-44e2-8905-174275b8a2a9",
+        "91af0512-4820-4ded-a883-580fdda99a1f",
+        "3622e109-70a5-4fee-a4b6-edbecaedce05",
+        "24a9bad2-a398-4299-9c97-a4b28b7198af",
+        "95fd669d-a581-40f4-b34c-a1a854ed795b",
+        "62defc76-9beb-4bf7-819b-0d27c80f9cda",
+        "16ea5fe4-1e1a-4869-ba60-0968b194e389"
+      ],
+      "relevant": [
+        "drcd-5680-4"
+      ]
+    },
+    {
+      "question_id": "drcd-5686-7-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5686-7",
+        "drcd-5686-14",
+        "drcd-5715-3",
+        "drcd-1152-7",
+        "drcd-6304-1",
+        "drcd-5686-3",
+        "drcd-3229-2",
+        "drcd-5715-2"
+      ],
+      "retrieved_chunk_ids": [
+        "2a3e0fb2-01ed-41af-84c3-b543f64e4c38",
+        "94d268cf-bbca-4e17-95c5-c19dcde4ab63",
+        "bb51b017-5951-412e-84dd-37c561209c14",
+        "3fdf526c-9aee-4d1e-95fa-ef29573acd69",
+        "3e056a6e-c943-4758-8e5e-9d27cb8a9248",
+        "b77080df-4a5a-495d-9d4b-01be901ef012",
+        "8af2410f-f260-411d-b8ca-ddc5a60742df",
+        "ad8ae4cd-b3a8-4fdd-805a-f36a89ff24a9"
+      ],
+      "relevant": [
+        "drcd-5686-7"
+      ]
+    },
+    {
+      "question_id": "drcd-5758-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5758-1",
+        "drcd-5758-3",
+        "drcd-5758-4",
+        "drcd-1193-5",
+        "drcd-1193-3",
+        "drcd-1199-6",
+        "drcd-5758-15",
+        "drcd-5724-14"
+      ],
+      "retrieved_chunk_ids": [
+        "5ea50b37-c77a-4085-a144-2adb7891f282",
+        "81406813-fa51-40d9-bbbe-f8c132096935",
+        "dd15478e-7b4a-4595-bf09-53c7ccf3aac3",
+        "16ea5fe4-1e1a-4869-ba60-0968b194e389",
+        "f0648a82-156a-4363-9a1e-da9d4def17a5",
+        "93fd33ef-ee55-4205-a9b8-a98adeadb702",
+        "ac95f7d8-b29a-4ef8-bbda-44e24307d338",
+        "f9a4eba9-650e-43e7-9a9c-86c321c13f6f"
+      ],
+      "relevant": [
+        "drcd-5758-1"
+      ]
+    },
+    {
+      "question_id": "drcd-5759-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5759-4",
+        "drcd-5759-14",
+        "drcd-6478-10",
+        "drcd-5759-8",
+        "drcd-5759-6",
+        "drcd-5759-9",
+        "drcd-6478-6",
+        "drcd-6095-1"
+      ],
+      "retrieved_chunk_ids": [
+        "b4c34cfe-f162-40cd-9400-c4eb5d5519ff",
+        "478280c9-529f-4640-9f50-d8ab0c26879f",
+        "68ed9f47-4135-47cb-a653-6a6319053aee",
+        "b7c86962-d896-4c98-b747-75c3ae7c685e",
+        "c2eebffe-af2c-4299-8613-5405fbb9b8d6",
+        "09d68307-876d-44f2-87a3-1dec253b2d8e",
+        "03d845ca-5758-47ac-af00-b4687635bcb2",
+        "e67bc1ff-9652-44f9-8f2b-5c2e89c7ceec"
+      ],
+      "relevant": [
+        "drcd-5759-4"
+      ]
+    },
+    {
+      "question_id": "drcd-5764-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5764-3",
+        "drcd-6055-4",
+        "drcd-5764-1",
+        "drcd-6408-2",
+        "drcd-1155-6",
+        "drcd-6171-32",
+        "drcd-4994-1",
+        "drcd-6057-2"
+      ],
+      "retrieved_chunk_ids": [
+        "3efbf5ff-ed7f-4c6b-8b7a-792bcf82b989",
+        "6fe7d56e-e8ea-4cb5-95c3-229bfb3ea0b1",
+        "962ecf23-56d4-47ca-ab79-8515b762cf68",
+        "ba36d0a5-37be-4996-a4ab-f6d7c1d9136d",
+        "2005c188-ba22-4c04-a934-9098f2daacb8",
+        "9234fdd9-4510-4d6c-9fa4-d473bfe5a1bb",
+        "5828926e-24c6-48f9-94b6-eab603ca41e7",
+        "bdbd7af1-918a-423b-adfb-3f3bf92fe41d"
+      ],
+      "relevant": [
+        "drcd-5764-3"
+      ]
+    },
+    {
+      "question_id": "drcd-5769-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5769-5",
+        "drcd-2534-5",
+        "drcd-1168-7",
+        "drcd-6408-2",
+        "drcd-6388-1",
+        "drcd-1179-32",
+        "drcd-6021-2",
+        "drcd-5620-1"
+      ],
+      "retrieved_chunk_ids": [
+        "9081dc69-fca7-4210-997b-0e6de7f1e70b",
+        "1e9c48de-44cc-4217-ba8a-31e7b1c8f5a9",
+        "fb9bdfc0-0bc4-4e1e-8a79-1ce95d0b39b4",
+        "ba36d0a5-37be-4996-a4ab-f6d7c1d9136d",
+        "233606f6-b6db-4aa6-a0bc-b8dc1eede3d3",
+        "9dc5bda1-4570-4af1-88e0-69c8c18fd99e",
+        "cd770157-df77-467d-b00d-ccd58136d40b",
+        "fff07d88-2a73-46aa-98c0-97f0b2f7819e"
+      ],
+      "relevant": [
+        "drcd-5769-5"
+      ]
+    },
+    {
+      "question_id": "drcd-5771-28-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5771-28",
+        "drcd-5771-31",
+        "drcd-5771-3",
+        "drcd-5771-30",
+        "drcd-5771-5",
+        "drcd-5771-32",
+        "drcd-5771-9",
+        "drcd-5771-18"
+      ],
+      "retrieved_chunk_ids": [
+        "4bc77d86-fbc9-40d1-b815-1b614142f066",
+        "96fbf04c-6042-4b81-b4ea-bdf632952f1d",
+        "c17ee979-0292-4708-9250-d1314dc9f4c6",
+        "340b8d86-e0df-49f0-a266-70571f4ff2d1",
+        "b20174a2-e1a0-4f1d-a12a-3e61116b0ac6",
+        "b04b22c0-897d-4838-9e3a-783c8ea5a898",
+        "3087d917-0429-4ed5-a2dc-4150098f5d34",
+        "7027b41b-72ef-4b8a-a838-b69f9dff9fd5"
+      ],
+      "relevant": [
+        "drcd-5771-28"
+      ]
+    },
+    {
+      "question_id": "drcd-5780-10-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5780-10",
+        "drcd-5780-8",
+        "drcd-4876-3",
+        "drcd-5780-16",
+        "drcd-5780-6",
+        "drcd-3356-1",
+        "drcd-5780-17",
+        "drcd-5780-12"
+      ],
+      "retrieved_chunk_ids": [
+        "853292aa-89d0-4035-bbca-15ac728430d8",
+        "ec7a6b17-5dfa-44ec-b5fe-6e1be1b48776",
+        "9320b1e3-2232-4b68-8629-73bdee8272f1",
+        "7eb7d318-ffd2-4356-b0dc-9758c51af399",
+        "4f3e670b-c7f6-4a32-9b4f-70888a37d7d1",
+        "ad5d3d45-226d-463a-9a8c-5be7370f234a",
+        "05bf06c3-206f-4b54-bda5-6ad7b1c9211b",
+        "d1949720-b876-4107-a5d6-f600f62c36d8"
+      ],
+      "relevant": [
+        "drcd-5780-10"
+      ]
+    },
+    {
+      "question_id": "drcd-5780-17-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5780-17",
+        "drcd-5780-16",
+        "drcd-5780-5",
+        "drcd-5780-12",
+        "drcd-5780-23",
+        "drcd-5780-6",
+        "drcd-5626-1",
+        "drcd-5780-8"
+      ],
+      "retrieved_chunk_ids": [
+        "05bf06c3-206f-4b54-bda5-6ad7b1c9211b",
+        "7eb7d318-ffd2-4356-b0dc-9758c51af399",
+        "2e5480e5-b222-447c-89ad-9acf38f91455",
+        "d1949720-b876-4107-a5d6-f600f62c36d8",
+        "9630e693-60e1-4460-8e0f-561bd2de6aed",
+        "4f3e670b-c7f6-4a32-9b4f-70888a37d7d1",
+        "f27146d5-ee62-4c2b-b835-c1ef6c5c335e",
+        "ec7a6b17-5dfa-44ec-b5fe-6e1be1b48776"
+      ],
+      "relevant": [
+        "drcd-5780-17"
+      ]
+    },
+    {
+      "question_id": "drcd-5780-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-5780-5",
+        "drcd-5780-12",
+        "drcd-5780-6",
+        "drcd-5475-1",
+        "drcd-1181-8",
+        "drcd-5780-17",
+        "drcd-3482-1",
+        "drcd-4876-3"
+      ],
+      "retrieved_chunk_ids": [
+        "2e5480e5-b222-447c-89ad-9acf38f91455",
+        "d1949720-b876-4107-a5d6-f600f62c36d8",
+        "4f3e670b-c7f6-4a32-9b4f-70888a37d7d1",
+        "361cf1ae-193e-414c-8440-4f0f3f0f4743",
+        "7f74c9d1-fe58-41ad-90ce-658f18a7e97d",
+        "05bf06c3-206f-4b54-bda5-6ad7b1c9211b",
+        "9497eb66-59a0-48bb-ac2b-e70adafead8a",
+        "9320b1e3-2232-4b68-8629-73bdee8272f1"
+      ],
+      "relevant": [
+        "drcd-5780-5"
+      ]
+    },
+    {
+      "question_id": "drcd-6012-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6012-6",
+        "drcd-6012-4",
+        "drcd-3478-3",
+        "drcd-6012-5",
+        "drcd-1190-2",
+        "drcd-3524-5",
+        "drcd-5535-3",
+        "drcd-2496-8"
+      ],
+      "retrieved_chunk_ids": [
+        "23a29729-c6af-4f07-883e-75bb988b44b5",
+        "21a4da81-45d3-4066-8838-ed4e60781f5e",
+        "f33101f6-971d-4412-912d-9ceb03cd432d",
+        "45604507-c923-4b82-99e5-30111525c119",
+        "2ed0627a-ff87-40b9-b655-2279fba7d1af",
+        "8817df97-fda7-4e5c-9edf-907432ac9206",
+        "6a7cbfd1-a8d7-451e-b4d8-f372475222d9",
+        "11ccc0a2-dd02-470b-8b72-2b0ee094ce15"
+      ],
+      "relevant": [
+        "drcd-6012-6"
+      ]
+    },
+    {
+      "question_id": "drcd-6019-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6019-6",
+        "drcd-3384-7",
+        "drcd-3384-10",
+        "drcd-2471-4",
+        "drcd-6078-18",
+        "drcd-3303-5",
+        "drcd-6385-5",
+        "drcd-2471-10"
+      ],
+      "retrieved_chunk_ids": [
+        "b6f98f42-8646-4ae6-b21f-97be641c3db4",
+        "8e539f32-c689-42b9-893f-25f2a981b344",
+        "4227bbbf-c0b9-45a5-8a7b-32ff14bf83c9",
+        "4e124cdc-5b3c-40a0-93a8-85ead5825972",
+        "00300416-17e4-42b7-bca9-248ba8eff0e8",
+        "742436c1-045b-48f8-a09a-8598274ab91e",
+        "a414ebc6-eadc-41b2-af3d-9db30bb22b7e",
+        "9d7abbf5-b125-4830-8781-c1c424eadd23"
+      ],
+      "relevant": [
+        "drcd-6019-6"
+      ]
+    },
+    {
+      "question_id": "drcd-6028-7-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6028-7",
+        "drcd-6028-5",
+        "drcd-3431-1",
+        "drcd-6211-1",
+        "drcd-3431-8",
+        "drcd-3431-11",
+        "drcd-6088-2",
+        "drcd-6122-1"
+      ],
+      "retrieved_chunk_ids": [
+        "0f8fdbf4-b966-4aa1-aa0e-1eca2b0269fc",
+        "3d32a5c7-3548-4017-9481-60b9026b0d31",
+        "c44b7cb1-b82a-4d59-b71d-6bed8717d834",
+        "2d617d3e-9ac0-40fb-bd1d-f8f686e50f08",
+        "a55c3979-9279-4808-a853-d1b1fbd83f79",
+        "77ff8b45-7b7f-4554-a9d7-fd8da2d57c2c",
+        "acede388-128d-41aa-94e0-b495ce362738",
+        "5b48c912-b2c1-498d-b67c-24833402d0a6"
+      ],
+      "relevant": [
+        "drcd-6028-7"
+      ]
+    },
+    {
+      "question_id": "drcd-6033-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6033-6",
+        "drcd-6033-12",
+        "drcd-6033-29",
+        "drcd-3524-3",
+        "drcd-6033-21",
+        "drcd-6171-46",
+        "drcd-3341-9",
+        "drcd-6385-5"
+      ],
+      "retrieved_chunk_ids": [
+        "c475a8c7-3584-424a-a8b8-96b1d41999a7",
+        "7b601c0b-88c5-4823-a3a0-ed3d53b9559f",
+        "3d5bf786-bbe3-40b7-9b52-228e5543fabd",
+        "ec577fd1-78cc-45d0-aac8-88e5f98c71ea",
+        "da7eb572-9e0e-418e-b1e6-51929458da68",
+        "6374d067-67b0-4430-9a11-bfdc19502e94",
+        "fcfe5abb-c488-403d-9671-ea0e1cd7b856",
+        "a414ebc6-eadc-41b2-af3d-9db30bb22b7e"
+      ],
+      "relevant": [
+        "drcd-6033-6"
+      ]
+    },
+    {
+      "question_id": "drcd-6033-8-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6033-8",
+        "drcd-6033-29",
+        "drcd-3384-15",
+        "drcd-6230-4",
+        "drcd-5771-31",
+        "drcd-6033-6",
+        "drcd-6135-1",
+        "drcd-6385-3"
+      ],
+      "retrieved_chunk_ids": [
+        "8fbead32-4b26-4531-a8fb-7fa7640fbb42",
+        "3d5bf786-bbe3-40b7-9b52-228e5543fabd",
+        "a790f85e-c3f1-416e-9642-247298884cdf",
+        "972aefcb-c187-43e7-b0f5-9ec530507d14",
+        "96fbf04c-6042-4b81-b4ea-bdf632952f1d",
+        "c475a8c7-3584-424a-a8b8-96b1d41999a7",
+        "e35aa5d4-1c84-4627-a439-1ba66a9bb044",
+        "f41a7b0c-1d67-4ace-9dac-e0283aab0493"
+      ],
+      "relevant": [
+        "drcd-6033-8"
+      ]
+    },
+    {
+      "question_id": "drcd-6036-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6036-4",
+        "drcd-3568-1",
+        "drcd-3568-2",
+        "drcd-6373-60",
+        "drcd-6268-3",
+        "drcd-5771-3",
+        "drcd-4941-17",
+        "drcd-6385-21"
+      ],
+      "retrieved_chunk_ids": [
+        "54d6637d-980c-4018-a6a4-313ab0a6577f",
+        "4a36b6cf-8e9c-488f-bdb1-181394103eca",
+        "6e392dcc-43e0-49b6-b8f3-5b5a1e8ca2fd",
+        "a37b3862-bf1e-4785-af2e-e66675edc5bd",
+        "eac8fdd8-fb35-4bb9-aa3b-169cb184bb6c",
+        "c17ee979-0292-4708-9250-d1314dc9f4c6",
+        "6a1503c6-3a9c-4f48-82a0-8b82771ec15f",
+        "6937d812-af0d-4697-8f7d-6a4700994fe5"
+      ],
+      "relevant": [
+        "drcd-6036-4"
+      ]
+    },
+    {
+      "question_id": "drcd-6055-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6055-4",
+        "drcd-6055-1",
+        "drcd-6055-6",
+        "drcd-6055-5",
+        "drcd-6055-2",
+        "drcd-6373-48",
+        "drcd-5751-6",
+        "drcd-5719-1"
+      ],
+      "retrieved_chunk_ids": [
+        "6fe7d56e-e8ea-4cb5-95c3-229bfb3ea0b1",
+        "be80d8a2-4964-44e5-a6df-79c41f97f625",
+        "3bc6d1e4-659b-47c8-ad82-41956739ab55",
+        "0970dac6-2ae2-4bff-a7c8-68401d5ace60",
+        "f8597104-f0fd-435d-8248-fa4e60c9420c",
+        "5b8f1264-cb69-42cf-a462-4ca15953111b",
+        "5ffbb7e1-c609-486d-a45e-f9067d0cc96c",
+        "c5a1b1c9-5273-40e1-b4c0-0e8c61c1b23e"
+      ],
+      "relevant": [
+        "drcd-6055-4"
+      ]
+    },
+    {
+      "question_id": "drcd-6055-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6055-6",
+        "drcd-6055-1",
+        "drcd-6055-4",
+        "drcd-6055-2",
+        "drcd-6055-5",
+        "drcd-1160-2",
+        "drcd-3284-2",
+        "drcd-1194-3"
+      ],
+      "retrieved_chunk_ids": [
+        "3bc6d1e4-659b-47c8-ad82-41956739ab55",
+        "be80d8a2-4964-44e5-a6df-79c41f97f625",
+        "6fe7d56e-e8ea-4cb5-95c3-229bfb3ea0b1",
+        "f8597104-f0fd-435d-8248-fa4e60c9420c",
+        "0970dac6-2ae2-4bff-a7c8-68401d5ace60",
+        "ce937979-c299-43d2-b016-9058b2842148",
+        "af8ae9ed-dfd3-49d5-a10f-9431cef41e73",
+        "89edd4da-745b-4854-9f6d-728532333edd"
+      ],
+      "relevant": [
+        "drcd-6055-6"
+      ]
+    },
+    {
+      "question_id": "drcd-6075-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6075-6",
+        "drcd-6075-4",
+        "drcd-6358-2",
+        "drcd-6209-4",
+        "drcd-6075-2",
+        "drcd-6515-1",
+        "drcd-3359-15",
+        "drcd-5633-1"
+      ],
+      "retrieved_chunk_ids": [
+        "385b696b-6e6d-45a3-aca8-4110b363f24f",
+        "d5c5f128-612c-42e8-9a0b-1b52ab66dccf",
+        "56504661-4f78-4433-9a90-921ae06ceee9",
+        "00b581e9-ff9a-43b0-9a02-a766fdacc0a8",
+        "0440ce4f-1c3c-471a-a55d-c1067a2fcfe4",
+        "5e8116ac-f296-4015-9096-2178a451c036",
+        "af9470be-eb25-4cc0-bc5d-2931e6cc6fb2",
+        "3045b57c-6375-4026-9b2f-70ce411e684b"
+      ],
+      "relevant": [
+        "drcd-6075-6"
+      ]
+    },
+    {
+      "question_id": "drcd-6078-18-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6078-18",
+        "drcd-3229-7",
+        "drcd-5686-3",
+        "drcd-3340-1",
+        "drcd-3229-2",
+        "drcd-6078-2",
+        "drcd-6171-8",
+        "drcd-6171-6"
+      ],
+      "retrieved_chunk_ids": [
+        "00300416-17e4-42b7-bca9-248ba8eff0e8",
+        "a9dea1b6-e1b3-43b6-8b6b-be157b8ec591",
+        "b77080df-4a5a-495d-9d4b-01be901ef012",
+        "132a5922-f0c9-4f32-9193-f8650db5eca1",
+        "8af2410f-f260-411d-b8ca-ddc5a60742df",
+        "217b2652-30c2-4403-a7f9-d8777829a2a7",
+        "43607e90-dde1-49f5-96a1-b5ae034f067e",
+        "88e4f16d-db86-4a0a-9a46-5f9df3b0ced1"
+      ],
+      "relevant": [
+        "drcd-6078-18"
+      ]
+    },
+    {
+      "question_id": "drcd-6078-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6078-2",
+        "drcd-1158-2",
+        "drcd-2493-2",
+        "drcd-4982-16",
+        "drcd-1181-2",
+        "drcd-2435-2",
+        "drcd-6078-4",
+        "drcd-6078-5"
+      ],
+      "retrieved_chunk_ids": [
+        "217b2652-30c2-4403-a7f9-d8777829a2a7",
+        "f0dee208-cd0b-455d-8aea-b54873b77205",
+        "1d5fafbe-b046-430e-bb82-fc1f9ba2eecd",
+        "c2f719e1-1a65-4dd8-8941-df41b566abd8",
+        "66a4f080-32f4-48a7-afb7-e2c7d2da02c9",
+        "555edacb-1842-4528-aaae-eef7a2d79d25",
+        "9ba02fba-e761-4493-a242-27ae7eb6ad1c",
+        "286cc684-af64-4d61-8d1b-979235e0b152"
+      ],
+      "relevant": [
+        "drcd-6078-2"
+      ]
+    },
+    {
+      "question_id": "drcd-6078-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6078-4",
+        "drcd-2493-2",
+        "drcd-1199-6",
+        "drcd-1184-4",
+        "drcd-6078-5",
+        "drcd-6248-1",
+        "drcd-2458-1",
+        "drcd-1193-5"
+      ],
+      "retrieved_chunk_ids": [
+        "9ba02fba-e761-4493-a242-27ae7eb6ad1c",
+        "1d5fafbe-b046-430e-bb82-fc1f9ba2eecd",
+        "93fd33ef-ee55-4205-a9b8-a98adeadb702",
+        "2650dce8-d1b5-42f1-afc9-a6ae581491ee",
+        "286cc684-af64-4d61-8d1b-979235e0b152",
+        "275c6221-8c94-4da2-ac27-36faa25c405f",
+        "b2e98627-d105-45c3-857e-9acfd2efad46",
+        "16ea5fe4-1e1a-4869-ba60-0968b194e389"
+      ],
+      "relevant": [
+        "drcd-6078-4"
+      ]
+    },
+    {
+      "question_id": "drcd-6089-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6089-3",
+        "drcd-2520-1",
+        "drcd-4996-1",
+        "drcd-4912-2",
+        "drcd-4976-1",
+        "drcd-4998-1",
+        "drcd-5534-1",
+        "drcd-6515-1"
+      ],
+      "retrieved_chunk_ids": [
+        "45cb038a-619a-40a8-ac54-52e55e81419d",
+        "92afe31f-d1db-4049-90fb-8f4410cc6302",
+        "44e46e9c-19c6-415b-bbf6-3c4595332e10",
+        "d1c6007c-c93b-4ac1-8701-5573fa799eaf",
+        "439b71a9-582b-4d3c-b8b8-ae2c0a06562c",
+        "270d5410-fc90-4a1c-a43e-44a69450a2bd",
+        "6a04121d-fcd7-4c7a-9a9c-3bf7d47a80a2",
+        "5e8116ac-f296-4015-9096-2178a451c036"
+      ],
+      "relevant": [
+        "drcd-6089-3"
+      ]
+    },
+    {
+      "question_id": "drcd-6092-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6092-1",
+        "drcd-6092-2",
+        "drcd-6092-3",
+        "drcd-5622-1",
+        "drcd-1165-11",
+        "drcd-3269-1",
+        "drcd-6040-2",
+        "drcd-1165-8"
+      ],
+      "retrieved_chunk_ids": [
+        "e31c5ff0-88fa-4243-9629-a506cdb9d66f",
+        "c2b1b3ee-dbec-48c6-8ec0-39d072db40fe",
+        "3c960179-dc58-4c9d-8655-80066850f61f",
+        "c0ab80cf-308c-434c-a144-e0974cd8f7ba",
+        "e1c05377-3784-407c-95ce-4ec71c28025a",
+        "f2373636-a550-4db0-bd6e-159a8d00ac55",
+        "01a13bae-0318-42c8-b307-e4a792b7de73",
+        "00c8448d-132e-4515-b995-86fe9deeee21"
+      ],
+      "relevant": [
+        "drcd-6092-1"
+      ]
+    },
+    {
+      "question_id": "drcd-6095-15-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6095-15",
+        "drcd-6095-14",
+        "drcd-6095-7",
+        "drcd-6322-6",
+        "drcd-3297-8",
+        "drcd-6095-1",
+        "drcd-4988-1",
+        "drcd-3224-3"
+      ],
+      "retrieved_chunk_ids": [
+        "cd2ec270-230a-4c3f-bd7f-3a0db3c7cb74",
+        "be0e489e-907a-4758-8a6a-facbf1c29b48",
+        "fb2bd939-87f8-4e63-8a84-93e69e592eb4",
+        "7e236b17-5c6d-4965-be23-78f19ff5590d",
+        "64362646-1f50-4358-8545-fd0c702eb964",
+        "e67bc1ff-9652-44f9-8f2b-5c2e89c7ceec",
+        "1db5ac93-97ac-452e-ba02-f017374aae3f",
+        "3622e109-70a5-4fee-a4b6-edbecaedce05"
+      ],
+      "relevant": [
+        "drcd-6095-15"
+      ]
+    },
+    {
+      "question_id": "drcd-6095-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6095-3",
+        "drcd-6095-1",
+        "drcd-6095-14",
+        "drcd-6095-15",
+        "drcd-6095-23",
+        "drcd-6095-20",
+        "drcd-6095-7",
+        "drcd-6095-6"
+      ],
+      "retrieved_chunk_ids": [
+        "c3374306-b485-4e09-bf48-c4ba2459ea09",
+        "e67bc1ff-9652-44f9-8f2b-5c2e89c7ceec",
+        "be0e489e-907a-4758-8a6a-facbf1c29b48",
+        "cd2ec270-230a-4c3f-bd7f-3a0db3c7cb74",
+        "62defc76-9beb-4bf7-819b-0d27c80f9cda",
+        "91982297-d3e9-40e6-bdb5-0196cf9c6826",
+        "fb2bd939-87f8-4e63-8a84-93e69e592eb4",
+        "d53afd6e-5177-4887-8c4f-767e4edb2431"
+      ],
+      "relevant": [
+        "drcd-6095-3"
+      ]
+    },
+    {
+      "question_id": "drcd-6095-7-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6095-7",
+        "drcd-3299-1",
+        "drcd-3299-3",
+        "drcd-6095-15",
+        "drcd-3299-5",
+        "drcd-6095-6",
+        "drcd-5759-9",
+        "drcd-6095-1"
+      ],
+      "retrieved_chunk_ids": [
+        "fb2bd939-87f8-4e63-8a84-93e69e592eb4",
+        "83f6b60a-bb44-4a0d-a8ac-0d2d05a53b1d",
+        "f301985c-db87-4170-b4a5-8ae98c6822a2",
+        "cd2ec270-230a-4c3f-bd7f-3a0db3c7cb74",
+        "e0e5947d-70e0-4019-bac9-30fb3b8890ba",
+        "d53afd6e-5177-4887-8c4f-767e4edb2431",
+        "09d68307-876d-44f2-87a3-1dec253b2d8e",
+        "e67bc1ff-9652-44f9-8f2b-5c2e89c7ceec"
+      ],
+      "relevant": [
+        "drcd-6095-7"
+      ]
+    },
+    {
+      "question_id": "drcd-6097-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6097-5",
+        "drcd-5758-4",
+        "drcd-5645-1",
+        "drcd-5758-1",
+        "drcd-4988-1",
+        "drcd-6159-2",
+        "drcd-1193-77",
+        "drcd-1193-63"
+      ],
+      "retrieved_chunk_ids": [
+        "39542fb2-1ed0-4c54-b7ec-15196fd88103",
+        "dd15478e-7b4a-4595-bf09-53c7ccf3aac3",
+        "f6057807-a139-4510-b46d-9b75b278fa8d",
+        "5ea50b37-c77a-4085-a144-2adb7891f282",
+        "1db5ac93-97ac-452e-ba02-f017374aae3f",
+        "fc3e462e-ebf8-4569-bf56-d3dc89f70947",
+        "8d9c80a7-4fee-4a31-96bd-c458a661c748",
+        "422e179b-0438-4a20-95bf-d644b9c77666"
+      ],
+      "relevant": [
+        "drcd-6097-5"
+      ]
+    },
+    {
+      "question_id": "drcd-6099-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6099-3",
+        "drcd-6078-5",
+        "drcd-4913-1",
+        "drcd-4976-3",
+        "drcd-3254-1",
+        "drcd-4976-1",
+        "drcd-4912-9",
+        "drcd-6129-1"
+      ],
+      "retrieved_chunk_ids": [
+        "c5603b06-9c17-4372-b665-17ee416236aa",
+        "286cc684-af64-4d61-8d1b-979235e0b152",
+        "8031af45-fd5e-43b4-86d2-3ea422c2fe9a",
+        "14e6e656-eae1-4f6c-a779-ff89dffbe0f4",
+        "e35466b7-ac93-44b6-b28c-24d563875e6b",
+        "439b71a9-582b-4d3c-b8b8-ae2c0a06562c",
+        "ad1c68d1-093c-4d8e-8c87-bbbecb34b75b",
+        "dae5c9f5-701c-4746-87c2-93e44c701099"
+      ],
+      "relevant": [
+        "drcd-6099-3"
+      ]
+    },
+    {
+      "question_id": "drcd-6110-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6110-5",
+        "drcd-6110-1",
+        "drcd-6110-3",
+        "drcd-1193-16",
+        "drcd-6110-2",
+        "drcd-5720-3",
+        "drcd-6257-3",
+        "drcd-5381-2"
+      ],
+      "retrieved_chunk_ids": [
+        "5980ade2-a76b-4c30-9d8e-29508fe853d2",
+        "75c2622a-128a-44c6-867a-2fb8a419700c",
+        "491a6867-6f16-45b2-8ab4-6e641a7249d8",
+        "00aa2eb8-47e2-4c84-bbfa-83bd274f316e",
+        "d16fcec5-465e-481c-b5ae-8b5b4803cdef",
+        "8f34a3f1-a42f-4258-9a9b-da365ee2f7c6",
+        "ba0aa883-650e-408e-83ff-b7829499d758",
+        "f99c1205-f1e3-4b50-8d42-56b0b25c2cbb"
+      ],
+      "relevant": [
+        "drcd-6110-5"
+      ]
+    },
+    {
+      "question_id": "drcd-6122-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6122-3",
+        "drcd-6078-18",
+        "drcd-6107-1",
+        "drcd-2471-18",
+        "drcd-2471-5",
+        "drcd-3229-3",
+        "drcd-5457-3",
+        "drcd-1193-7"
+      ],
+      "retrieved_chunk_ids": [
+        "2cf2f13c-9ae7-4dc8-a684-8b7e04437d15",
+        "00300416-17e4-42b7-bca9-248ba8eff0e8",
+        "f0ac7d65-8daf-4e81-8436-3fdc338c76b8",
+        "a80bbe2a-7693-4536-b7af-3e09f30b6f3e",
+        "4fd00445-8c60-4802-a714-6b25931a7481",
+        "3861a17e-5b2c-4558-9a42-ab00a66d30bc",
+        "6dc263b7-73aa-415e-a375-0f29e1b6feb0",
+        "14d2cf29-1ad7-4272-b031-3bd85194cb85"
+      ],
+      "relevant": [
+        "drcd-6122-3"
+      ]
+    },
+    {
+      "question_id": "drcd-6131-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6131-4",
+        "drcd-5420-1",
+        "drcd-5597-13",
+        "drcd-5597-4",
+        "drcd-5597-5",
+        "drcd-6181-2",
+        "drcd-1194-16",
+        "drcd-1161-10"
+      ],
+      "retrieved_chunk_ids": [
+        "c54b0353-2411-41f2-b21a-5850d83a7dbd",
+        "4c1290a1-c499-47f8-9fba-518c57e97419",
+        "bccfd8db-5f41-4d91-87ca-e377094d2a79",
+        "d401abbd-1ddb-4b9c-b5da-140d89ab1221",
+        "79403740-6c0f-4e69-a5dd-1f21dc4f1a02",
+        "33212c62-263e-4411-9a82-81e83dbaab10",
+        "c9a26b25-c973-4069-bada-e4398d7dee55",
+        "5287b058-2443-4c5e-9f7d-66d6085f16da"
+      ],
+      "relevant": [
+        "drcd-6131-4"
+      ]
+    },
+    {
+      "question_id": "drcd-6159-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6159-2",
+        "drcd-6159-6",
+        "drcd-6159-3",
+        "drcd-6159-9",
+        "drcd-6159-8",
+        "drcd-3338-1",
+        "drcd-2471-4",
+        "drcd-6373-58"
+      ],
+      "retrieved_chunk_ids": [
+        "fc3e462e-ebf8-4569-bf56-d3dc89f70947",
+        "e7d42acd-75b6-4ac5-a594-821210efc801",
+        "0b7a4888-99c9-444f-a680-f4af9f118695",
+        "dc5226f2-4f9d-49ab-a326-d5e374bc385e",
+        "c7c8a42c-c619-45ed-9d43-45ffea4d1527",
+        "95fd669d-a581-40f4-b34c-a1a854ed795b",
+        "4e124cdc-5b3c-40a0-93a8-85ead5825972",
+        "b4a51a70-bed8-44fe-8804-e85628ebbc5d"
+      ],
+      "relevant": [
+        "drcd-6159-2"
+      ]
+    },
+    {
+      "question_id": "drcd-6159-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6159-3",
+        "drcd-6159-2",
+        "drcd-3338-1",
+        "drcd-6159-6",
+        "drcd-5759-8",
+        "drcd-3224-5",
+        "drcd-3224-9",
+        "drcd-3224-8"
+      ],
+      "retrieved_chunk_ids": [
+        "0b7a4888-99c9-444f-a680-f4af9f118695",
+        "fc3e462e-ebf8-4569-bf56-d3dc89f70947",
+        "95fd669d-a581-40f4-b34c-a1a854ed795b",
+        "e7d42acd-75b6-4ac5-a594-821210efc801",
+        "b7c86962-d896-4c98-b747-75c3ae7c685e",
+        "2b7f2440-3e5a-4763-a5a0-b0100d4bb12d",
+        "6c67e5ea-1c68-47ae-9a9c-8bf6493fc4c6",
+        "4655af1c-2b6e-4503-8466-6076bf91676d"
+      ],
+      "relevant": [
+        "drcd-6159-3"
+      ]
+    },
+    {
+      "question_id": "drcd-6159-9-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6159-9",
+        "drcd-6159-6",
+        "drcd-1193-76",
+        "drcd-6159-8",
+        "drcd-6373-61",
+        "drcd-1193-77",
+        "drcd-6373-60",
+        "drcd-6159-2"
+      ],
+      "retrieved_chunk_ids": [
+        "dc5226f2-4f9d-49ab-a326-d5e374bc385e",
+        "e7d42acd-75b6-4ac5-a594-821210efc801",
+        "b54a04fc-cd2c-475d-ab22-fd8c7d8979e3",
+        "c7c8a42c-c619-45ed-9d43-45ffea4d1527",
+        "46fe2b88-9c47-4fe8-ba1d-2318470f987b",
+        "8d9c80a7-4fee-4a31-96bd-c458a661c748",
+        "a37b3862-bf1e-4785-af2e-e66675edc5bd",
+        "fc3e462e-ebf8-4569-bf56-d3dc89f70947"
+      ],
+      "relevant": [
+        "drcd-6159-9"
+      ]
+    },
+    {
+      "question_id": "drcd-6161-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6161-1",
+        "drcd-1174-1",
+        "drcd-1190-7",
+        "drcd-3316-11",
+        "drcd-1190-2",
+        "drcd-6424-14",
+        "drcd-6424-13",
+        "drcd-3316-6"
+      ],
+      "retrieved_chunk_ids": [
+        "bc97448b-5bdb-4746-bf5e-d0188f379224",
+        "6fb44a62-44f7-4aa5-9ca4-68ff0282860f",
+        "18611bbb-5513-440b-a4de-b5ca45245935",
+        "4ae4c5d4-ddc9-41a4-95b3-53eb75df472b",
+        "2ed0627a-ff87-40b9-b655-2279fba7d1af",
+        "6f5b9b3d-0c59-4ffc-a55e-383189f26c91",
+        "cb22ac77-91ae-4c4c-8eb4-df3ae8556be7",
+        "08347856-5f3a-4aa2-892c-f76713fc11de"
+      ],
+      "relevant": [
+        "drcd-6161-1"
+      ]
+    },
+    {
+      "question_id": "drcd-6171-46-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6171-46",
+        "drcd-6171-23",
+        "drcd-6385-6",
+        "drcd-6385-5",
+        "drcd-6385-18",
+        "drcd-6385-3",
+        "drcd-6171-26",
+        "drcd-6385-16"
+      ],
+      "retrieved_chunk_ids": [
+        "6374d067-67b0-4430-9a11-bfdc19502e94",
+        "a5d762da-64c8-4c37-94de-43e2c5e1d600",
+        "74056917-a382-4a5b-be6d-37a23141b006",
+        "a414ebc6-eadc-41b2-af3d-9db30bb22b7e",
+        "8af4764c-73f8-4848-ba94-44136e0a5070",
+        "f41a7b0c-1d67-4ace-9dac-e0283aab0493",
+        "017c6677-c583-47d1-a363-9d38470df68b",
+        "591ffb65-3873-4f44-b8a3-841db270e0c7"
+      ],
+      "relevant": [
+        "drcd-6171-46"
+      ]
+    },
+    {
+      "question_id": "drcd-6175-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6175-3",
+        "drcd-1181-8",
+        "drcd-6175-6",
+        "drcd-1149-1",
+        "drcd-6055-5",
+        "drcd-1163-5",
+        "drcd-6066-2",
+        "drcd-1193-17"
+      ],
+      "retrieved_chunk_ids": [
+        "42e4d2de-8a91-4d41-8187-3a4601b64192",
+        "7f74c9d1-fe58-41ad-90ce-658f18a7e97d",
+        "5aaf069e-85c7-4616-9d33-1ca799479913",
+        "3c85c57c-3848-4a9a-9164-a5dd52bc4593",
+        "0970dac6-2ae2-4bff-a7c8-68401d5ace60",
+        "83cd0074-eeb2-484e-9017-53e2d13c83c0",
+        "c36dd5c3-efa0-473a-b8e1-d908924d1d9c",
+        "7c40ff30-57b9-4cb2-882b-04114b489e21"
+      ],
+      "relevant": [
+        "drcd-6175-3"
+      ]
+    },
+    {
+      "question_id": "drcd-6175-6-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6175-6",
+        "drcd-6175-3",
+        "drcd-6491-5",
+        "drcd-6374-2",
+        "drcd-2534-5",
+        "drcd-5501-1",
+        "drcd-1156-6",
+        "drcd-6007-2"
+      ],
+      "retrieved_chunk_ids": [
+        "5aaf069e-85c7-4616-9d33-1ca799479913",
+        "42e4d2de-8a91-4d41-8187-3a4601b64192",
+        "951018b2-e52a-4832-9c38-51a8a1d4e138",
+        "fa6f8c3e-1d61-43e0-8094-6673c2d3f4fd",
+        "1e9c48de-44cc-4217-ba8a-31e7b1c8f5a9",
+        "e902e748-4bca-47d4-bcdb-196882f66550",
+        "3316aa8c-ae11-4642-bb41-42f66aa047d5",
+        "46005fe1-056e-47e1-a3ff-50aba640a7c0"
+      ],
+      "relevant": [
+        "drcd-6175-6"
+      ]
+    },
+    {
+      "question_id": "drcd-6224-16-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6224-16",
+        "drcd-6224-9",
+        "drcd-6224-6",
+        "drcd-6146-1",
+        "drcd-6002-1",
+        "drcd-1180-5",
+        "drcd-6224-3",
+        "drcd-5548-1"
+      ],
+      "retrieved_chunk_ids": [
+        "8e0d78ba-bb84-4c1a-bd61-cfc10ce81c3d",
+        "cf6a7c59-d753-4d55-be72-bc87c7afaf8c",
+        "0398acfa-7e9a-4052-aa55-56688ee3f842",
+        "381d2507-90c0-4c5a-8556-f325bac74c0b",
+        "755f6b0b-4375-48cc-abc5-b7a9acf5e28e",
+        "5c23428b-96dc-481c-be88-e274f3baeea9",
+        "589e8906-c6fb-4a4b-bf26-3fd84959c194",
+        "7840b53d-89ad-42dd-b89a-473bc1272dd4"
+      ],
+      "relevant": [
+        "drcd-6224-16"
+      ]
+    },
+    {
+      "question_id": "drcd-6261-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6261-5",
+        "drcd-6261-6",
+        "drcd-6261-7",
+        "drcd-6261-2",
+        "drcd-6261-3",
+        "drcd-3384-7",
+        "drcd-5771-35",
+        "drcd-6211-1"
+      ],
+      "retrieved_chunk_ids": [
+        "d454d811-b5d0-440c-844f-45fa8fc13e32",
+        "380a1a1a-1dc4-4add-a283-a03bb5f4f77a",
+        "66e8b45e-8577-4a52-91d4-b80c6f34ab0d",
+        "e1a9b4bd-63b9-41d7-b878-e774242f8e51",
+        "eda6604c-882f-4c4e-a4de-c8fcdd3db4b0",
+        "8e539f32-c689-42b9-893f-25f2a981b344",
+        "93736de0-a38e-4127-8ce9-641cd42edaf9",
+        "2d617d3e-9ac0-40fb-bd1d-f8f686e50f08"
+      ],
+      "relevant": [
+        "drcd-6261-5"
+      ]
+    },
+    {
+      "question_id": "drcd-6268-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6268-3",
+        "drcd-6221-12",
+        "drcd-3256-7",
+        "drcd-2520-1",
+        "drcd-6322-2",
+        "drcd-3240-4",
+        "drcd-5534-1",
+        "drcd-6027-11"
+      ],
+      "retrieved_chunk_ids": [
+        "eac8fdd8-fb35-4bb9-aa3b-169cb184bb6c",
+        "0a536533-c8c7-4364-9b22-20ffafc4094d",
+        "44e874da-560c-42bc-bfe9-5adfa621cd9f",
+        "92afe31f-d1db-4049-90fb-8f4410cc6302",
+        "2902a302-d8af-48b3-8f55-552d228743e1",
+        "df28035c-3493-4b0f-97a9-c97dac7d4c62",
+        "6a04121d-fcd7-4c7a-9a9c-3bf7d47a80a2",
+        "99f3308e-f6c4-4e6d-801c-2855aace77a9"
+      ],
+      "relevant": [
+        "drcd-6268-3"
+      ]
+    },
+    {
+      "question_id": "drcd-6292-47-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6292-47",
+        "drcd-6292-38",
+        "drcd-5725-22",
+        "drcd-6292-36",
+        "drcd-6424-28",
+        "drcd-6292-78",
+        "drcd-1160-1",
+        "drcd-1194-7"
+      ],
+      "retrieved_chunk_ids": [
+        "8298689a-c20c-4f9e-be6f-c6773b94a8b1",
+        "dfee730c-b43b-4ac4-b43f-3a56759df8fe",
+        "add8fa10-6f4a-471e-9be6-267933476887",
+        "dece466e-5c5b-4578-8f4c-8c9048c48089",
+        "7afccde9-d95a-4077-872d-5d932eb2158e",
+        "c03a6e7a-201a-45d2-a13f-81cf8fd30c1f",
+        "9430db05-7200-4a64-ae14-1526774b1157",
+        "7e0a0c43-4ccc-46de-88c0-26277352cec6"
+      ],
+      "relevant": [
+        "drcd-6292-47"
+      ]
+    },
+    {
+      "question_id": "drcd-6322-2-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6322-2",
+        "drcd-6322-3",
+        "drcd-6322-5",
+        "drcd-6322-6",
+        "drcd-3454-3",
+        "drcd-3247-2",
+        "drcd-5771-3",
+        "drcd-4885-4"
+      ],
+      "retrieved_chunk_ids": [
+        "2902a302-d8af-48b3-8f55-552d228743e1",
+        "273a76cc-535f-40b7-a3b5-0af916674f60",
+        "d91b4d85-bed5-4752-b31b-d3819a2c76ce",
+        "7e236b17-5c6d-4965-be23-78f19ff5590d",
+        "ed0da0f8-2097-4f96-9b99-f6019ae68340",
+        "bafdb6d3-d890-4e38-ac9f-eaa0e6844af7",
+        "c17ee979-0292-4708-9250-d1314dc9f4c6",
+        "5caa54b1-74b7-488f-b191-da25a1c32f50"
+      ],
+      "relevant": [
+        "drcd-6322-2"
+      ]
+    },
+    {
+      "question_id": "drcd-6324-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6324-4",
+        "drcd-6324-11",
+        "drcd-3265-2",
+        "drcd-1180-6",
+        "drcd-3579-7",
+        "drcd-3265-1",
+        "drcd-6324-9",
+        "drcd-6224-16"
+      ],
+      "retrieved_chunk_ids": [
+        "4a68d14d-2d74-4286-a430-13f1176b8738",
+        "022e7475-1a62-411b-9663-a9bd4577a6b0",
+        "40044594-e006-460f-be10-08e3acc50133",
+        "b1ea809f-22f6-42b7-9208-be1d6d6aceb4",
+        "dae98430-d0e7-4d83-aab5-bd2dff412a71",
+        "ea291909-a858-4ea1-9751-3fd9ea56a4a6",
+        "066b6bfa-d9d0-48ee-abe9-2fc03f185d10",
+        "8e0d78ba-bb84-4c1a-bd61-cfc10ce81c3d"
+      ],
+      "relevant": [
+        "drcd-6324-4"
+      ]
+    },
+    {
+      "question_id": "drcd-6373-56-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6373-56",
+        "drcd-1193-5",
+        "drcd-5758-1",
+        "drcd-1193-4",
+        "drcd-4982-6",
+        "drcd-6373-74",
+        "drcd-6373-66",
+        "drcd-6373-62"
+      ],
+      "retrieved_chunk_ids": [
+        "a31f6b03-82c4-4228-a91b-150ed61c235d",
+        "16ea5fe4-1e1a-4869-ba60-0968b194e389",
+        "5ea50b37-c77a-4085-a144-2adb7891f282",
+        "a187376b-48fc-47ff-83c5-683f407d153f",
+        "6637e75a-3b1d-4563-b2a7-8bf0b92817cc",
+        "90098287-9436-4c66-a21b-2ea3da08aa11",
+        "632b8f51-b28c-4c87-a11c-1b129a3e1049",
+        "95fe8613-7297-417d-9de5-f2ab75281a27"
+      ],
+      "relevant": [
+        "drcd-6373-56"
+      ]
+    },
+    {
+      "question_id": "drcd-6373-73-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6373-73",
+        "drcd-3221-2",
+        "drcd-6373-48",
+        "drcd-6373-8",
+        "drcd-6373-16",
+        "drcd-6373-28",
+        "drcd-6373-51",
+        "drcd-4982-6"
+      ],
+      "retrieved_chunk_ids": [
+        "3638c916-cfd4-4c2d-b8c4-0840401b7c04",
+        "73329df9-ea1c-42b6-b568-fcdf7a6a85fa",
+        "5b8f1264-cb69-42cf-a462-4ca15953111b",
+        "b0a2231c-edb3-45fc-a2b1-b06486b80353",
+        "bcf79bbc-2979-4983-bc5d-07c643302be6",
+        "b84cf916-5db6-48e8-9e29-433372a18401",
+        "c59247f4-b6dd-4285-98d3-e9f88176779a",
+        "6637e75a-3b1d-4563-b2a7-8bf0b92817cc"
+      ],
+      "relevant": [
+        "drcd-6373-73"
+      ]
+    },
+    {
+      "question_id": "drcd-6383-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6383-1",
+        "drcd-6095-1",
+        "drcd-1156-7",
+        "drcd-3299-1",
+        "drcd-6478-13",
+        "drcd-6168-1",
+        "drcd-6135-1",
+        "drcd-5500-1"
+      ],
+      "retrieved_chunk_ids": [
+        "cfda5964-1f28-4884-b2eb-36a2f1229443",
+        "e67bc1ff-9652-44f9-8f2b-5c2e89c7ceec",
+        "509b303d-0d84-4b02-bbff-00440047ad3e",
+        "83f6b60a-bb44-4a0d-a8ac-0d2d05a53b1d",
+        "502c563d-3a34-499d-bdbc-5c4703d644d5",
+        "21d600a0-4544-4288-bba3-c6ac97031810",
+        "e35aa5d4-1c84-4627-a439-1ba66a9bb044",
+        "f54d9f3f-2684-44eb-8129-6cb6f1ad2c77"
+      ],
+      "relevant": [
+        "drcd-6383-1"
+      ]
+    },
+    {
+      "question_id": "drcd-6385-17-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6385-17",
+        "drcd-6171-25",
+        "drcd-6373-33",
+        "drcd-6214-4",
+        "drcd-6171-24",
+        "drcd-6385-16",
+        "drcd-5750-6",
+        "drcd-5656-1"
+      ],
+      "retrieved_chunk_ids": [
+        "bf4f7023-6545-4aa5-9bb2-d6ab84b316ad",
+        "ef223201-9612-45af-b1d7-c2facd4bc45d",
+        "b4867e3d-8ad5-435a-9239-362a48d3e8bb",
+        "26445894-d8ec-491d-9d63-541c806e53ad",
+        "0b9824ef-2f45-4787-a354-452b2857d461",
+        "591ffb65-3873-4f44-b8a3-841db270e0c7",
+        "f498ca58-80ce-45f6-9b1a-99ea5388f29c",
+        "94d0aab1-ee30-4808-9911-761aa078e4fe"
+      ],
+      "relevant": [
+        "drcd-6385-17"
+      ]
+    },
+    {
+      "question_id": "drcd-6418-1-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6418-1",
+        "drcd-6033-18",
+        "drcd-1182-4",
+        "drcd-3384-7",
+        "drcd-5523-10",
+        "drcd-6171-46",
+        "drcd-6373-28",
+        "drcd-3432-6"
+      ],
+      "retrieved_chunk_ids": [
+        "259d3fa7-0da3-40a3-a8af-58557b7e1255",
+        "82585ec4-406f-4467-8476-8803fdd1fcaa",
+        "9f76cdd5-cf21-4fb7-8b3f-e25ccf501f91",
+        "8e539f32-c689-42b9-893f-25f2a981b344",
+        "522dd9bb-0be3-4713-bc8a-d447621077cb",
+        "6374d067-67b0-4430-9a11-bfdc19502e94",
+        "b84cf916-5db6-48e8-9e29-433372a18401",
+        "8fae55d1-7464-4e65-b86e-47e91a94c249"
+      ],
+      "relevant": [
+        "drcd-6418-1"
+      ]
+    },
+    {
+      "question_id": "drcd-6424-4-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6424-4",
+        "drcd-5508-1",
+        "drcd-6048-21",
+        "drcd-5633-1",
+        "drcd-1190-2",
+        "drcd-1190-7",
+        "drcd-1153-3",
+        "drcd-5619-3"
+      ],
+      "retrieved_chunk_ids": [
+        "a8033c32-36e9-432e-9dd9-5a7b21f16a4f",
+        "91128088-98ee-402f-8fa0-b1a87237753e",
+        "9b879e2b-fde5-41d5-ae87-568893df9c5b",
+        "3045b57c-6375-4026-9b2f-70ce411e684b",
+        "2ed0627a-ff87-40b9-b655-2279fba7d1af",
+        "18611bbb-5513-440b-a4de-b5ca45245935",
+        "0ceaefa8-39b4-42b7-9f2e-c1c5114c3892",
+        "1862f3b6-08a8-4135-b96e-c16dbea5fe2a"
+      ],
+      "relevant": [
+        "drcd-6424-4"
+      ]
+    },
+    {
+      "question_id": "drcd-6455-3-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6455-3",
+        "drcd-6095-1",
+        "drcd-6078-5",
+        "drcd-6455-4",
+        "drcd-6373-37",
+        "drcd-1199-23",
+        "drcd-1165-12",
+        "drcd-4893-7"
+      ],
+      "retrieved_chunk_ids": [
+        "a3d49e9c-047b-4882-8224-444608ec0369",
+        "e67bc1ff-9652-44f9-8f2b-5c2e89c7ceec",
+        "286cc684-af64-4d61-8d1b-979235e0b152",
+        "1623b41b-a668-46aa-9d5f-d40bf18bcd62",
+        "2935c745-0530-49ab-9b92-cd14a20111a8",
+        "4e8de409-fe55-49e5-909e-5010c307593a",
+        "35571add-854d-4908-8012-454149efbadc",
+        "21e631a0-cd38-4c00-b4e6-d17a58abbe95"
+      ],
+      "relevant": [
+        "drcd-6455-3"
+      ]
+    },
+    {
+      "question_id": "drcd-6509-5-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6509-5",
+        "drcd-3206-6",
+        "drcd-6509-1",
+        "drcd-3206-1",
+        "drcd-6509-3",
+        "drcd-3206-8",
+        "drcd-5719-1",
+        "drcd-3206-10"
+      ],
+      "retrieved_chunk_ids": [
+        "11823cd1-adde-4ae5-b9da-88848d7ce9fa",
+        "ed05df28-ae56-4e55-b05b-8da00c0ee35c",
+        "26609dcc-63bd-401e-8fe6-fbefc2dd64af",
+        "aab230fd-315c-49ad-bafa-59488b98f7fb",
+        "f926b080-8650-4d92-95c8-b3a285afeac2",
+        "a34eec08-365b-468a-8ee8-a6187b9232b1",
+        "c5a1b1c9-5273-40e1-b4c0-0e8c61c1b23e",
+        "73dcc699-2b77-49dc-9376-9d034121b5b6"
+      ],
+      "relevant": [
+        "drcd-6509-5"
+      ]
+    },
+    {
+      "question_id": "drcd-6516-7-1",
+      "hit_rank": 1,
+      "retrieved": [
+        "drcd-6516-7",
+        "drcd-6516-2",
+        "drcd-6516-9",
+        "drcd-6516-6",
+        "drcd-1167-2",
+        "drcd-3395-1",
+        "drcd-4893-9",
+        "drcd-6373-8"
+      ],
+      "retrieved_chunk_ids": [
+        "bda73f92-2848-495f-9958-d81fa7f3ef78",
+        "55dc6aa5-efea-47f4-a935-9c7dae54f4c1",
+        "015e4036-39fc-4635-8b40-fc67f589d613",
+        "4899f30c-430f-471b-adc7-d7d19ba1236e",
+        "d8ec3d25-caec-432c-ba9f-cc39f182cfaf",
+        "53997154-feb5-4482-8dae-7172073e7f23",
+        "a70f9505-5f2d-4ade-aa1f-8e5472b0efb1",
+        "b0a2231c-edb3-45fc-a2b1-b06486b80353"
+      ],
+      "relevant": [
+        "drcd-6516-7"
+      ]
+    }
+  ]
+}
