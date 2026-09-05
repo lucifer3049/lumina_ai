@@ -2,6 +2,10 @@
 
 本 repo 依 `docs/plan/00–15` 的架構設計文件（SAD）開發。本檔案是**每次必守的硬規則濃縮**；設計細節與理由請按下方索引查閱對應文件，不要憑記憶推測設計。
 
+> **最上層規則是專案憲章 `.specify/memory/constitution.md`（v1.1.0）。**
+> 本檔案是憲章在日常開發中的執行摘要——兩者衝突時**以憲章為準**，並且必須同步修正本檔案。
+> 本檔案每個 session 自動載入，憲章不會；因此規則在兩邊都寫是刻意的，不是漏刪。
+
 ## 專案概要
 
 Multi-tenant SaaS 的 AI Knowledge Platform：LLM Chat（SSE）、Knowledge Base、RAG（Hybrid Search + Rerank + Citation）、Tool Calling、ETL、Prompt 版本管理、Evaluation、Usage/Cost Tracking。
@@ -39,7 +43,7 @@ Multi-tenant SaaS 的 AI Knowledge Platform：LLM Chat（SSE）、Knowledge Base
 
 ### Git Safety Rule
 
-完成任何程式修改後，禁止自行執行任何 Git 操作（包含 `git add`、`git commit`、`git push`、`git tag`、`git merge`、`git rebase` 等）。
+完成任何程式修改後，禁止自行執行任何 Git 操作（包含 `git add`、`git commit`、`git push`、`git tag`、`git merge`、`git rebase`、`git checkout -b` 等；spec-kit 的 specify 流程若要求開分支，一樣由人類執行）。
 
 必須先輸出：
 
@@ -88,12 +92,44 @@ FastAPI / Django / Vue 生態的實務標準，且本 repo 自初始 commit 起�
 | 上線驗收 | `docs/plan/14` |
 | 審查結論、已知缺漏、未來功能 backlog | `docs/plan/15` |
 
+## 開發生命週期（SDD，憲章原則 VI）
+
+**規則全文在憲章原則 VI 與〈開發工作流與品質閘門〉；以下是摘要。**
+
+```
+需求 → Specification → [人類 review] → Plan → [人類 review]
+     → Tasks／工作包 → 驗收測試 → [人類 review] → Implementation
+     → Verification（make lint／分三層全套／make smoke／make openapi-check）
+     → [人類 review] → 人類 commit／push → make ci-status
+```
+
+生命週期固定為**六層**，各自回答一個問題，**不得互相取代**：
+
+| 層 | 回答 | 產物 | 邊界 |
+|----|------|------|------|
+| Constitution | 這專案永遠不能違反什麼 | `.specify/memory/constitution.md` | 不描述單一 Feature 的需求 |
+| Specification | 這 Feature 要做什麼 | `specs/<###-feature>/spec.md` | **禁止**決定架構或實作細節 |
+| Plan | 要怎麼實現 | `specs/<###-feature>/plan.md`（含 research／data-model／contracts） | **禁止**改變需求語意 |
+| Tasks | 一步一步做什麼 | `specs/<###-feature>/tasks.md`，對齊 `docs/plan/13` 的工作包 | **禁止**新增 spec 未定義的需求、改 plan、擴張範圍 |
+| Implementation | 程式碼實際長什麼樣 | 程式碼與測試 | 只做 Tasks 列出的事 |
+| Verification | 它真的做到了嗎 | `make lint`／三層測試／`make smoke`／`make openapi-check`／CI 結果 | 四項缺一不算完成 |
+
+優先關係 `Constitution > Specification > Plan > Tasks > Implementation` 是**約束優先級，不是取代關係**。
+
+**AI 禁止跨層自行決策**：不得跳過 spec 直接實作；未經人類 review 的 spec 不得進 plan；未經 review 的 plan 不得進 tasks／實作；spec／plan／tasks／既有程式碼四者衝突時**停下回報，不得自行選一方**。
+
+**完整 SDD vs 輕量路徑**：新增或改變使用者可見行為、新增或修改 API 端點、schema 變更、新增外部依賴、跨模組改動，走**完整 SDD**（產 `spec.md`）。不改變既定行為的 bug 修正、純重構、文件、測試補強、設定調整，走**輕量路徑**：只需任務卡 + DoD 驗收測試，不產 `spec.md`。**走哪條路徑由人類裁決，AI 不得自行判定走輕量。**
+
+**Spec Kit 指令**：`/speckit-specify` → `/speckit-plan` → `/speckit-tasks` → `/speckit-implement`。**`/speckit-implement` 單次只跑一個工作包對應的 task 區段，跑完即停**，禁止一次跑完 `tasks.md` 全部 Phase。
+
+`docs/plan/13` 仍是 Phase、工作包排序、DoD、結案紀錄的單一事實來源；需求細節寫在 `spec.md`，13 改為引用 spec 路徑（既有工作包不回溯改寫）。
+
 ## 開發流程（人機協作規則）
 
 - 依 `docs/plan/13` 的 Phase 與工作包（1A、1B…）順序開發；一次任務對齊一個工作包，完成即停，等人類 review。**禁止連續自主推進多個工作包。**
-- **驗收測試先行**：任務開始時先依 DoD 產出驗收測試，等人類確認測試內容後才實作，實作至測試通過為止。
-- **每次任務結束必跑 E2E smoke suite**（`make smoke`：登入→上傳→ready→問答→引用）；smoke 不過視同任務未完成。
-- 開發**過程中**用窄目標（`make test-changed` / `test-lf` / `test-k`，見下方常用指令）；它們是啟發式，**不是安全網**——結束前的全套 ＋ `make smoke` 那一次不能省。
+- **驗收測試先行**：任務開始時先依 DoD 產出驗收測試，等人類確認測試內容後才實作，實作至測試通過為止。走完整 SDD 時，**DoD 必須可回溯至 spec 的 Acceptance Criteria**——AC 是驗收語意的唯一上游、DoD 是它在該工作包上的收斂，兩者衝突時以 spec 為準並停下回報；走輕量路徑時 DoD 即最上游。
+- **每次任務結束的 Verification 固定四項**（憲章閘門 4 的前置）：`make lint`、分三層全套、`make smoke`（登入→上傳→ready→問答→引用）、`make openapi-check`。任一項不過視同任務未完成；`openapi-check` 在本地就抓契約漂移，不要留給 CI 才紅（run 57–60 的教訓）。
+- 開發**過程中**用窄目標（`make test-changed` / `test-lf` / `test-k`，見下方常用指令）；它們是啟發式，**不是安全網**——結束前的四項 Verification 那一次不能省。
 - **全套分三層跑**：`make test-unit && make test-integration && make test-api`（與 CI 的分階段一致）。2C-2 記載的「混層跑紅 36 條 forkserver ConnectionRefusedError」**已於 2026-08-30 查明並解除**：根因是 repo 內 `backend/.venv` 會被外力半毀（見 Makefile 的 UV_PROJECT_ENVIRONMENT 段落），venv 移出 repo 樹後混層 2044/2045 綠。仍維持分三層跑：與 CI 對齊，且混層曾觀察到 1 條順序相依的 flake（`tests/api/test_kb_reindex_endpoints.py` 的 202 測試，單獨跑綠）——遇到單條紅先單獨重跑確認，不要當成新缺陷追。
 - 每個工作包的 DoD 在 13 內定義；測試不過、DoD 未達不得標記完成。
 - 設計文件與實作衝突時：**停下並回報差異**，由人類決定改文件或改實作；不要擅自偏離文件。
@@ -106,6 +142,7 @@ FastAPI / Django / Vue 生態的實務標準，且本 repo 自初始 commit 起�
 ```
 任務：<一句話目標>（對齊工作包：<如 1B>）
 先讀：docs/plan/<編號>（§節號）
+Spec：<specs/<###-feature>/spec.md，或「輕量路徑（人類裁決）」>
 DoD 測試：<測試檔路徑或「本次先產出」>
 禁區：<本次不准修改的目錄/檔案>
 ```
